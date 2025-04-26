@@ -241,7 +241,7 @@ def api_stock_data(request, symbol):
         analyzer = TechnicalAnalyzer(stock_symbol=symbol)
         analyzer.calculate_indicators()
 
-        df = analyzer.df  # ACHTUNG: wir nehmen jetzt wirklich den berechneten DataFrame!
+        df = analyzer.df  # Das berechnete DataFrame
 
         # Preis-Daten
         price_data = []
@@ -255,22 +255,32 @@ def api_stock_data(request, symbol):
                 'volume': int(row['volume']) if not pd.isna(row['volume']) else 0
             })
 
-        # Indikator-Daten
+        # Indikator-Daten - ALLE verfügbaren Indikatoren einschließen
         indicators = {
-            'rsi': df['rsi'].dropna().tolist() if 'rsi' in df else [],
-            'macd': df['macd'].dropna().tolist() if 'macd' in df else [],
-            'macd_signal': df['macd_signal'].dropna().tolist() if 'macd_signal' in df else [],
-            'macd_histogram': df['macd_histogram'].dropna().tolist() if 'macd_histogram' in df else [],
-            'sma_20': df['sma_20'].dropna().tolist() if 'sma_20' in df else [],
-            'sma_50': df['sma_50'].dropna().tolist() if 'sma_50' in df else [],
-            'sma_200': df['sma_200'].dropna().tolist() if 'sma_200' in df else [],
-            'bollinger_upper': df['bollinger_upper'].dropna().tolist() if 'bollinger_upper' in df else [],
-            'bollinger_lower': df['bollinger_lower'].dropna().tolist() if 'bollinger_lower' in df else [],
-            'obv': df['obv'].dropna().tolist() if 'obv' in df else [],
-            'atr': df['atr'].dropna().tolist() if 'atr' in df else [],
-            'stoch_k': df['stoch_k'].dropna().tolist() if 'stoch_k' in df else [],
-            'stoch_d': df['stoch_d'].dropna().tolist() if 'stoch_d' in df else [],
-            'adx': df['adx'].dropna().tolist() if 'adx' in df else [],
+            'rsi': df['rsi'].dropna().tolist() if 'rsi' in df.columns else [],
+            'macd': df['macd'].dropna().tolist() if 'macd' in df.columns else [],
+            'macd_signal': df['macd_signal'].dropna().tolist() if 'macd_signal' in df.columns else [],
+            'macd_histogram': df['macd_histogram'].dropna().tolist() if 'macd_histogram' in df.columns else [],
+            'sma_20': df['sma_20'].dropna().tolist() if 'sma_20' in df.columns else [],
+            'sma_50': df['sma_50'].dropna().tolist() if 'sma_50' in df.columns else [],
+            'sma_200': df['sma_200'].dropna().tolist() if 'sma_200' in df.columns else [],
+            'bollinger_upper': df['bollinger_upper'].dropna().tolist() if 'bollinger_upper' in df.columns else [],
+            'bollinger_lower': df['bollinger_lower'].dropna().tolist() if 'bollinger_lower' in df.columns else [],
+            'stoch_k': df['stoch_k'].dropna().tolist() if 'stoch_k' in df.columns else [],
+            'stoch_d': df['stoch_d'].dropna().tolist() if 'stoch_d' in df.columns else [],
+            'adx': df['adx'].dropna().tolist() if 'adx' in df.columns else [],
+            '+di': df['+di'].dropna().tolist() if '+di' in df.columns else [],
+            '-di': df['-di'].dropna().tolist() if '-di' in df.columns else [],
+            'obv': df['obv'].dropna().tolist() if 'obv' in df.columns else [],
+            'atr': df['atr'].dropna().tolist() if 'atr' in df.columns else [],
+            'roc': df['roc'].dropna().tolist() if 'roc' in df.columns else [],
+            'psar': df['psar'].dropna().tolist() if 'psar' in df.columns else [],
+            # Ichimoku-Komponenten
+            'tenkan_sen': df['tenkan_sen'].dropna().tolist() if 'tenkan_sen' in df.columns else [],
+            'kijun_sen': df['kijun_sen'].dropna().tolist() if 'kijun_sen' in df.columns else [],
+            'senkou_span_a': df['senkou_span_a'].dropna().tolist() if 'senkou_span_a' in df.columns else [],
+            'senkou_span_b': df['senkou_span_b'].dropna().tolist() if 'senkou_span_b' in df.columns else [],
+            'chikou_span': df['chikou_span'].dropna().tolist() if 'chikou_span' in df.columns else []
         }
 
         return JsonResponse({

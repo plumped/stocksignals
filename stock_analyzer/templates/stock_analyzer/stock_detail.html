@@ -366,21 +366,31 @@
 {% block extra_scripts %}
 <script>
     document.addEventListener('DOMContentLoaded', function() {
-        const symbol = '{{ stock.symbol }}';
-        let stockData = null;
-        let priceChart = null;
+    const symbol = document.querySelector('h2').textContent.split(' - ')[0].trim();
+    let stockData = null;
+    let priceChart = null;
+    let rsiChart = null;
+    let macdChart = null;
+    let stochasticChart = null;
+    let smaChart = null;
+    let bollingerChart = null;
+    let volumeChart = null;
+    let obvChart = null;
+    let atrChart = null;
 
-        // Tabs konfigurieren
-        document.querySelectorAll('.time-range').forEach(btn => {
-            btn.addEventListener('click', function() {
-                document.querySelectorAll('.time-range').forEach(b => b.classList.remove('active'));
-                this.classList.add('active');
-                updateCharts(this.dataset.range);
-            });
+    // Tabs konfigurieren
+    document.querySelectorAll('.time-range').forEach(btn => {
+        btn.addEventListener('click', function() {
+            document.querySelectorAll('.time-range').forEach(b => b.classList.remove('active'));
+            this.classList.add('active');
+            updateCharts(parseInt(this.dataset.range));
         });
+    });
 
-        // Aktie analysieren
-        document.getElementById('analyze-button').addEventListener('click', function() {
+    // Aktie analysieren
+    const analyzeButton = document.getElementById('analyze-button');
+    if (analyzeButton) {
+        analyzeButton.addEventListener('click', function() {
             this.disabled = true;
             this.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Analysiere...';
 
@@ -402,30 +412,64 @@
                     this.innerHTML = '<i class="bi bi-graph-up"></i> Jetzt analysieren';
                 });
         });
+    }
 
-        // Daten laden und Charts initialisieren
-        fetch(`/api/stock/${symbol}/`)
-            .then(response => response.json())
-            .then(data => {
-                stockData = data;
-                initCharts();
-                updateCharts(180); // Standardmäßig 6 Monate anzeigen
-            })
-            .catch(error => {
-                console.error('Fehler beim Laden der Aktiendaten:', error);
-            });
+    // Watchlist Funktionalität
+    const removeWatchlistBtn = document.getElementById('remove-watchlist');
+    if (removeWatchlistBtn) {
+        removeWatchlistBtn.addEventListener('click', function() {
+            // Logik zum Entfernen aus der Watchlist implementieren
+            // Hier müsste ein API-Aufruf erfolgen
+        });
+    }
 
-        function initCharts() {
-            // Kurschart (Candlestick-Chart mit Chart.js)
-            const ctx = document.getElementById('price-chart').getContext('2d');
-            priceChart = new Chart(ctx, {
+    // Daten laden und Charts initialisieren
+    fetch(`/api/stock/${symbol}/`)
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Netzwerkantwort war nicht ok');
+            }
+            return response.json();
+        })
+        .then(data => {
+            stockData = data;
+            console.log('Geladene Daten:', stockData);
+            initCharts();
+            updateCharts(180); // Standardmäßig 6 Monate anzeigen
+        })
+        .catch(error => {
+            console.error('Fehler beim Laden der Aktiendaten:', error);
+        });
+
+    function initCharts() {
+        // Überprüfen, ob Daten vorhanden sind
+        if (!stockData || !stockData.price_data || stockData.price_data.length === 0) {
+            console.error('Keine Daten zum Initialisieren der Charts verfügbar');
+            return;
+        }
+
+        // Überprüfe, ob die Daten in der richtigen Reihenfolge sind (neueste zuerst)
+        let dataOrdered = true;
+        try {
+            const firstDate = new Date(stockData.price_data[0].date);
+            const lastDate = new Date(stockData.price_data[stockData.price_data.length - 1].date);
+            dataOrdered = firstDate > lastDate;
+        } catch (e) {
+            console.warn('Fehler beim Überprüfen der Datenreihenfolge:', e);
+        }
+
+        // Kurschart (Linienchart)
+        const priceCtx = document.getElementById('price-chart');
+        if (priceCtx) {
+            priceChart = new Chart(priceCtx.getContext('2d'), {
                 type: 'line',
                 data: {
                     datasets: [{
                         label: 'Schlusskurs',
                         borderColor: 'rgb(54, 162, 235)',
                         backgroundColor: 'rgba(54, 162, 235, 0.1)',
-                        fill: true
+                        fill: true,
+                        data: []
                     }]
                 },
                 options: {
@@ -452,17 +496,20 @@
                     }
                 }
             });
+        }
 
-            // RSI-Chart initialisieren
-            const rsiCtx = document.getElementById('rsi-chart').getContext('2d');
-            window.rsiChart = new Chart(rsiCtx, {
+        // RSI-Chart initialisieren
+        const rsiCtx = document.getElementById('rsi-chart');
+        if (rsiCtx) {
+            rsiChart = new Chart(rsiCtx.getContext('2d'), {
                 type: 'line',
                 data: {
                     datasets: [{
                         label: 'RSI (14)',
                         borderColor: 'rgb(255, 99, 132)',
                         backgroundColor: 'rgba(255, 99, 132, 0.1)',
-                        fill: false
+                        fill: false,
+                        data: []
                     }]
                 },
                 options: {
@@ -508,35 +555,40 @@
                     }
                 }
             });
+        }
 
-            // MACD-Chart initialisieren
-            const macdCtx = document.getElementById('macd-chart').getContext('2d');
-            window.macdChart = new Chart(macdCtx, {
-                type: 'bar',
+        // MACD-Chart initialisieren
+        const macdCtx = document.getElementById('macd-chart');
+        if (macdCtx) {
+            macdChart = new Chart(macdCtx.getContext('2d'), {
+                type: 'line',
                 data: {
                     datasets: [
                         {
                             label: 'MACD Histogram',
                             type: 'bar',
                             backgroundColor: function(context) {
-                                const value = context.dataset.data[context.dataIndex];
-                                return value < 0 ? 'rgba(255, 99, 132, 0.7)' : 'rgba(75, 192, 192, 0.7)';
+                                if (!context.raw) return 'rgba(0, 0, 0, 0)';
+                                return context.raw.y < 0 ? 'rgba(255, 99, 132, 0.7)' : 'rgba(75, 192, 192, 0.7)';
                             },
-                            order: 3
+                            order: 3,
+                            data: []
                         },
                         {
                             label: 'MACD',
                             type: 'line',
                             borderColor: 'rgb(54, 162, 235)',
                             fill: false,
-                            order: 1
+                            order: 1,
+                            data: []
                         },
                         {
                             label: 'Signal',
                             type: 'line',
                             borderColor: 'rgb(255, 159, 64)',
                             fill: false,
-                            order: 2
+                            order: 2,
+                            data: []
                         }
                     ]
                 },
@@ -554,70 +606,974 @@
                     }
                 }
             });
-
-            // Andere Charts für Indikatoren hier initialisieren...
         }
 
-        function updateCharts(days) {
-            if (!stockData) return;
+        // Stochastic Chart
+        const stochasticCtx = document.getElementById('stochastic-chart');
+        if (stochasticCtx) {
+            stochasticChart = new Chart(stochasticCtx.getContext('2d'), {
+                type: 'line',
+                data: {
+                    datasets: [
+                        {
+                            label: 'Stochastic %K',
+                            borderColor: 'rgb(54, 162, 235)',
+                            fill: false,
+                            data: []
+                        },
+                        {
+                            label: 'Stochastic %D',
+                            borderColor: 'rgb(255, 159, 64)',
+                            fill: false,
+                            data: []
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'day',
+                                tooltipFormat: 'dd.MM.yyyy'
+                            }
+                        },
+                        y: {
+                            min: 0,
+                            max: 100
+                        }
+                    },
+                    plugins: {
+                        annotation: {
+                            annotations: {
+                                overbought: {
+                                    type: 'line',
+                                    yMin: 80,
+                                    yMax: 80,
+                                    borderColor: 'red',
+                                    borderWidth: 1,
+                                    borderDash: [5, 5]
+                                },
+                                oversold: {
+                                    type: 'line',
+                                    yMin: 20,
+                                    yMax: 20,
+                                    borderColor: 'green',
+                                    borderWidth: 1,
+                                    borderDash: [5, 5]
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // SMA Chart
+        const smaCtx = document.getElementById('sma-chart');
+        if (smaCtx) {
+            smaChart = new Chart(smaCtx.getContext('2d'), {
+                type: 'line',
+                data: {
+                    datasets: [
+                        {
+                            label: 'Preis',
+                            borderColor: 'rgb(0, 0, 0)',
+                            fill: false,
+                            order: 1,
+                            data: []
+                        },
+                        {
+                            label: 'SMA 20',
+                            borderColor: 'rgb(54, 162, 235)',
+                            fill: false,
+                            order: 2,
+                            data: []
+                        },
+                        {
+                            label: 'SMA 50',
+                            borderColor: 'rgb(255, 159, 64)',
+                            fill: false,
+                            order: 3,
+                            data: []
+                        },
+                        {
+                            label: 'SMA 200',
+                            borderColor: 'rgb(255, 99, 132)',
+                            fill: false,
+                            order: 4,
+                            data: []
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'day',
+                                tooltipFormat: 'dd.MM.yyyy'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Bollinger Bands Chart
+        const bollingerCtx = document.getElementById('bollinger-chart');
+        if (bollingerCtx) {
+            bollingerChart = new Chart(bollingerCtx.getContext('2d'), {
+                type: 'line',
+                data: {
+                    datasets: [
+                        {
+                            label: 'Preis',
+                            borderColor: 'rgb(0, 0, 0)',
+                            fill: false,
+                            order: 1,
+                            data: []
+                        },
+                        {
+                            label: 'SMA 20',
+                            borderColor: 'rgb(54, 162, 235)',
+                            fill: false,
+                            order: 2,
+                            data: []
+                        },
+                        {
+                            label: 'Oberes Band',
+                            borderColor: 'rgba(255, 99, 132, 0.7)',
+                            fill: false,
+                            order: 3,
+                            data: []
+                        },
+                        {
+                            label: 'Unteres Band',
+                            borderColor: 'rgba(75, 192, 192, 0.7)',
+                            fill: false,
+                            order: 4,
+                            data: []
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'day',
+                                tooltipFormat: 'dd.MM.yyyy'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Volume Chart
+        const volumeCtx = document.getElementById('volume-chart');
+        if (volumeCtx) {
+            volumeChart = new Chart(volumeCtx.getContext('2d'), {
+                type: 'bar',
+                data: {
+                    datasets: [
+                        {
+                            label: 'Volumen',
+                            backgroundColor: 'rgba(54, 162, 235, 0.5)',
+                            data: []
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'day',
+                                tooltipFormat: 'dd.MM.yyyy'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // OBV Chart
+        const obvCtx = document.getElementById('obv-chart');
+        if (obvCtx) {
+            obvChart = new Chart(obvCtx.getContext('2d'), {
+                type: 'line',
+                data: {
+                    datasets: [
+                        {
+                            label: 'On-Balance Volume',
+                            borderColor: 'rgb(75, 192, 192)',
+                            fill: false,
+                            data: []
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'day',
+                                tooltipFormat: 'dd.MM.yyyy'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // ATR Chart
+        const atrCtx = document.getElementById('atr-chart');
+        if (atrCtx) {
+            atrChart = new Chart(atrCtx.getContext('2d'), {
+                type: 'line',
+                data: {
+                    datasets: [
+                        {
+                            label: 'Average True Range',
+                            borderColor: 'rgb(153, 102, 255)',
+                            fill: false,
+                            data: []
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'day',
+                                tooltipFormat: 'dd.MM.yyyy'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    function updateCharts(days) {
+        if (!stockData || !stockData.price_data || stockData.price_data.length === 0) {
+            console.error('Keine Daten zum Aktualisieren der Charts verfügbar');
+            return;
+        }
+
+        try {
+            // Die neuesten Daten sollten am Ende des Arrays sein
+            const reversedData = [...stockData.price_data].reverse();
 
             // Zeitraum berechnen
-            const now = new Date();
-            const startDate = new Date();
-            startDate.setDate(now.getDate() - days);
+            const endDate = new Date(reversedData[0].date);
+            const startDate = new Date(endDate);
+            startDate.setDate(endDate.getDate() - days);
 
             // Daten nach Datum filtern
-            const filteredPriceData = stockData.price_data.filter(d => {
+            const filteredData = reversedData.filter(d => {
                 const date = new Date(d.date);
-                return date >= startDate;
+                return date >= startDate && date <= endDate;
             });
 
-            // Preischart aktualisieren
-            priceChart.data.labels = filteredPriceData.map(d => new Date(d.date));
-            priceChart.data.datasets[0].data = filteredPriceData.map(d => ({
-                x: new Date(d.date),
-                y: d.close_price
-            }));
-            priceChart.update();
+            // Sicherstellen, dass nach Datum sortiert ist (aufsteigend)
+            filteredData.sort((a, b) => new Date(a.date) - new Date(b.date));
 
-            // RSI-Chart aktualisieren
-            if (stockData.indicators.rsi) {
-                const rsiData = stockData.indicators.rsi.slice(-days);
-                const dates = filteredPriceData.map(d => new Date(d.date));
+            console.log(`Gefilterte Daten für ${days} Tage:`, filteredData.length);
 
-                window.rsiChart.data.labels = dates;
-                window.rsiChart.data.datasets[0].data = rsiData.map((rsi, i) => ({
-                    x: dates[i],
-                    y: rsi
-                }));
-                window.rsiChart.update();
+            if (filteredData.length === 0) {
+                console.warn('Keine gefilterten Daten verfügbar');
+                return;
             }
 
-            // MACD-Chart aktualisieren
-            if (stockData.indicators.macd && stockData.indicators.macd_signal && stockData.indicators.macd_histogram) {
-                const macdData = stockData.indicators.macd.slice(-days);
-                const macdSignalData = stockData.indicators.macd_signal.slice(-days);
-                const macdHistData = stockData.indicators.macd_histogram.slice(-days);
-                const dates = filteredPriceData.map(d => new Date(d.date));
+            // Daten für die Charts vorbereiten
+            const chartDates = filteredData.map(d => new Date(d.date));
+            const prices = filteredData.map(d => d.close_price);
 
-                window.macdChart.data.labels = dates;
-                window.macdChart.data.datasets[0].data = macdHistData.map((hist, i) => ({
-                    x: dates[i],
-                    y: hist
+            // Preischart aktualisieren
+            if (priceChart) {
+                priceChart.data.datasets[0].data = filteredData.map(d => ({
+                    x: new Date(d.date),
+                    y: d.close_price
                 }));
-                window.macdChart.data.datasets[1].data = macdData.map((macd, i) => ({
-                    x: dates[i],
-                    y: macd
-                }));
-                window.macdChart.data.datasets[2].data = macdSignalData.map((signal, i) => ({
-                    x: dates[i],
-                    y: signal
-                }));
-                window.macdChart.update();
+                priceChart.update();
+            }
+
+            // RSI-Chart aktualisieren
+            if (rsiChart && stockData.indicators && stockData.indicators.rsi) {
+                // Wir müssen die Indikator-Daten an die gefilterten Preisdaten anpassen
+                const indicatorLength = stockData.indicators.rsi.length;
+                const priceLength = stockData.price_data.length;
+
+                // Offset berechnen, wenn die Arrays unterschiedliche Längen haben
+                const offset = Math.max(0, priceLength - indicatorLength);
+
+                // Gefilterte Indizes bestimmen
+                const filteredIndices = filteredData.map(d => {
+                    return stockData.price_data.findIndex(p => p.date === d.date);
+                }).filter(idx => idx !== -1);
+
+                // RSI-Daten entsprechend extrahieren
+                const rsiData = filteredIndices.map(idx => {
+                    const adjustedIdx = idx - offset;
+                    return adjustedIdx >= 0 && adjustedIdx < stockData.indicators.rsi.length
+                           ? stockData.indicators.rsi[adjustedIdx]
+                           : null;
+                }).filter(d => d !== null);
+
+                // Chart aktualisieren, wenn Daten vorhanden sind
+                if (rsiData.length > 0) {
+                    rsiChart.data.datasets[0].data = rsiData.map((rsi, i) => ({
+                        x: chartDates[i],
+                        y: rsi
+                    }));
+                    rsiChart.update();
+                }
+            }
+
+            // MACD-Chart aktualisieren (ähnliche Logik wie beim RSI)
+            if (macdChart && stockData.indicators &&
+                stockData.indicators.macd &&
+                stockData.indicators.macd_signal &&
+                stockData.indicators.macd_histogram) {
+
+                // Dieselbe Logik für Offset und gefilterte Indizes wie beim RSI
+                const indicatorLength = stockData.indicators.macd.length;
+                const priceLength = stockData.price_data.length;
+                const offset = Math.max(0, priceLength - indicatorLength);
+
+                const filteredIndices = filteredData.map(d => {
+                    return stockData.price_data.findIndex(p => p.date === d.date);
+                }).filter(idx => idx !== -1);
+
+                // MACD-Daten extrahieren
+                const macdData = [], macdSignalData = [], macdHistData = [];
+
+                filteredIndices.forEach(idx => {
+                    const adjustedIdx = idx - offset;
+                    if (adjustedIdx >= 0 && adjustedIdx < stockData.indicators.macd.length) {
+                        macdData.push(stockData.indicators.macd[adjustedIdx]);
+                        macdSignalData.push(stockData.indicators.macd_signal[adjustedIdx]);
+                        macdHistData.push(stockData.indicators.macd_histogram[adjustedIdx]);
+                    }
+                });
+
+                // Chart aktualisieren, wenn Daten vorhanden sind
+                if (macdData.length > 0) {
+                    macdChart.data.datasets[0].data = macdHistData.map((hist, i) => ({
+                        x: chartDates[i],
+                        y: hist
+                    }));
+                    macdChart.data.datasets[1].data = macdData.map((macd, i) => ({
+                        x: chartDates[i],
+                        y: macd
+                    }));
+                    macdChart.data.datasets[2].data = macdSignalData.map((signal, i) => ({
+                        x: chartDates[i],
+                        y: signal
+                    }));
+                    macdChart.update();
+                }
             }
 
             // Weitere Charts aktualisieren...
+            // (Folgt dem gleichen Muster wie RSI und MACD)
+
+            // Stochastic Chart
+            if (stochasticChart && stockData.indicators &&
+                stockData.indicators.stoch_k &&
+                stockData.indicators.stoch_d) {
+
+                const indicatorLength = stockData.indicators.stoch_k.length;
+                const priceLength = stockData.price_data.length;
+                const offset = Math.max(0, priceLength - indicatorLength);
+
+                const filteredIndices = filteredData.map(d => {
+                    return stockData.price_data.findIndex(p => p.date === d.date);
+                }).filter(idx => idx !== -1);
+
+                const kData = [], dData = [];
+
+                filteredIndices.forEach(idx => {
+                    const adjustedIdx = idx - offset;
+                    if (adjustedIdx >= 0 && adjustedIdx < stockData.indicators.stoch_k.length) {
+                        kData.push(stockData.indicators.stoch_k[adjustedIdx]);
+                        dData.push(stockData.indicators.stoch_d[adjustedIdx]);
+                    }
+                });
+
+                if (kData.length > 0) {
+                    stochasticChart.data.datasets[0].data = kData.map((k, i) => ({
+                        x: chartDates[i],
+                        y: k
+                    }));
+                    stochasticChart.data.datasets[1].data = dData.map((d, i) => ({
+                        x: chartDates[i],
+                        y: d
+                    }));
+                    stochasticChart.update();
+                }
+            }
+            // Bolesche Flagge, um zu prüfen, ob die Indikatoren in den API-Daten vorhanden sind
+            console.log("Verfügbare Indikatoren:", Object.keys(stockData.indicators));
+
+            // ROC Chart (Rate of Change)
+            const rocCtx = document.getElementById('roc-chart');
+            if (rocCtx) {
+                if (!window.rocChart) {
+                    // ROC Chart initialisieren, falls noch nicht geschehen
+                    window.rocChart = new Chart(rocCtx.getContext('2d'), {
+                        type: 'line',
+                        data: {
+                            datasets: [
+                                {
+                                    label: 'Rate of Change (14)',
+                                    borderColor: 'rgb(75, 192, 192)',
+                                    backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                                    fill: false,
+                                    data: []
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            scales: {
+                                x: {
+                                    type: 'time',
+                                    time: {
+                                        unit: 'day',
+                                        tooltipFormat: 'dd.MM.yyyy'
+                                    }
+                                }
+                            },
+                            plugins: {
+                                annotation: {
+                                    annotations: {
+                                        zeroline: {
+                                            type: 'line',
+                                            yMin: 0,
+                                            yMax: 0,
+                                            borderColor: 'rgba(0, 0, 0, 0.5)',
+                                            borderWidth: 1,
+                                            borderDash: [5, 5]
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+
+                // ROC Werte berechnen, falls nicht in API vorhanden
+                if (!stockData.indicators.roc && filteredData.length > 14) {
+                    const rocPeriod = 14;
+                    const rocValues = [];
+
+                    for (let i = 0; i < filteredData.length; i++) {
+                        if (i >= rocPeriod) {
+                            const currentPrice = filteredData[i].close_price;
+                            const oldPrice = filteredData[i - rocPeriod].close_price;
+                            const roc = ((currentPrice - oldPrice) / oldPrice) * 100;
+                            rocValues.push({
+                                x: new Date(filteredData[i].date),
+                                y: roc
+                            });
+                        } else {
+                            rocValues.push({
+                                x: new Date(filteredData[i].date),
+                                y: null
+                            });
+                        }
+                    }
+
+                    window.rocChart.data.datasets[0].data = rocValues;
+                    window.rocChart.update();
+                } else if (stockData.indicators.roc) {
+                    // ROC aus API verwenden, falls vorhanden
+                    const indicatorLength = stockData.indicators.roc.length;
+                    const priceLength = stockData.price_data.length;
+                    const offset = Math.max(0, priceLength - indicatorLength);
+
+                    const filteredIndices = filteredData.map(d => {
+                        return stockData.price_data.findIndex(p => p.date === d.date);
+                    }).filter(idx => idx !== -1);
+
+                    const rocData = [];
+
+                    filteredIndices.forEach(idx => {
+                        const adjustedIdx = idx - offset;
+                        if (adjustedIdx >= 0 && adjustedIdx < indicatorLength) {
+                            rocData.push({
+                                x: chartDates[filteredIndices.indexOf(idx)],
+                                y: stockData.indicators.roc[adjustedIdx]
+                            });
+                        }
+                    });
+
+                    window.rocChart.data.datasets[0].data = rocData;
+                    window.rocChart.update();
+                }
+            }
+
+            // SMA Chart
+            if (smaChart && stockData.indicators) {
+                // Sicherstellen, dass die Preisdaten verfügbar sind
+                const priceData = filteredData.map(d => ({
+                    x: new Date(d.date),
+                    y: d.close_price
+                }));
+
+                // Preisdaten setzen
+                smaChart.data.datasets[0].data = priceData;
+
+                // SMA-Indikatoren setzen
+                const smaTypes = ['sma_20', 'sma_50', 'sma_200'];
+                smaTypes.forEach((smaType, index) => {
+                    if (!stockData.indicators[smaType]) return;
+
+                    const indicatorLength = stockData.indicators[smaType].length;
+                    const priceLength = stockData.price_data.length;
+                    const offset = Math.max(0, priceLength - indicatorLength);
+
+                    const filteredIndices = filteredData.map(d => {
+                        return stockData.price_data.findIndex(p => p.date === d.date);
+                    }).filter(idx => idx !== -1);
+
+                    const smaData = [];
+
+                    filteredIndices.forEach(idx => {
+                        const adjustedIdx = idx - offset;
+                        if (adjustedIdx >= 0 && adjustedIdx < indicatorLength) {
+                            smaData.push({
+                                x: new Date(filteredData[filteredIndices.indexOf(idx)].date),
+                                y: stockData.indicators[smaType][adjustedIdx]
+                            });
+                        }
+                    });
+
+                    smaChart.data.datasets[index + 1].data = smaData;
+                });
+
+                smaChart.update();
+            }
+
+            // Bollinger Bands Chart
+            if (bollingerChart && stockData.indicators) {
+                // Preisdaten setzen
+                const priceData = filteredData.map(d => ({
+                    x: new Date(d.date),
+                    y: d.close_price
+                }));
+
+                bollingerChart.data.datasets[0].data = priceData;
+
+                // Bollinger Indikatoren setzen
+                const bollingerTypes = ['sma_20', 'bollinger_upper', 'bollinger_lower'];
+                bollingerTypes.forEach((indicator, index) => {
+                    if (!stockData.indicators[indicator]) return;
+
+                    const indicatorLength = stockData.indicators[indicator].length;
+                    const priceLength = stockData.price_data.length;
+                    const offset = Math.max(0, priceLength - indicatorLength);
+
+                    const filteredIndices = filteredData.map(d => {
+                        return stockData.price_data.findIndex(p => p.date === d.date);
+                    }).filter(idx => idx !== -1);
+
+                    const indicatorData = [];
+
+                    filteredIndices.forEach(idx => {
+                        const adjustedIdx = idx - offset;
+                        if (adjustedIdx >= 0 && adjustedIdx < indicatorLength) {
+                            indicatorData.push({
+                                x: new Date(filteredData[filteredIndices.indexOf(idx)].date),
+                                y: stockData.indicators[indicator][adjustedIdx]
+                            });
+                        }
+                    });
+
+                    bollingerChart.data.datasets[index + 1].data = indicatorData;
+                });
+
+                bollingerChart.update();
+            }
+
+            // Volume Chart
+            if (volumeChart && filteredData.length > 0) {
+                volumeChart.data.datasets[0].data = filteredData.map(d => ({
+                    x: new Date(d.date),
+                    y: d.volume
+                }));
+                volumeChart.update();
+            }
+
+            // OBV Chart
+            if (obvChart && stockData.indicators && stockData.indicators.obv) {
+                const indicatorLength = stockData.indicators.obv.length;
+                const priceLength = stockData.price_data.length;
+                const offset = Math.max(0, priceLength - indicatorLength);
+
+                const filteredIndices = filteredData.map(d => {
+                    return stockData.price_data.findIndex(p => p.date === d.date);
+                }).filter(idx => idx !== -1);
+
+                const obvData = [];
+
+                filteredIndices.forEach(idx => {
+                    const adjustedIdx = idx - offset;
+                    if (adjustedIdx >= 0 && adjustedIdx < indicatorLength) {
+                        obvData.push(stockData.indicators.obv[adjustedIdx]);
+                    } else {
+                        obvData.push(null);
+                    }
+                });
+
+                if (obvData.length > 0) {
+                    obvChart.data.datasets[0].data = obvData.map((value, i) => ({
+                        x: chartDates[i],
+                        y: value
+                    }));
+                    obvChart.update();
+                }
+            }
+
+            // ATR Chart
+            if (atrChart && stockData.indicators && stockData.indicators.atr) {
+                const indicatorLength = stockData.indicators.atr.length;
+                const priceLength = stockData.price_data.length;
+                const offset = Math.max(0, priceLength - indicatorLength);
+
+                const filteredIndices = filteredData.map(d => {
+                    return stockData.price_data.findIndex(p => p.date === d.date);
+                }).filter(idx => idx !== -1);
+
+                const atrData = [];
+
+                filteredIndices.forEach(idx => {
+                    const adjustedIdx = idx - offset;
+                    if (adjustedIdx >= 0 && adjustedIdx < indicatorLength) {
+                        atrData.push(stockData.indicators.atr[adjustedIdx]);
+                    } else {
+                        atrData.push(null);
+                    }
+                });
+
+                if (atrData.length > 0) {
+                    atrChart.data.datasets[0].data = atrData.map((value, i) => ({
+                        x: chartDates[i],
+                        y: value
+                    }));
+                    atrChart.update();
+                }
+            }
+
+            // ADX Chart
+            const adxCtx = document.getElementById('adx-chart');
+            if (adxCtx && stockData.indicators && stockData.indicators.adx) {
+                if (!window.adxChart) {
+                    // Initialisieren, falls noch nicht geschehen
+                    window.adxChart = new Chart(adxCtx.getContext('2d'), {
+                        type: 'line',
+                        data: {
+                            datasets: [
+                                {
+                                    label: 'ADX',
+                                    borderColor: 'rgb(153, 102, 255)',
+                                    fill: false,
+                                    data: []
+                                },
+                                {
+                                    label: '+DI',
+                                    borderColor: 'rgb(75, 192, 192)',
+                                    fill: false,
+                                    data: []
+                                },
+                                {
+                                    label: '-DI',
+                                    borderColor: 'rgb(255, 99, 132)',
+                                    fill: false,
+                                    data: []
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            scales: {
+                                x: {
+                                    type: 'time',
+                                    time: {
+                                        unit: 'day',
+                                        tooltipFormat: 'dd.MM.yyyy'
+                                    }
+                                },
+                                y: {
+                                    min: 0,
+                                    max: 100
+                                }
+                            }
+                        }
+                    });
+                }
+
+                const indicatorsMappings = [
+                    { data: stockData.indicators.adx, index: 0 },
+                    { data: stockData.indicators['+di'], index: 1 },
+                    { data: stockData.indicators['-di'], index: 2 }
+                ];
+
+                indicatorsMappings.forEach(indicator => {
+                    if (!indicator.data) return;
+
+                    const indicatorLength = indicator.data.length;
+                    const priceLength = stockData.price_data.length;
+                    const offset = Math.max(0, priceLength - indicatorLength);
+
+                    const filteredIndices = filteredData.map(d => {
+                        return stockData.price_data.findIndex(p => p.date === d.date);
+                    }).filter(idx => idx !== -1);
+
+                    const chartData = [];
+
+                    filteredIndices.forEach(idx => {
+                        const adjustedIdx = idx - offset;
+                        if (adjustedIdx >= 0 && adjustedIdx < indicatorLength) {
+                            chartData.push(indicator.data[adjustedIdx]);
+                        } else {
+                            chartData.push(null);
+                        }
+                    });
+
+                    if (chartData.length > 0) {
+                        window.adxChart.data.datasets[indicator.index].data = chartData.map((value, i) => ({
+                            x: chartDates[i],
+                            y: value
+                        }));
+                    }
+                });
+
+                window.adxChart.update();
+            }
+
+            // Ichimoku Cloud Chart
+            const ichimokuCtx = document.getElementById('ichimoku-chart');
+            if (ichimokuCtx && stockData.indicators) {
+                const hasIchimokuData = stockData.indicators.tenkan_sen ||
+                                      stockData.indicators.kijun_sen ||
+                                      stockData.indicators.senkou_span_a ||
+                                      stockData.indicators.senkou_span_b;
+
+                if (hasIchimokuData && !window.ichimokuChart) {
+                    // Initialisieren, falls noch nicht geschehen
+                    window.ichimokuChart = new Chart(ichimokuCtx.getContext('2d'), {
+                        type: 'line',
+                        data: {
+                            datasets: [
+                                {
+                                    label: 'Preis',
+                                    borderColor: 'rgb(0, 0, 0)',
+                                    fill: false,
+                                    order: 1,
+                                    data: []
+                                },
+                                {
+                                    label: 'Tenkan-sen',
+                                    borderColor: 'rgb(255, 99, 132)',
+                                    fill: false,
+                                    order: 2,
+                                    data: []
+                                },
+                                {
+                                    label: 'Kijun-sen',
+                                    borderColor: 'rgb(54, 162, 235)',
+                                    fill: false,
+                                    order: 3,
+                                    data: []
+                                },
+                                {
+                                    label: 'Senkou Span A',
+                                    borderColor: 'rgba(75, 192, 192, 0.7)',
+                                    fill: '+1',
+                                    order: 4,
+                                    data: []
+                                },
+                                {
+                                    label: 'Senkou Span B',
+                                    borderColor: 'rgba(255, 159, 64, 0.7)',
+                                    backgroundColor: 'rgba(234, 234, 234, 0.3)',
+                                    fill: '-1',
+                                    order: 5,
+                                    data: []
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            scales: {
+                                x: {
+                                    type: 'time',
+                                    time: {
+                                        unit: 'day',
+                                        tooltipFormat: 'dd.MM.yyyy'
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+
+                if (window.ichimokuChart) {
+                    // Preisdaten
+                    window.ichimokuChart.data.datasets[0].data = filteredData.map(d => ({
+                        x: new Date(d.date),
+                        y: d.close_price
+                    }));
+
+                    // Ichimoku-Komponenten
+                    const ichimokuComponents = [
+                        { key: 'tenkan_sen', index: 1 },
+                        { key: 'kijun_sen', index: 2 },
+                        { key: 'senkou_span_a', index: 3 },
+                        { key: 'senkou_span_b', index: 4 }
+                    ];
+
+                    ichimokuComponents.forEach(component => {
+                        if (!stockData.indicators[component.key]) return;
+
+                        const indicatorLength = stockData.indicators[component.key].length;
+                        const priceLength = stockData.price_data.length;
+                        const offset = Math.max(0, priceLength - indicatorLength);
+
+                        const filteredIndices = filteredData.map(d => {
+                            return stockData.price_data.findIndex(p => p.date === d.date);
+                        }).filter(idx => idx !== -1);
+
+                        const componentData = [];
+
+                        filteredIndices.forEach(idx => {
+                            const adjustedIdx = idx - offset;
+                            if (adjustedIdx >= 0 && adjustedIdx < indicatorLength) {
+                                componentData.push(stockData.indicators[component.key][adjustedIdx]);
+                            } else {
+                                componentData.push(null);
+                            }
+                        });
+
+                        if (componentData.length > 0) {
+                            window.ichimokuChart.data.datasets[component.index].data = componentData.map((value, i) => ({
+                                x: chartDates[i],
+                                y: value
+                            }));
+                        }
+                    });
+
+                    window.ichimokuChart.update();
+                }
+            }
+
+            // PSAR Chart
+            const psarCtx = document.getElementById('psar-chart');
+            if (psarCtx && stockData.indicators && stockData.indicators.psar) {
+                if (!window.psarChart) {
+                    // Initialisieren, falls noch nicht geschehen
+                    window.psarChart = new Chart(psarCtx.getContext('2d'), {
+                        type: 'line',
+                        data: {
+                            datasets: [
+                                {
+                                    label: 'Preis',
+                                    borderColor: 'rgb(54, 162, 235)',
+                                    backgroundColor: 'rgba(54, 162, 235, 0.1)',
+                                    fill: false,
+                                    order: 1,
+                                    data: []
+                                },
+                                {
+                                    label: 'PSAR',
+                                    borderColor: 'rgb(255, 99, 132)',
+                                    pointStyle: 'rectRot',
+                                    pointRadius: 4,
+                                    showLine: false,
+                                    order: 2,
+                                    data: []
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            scales: {
+                                x: {
+                                    type: 'time',
+                                    time: {
+                                        unit: 'day',
+                                        tooltipFormat: 'dd.MM.yyyy'
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+
+                if (window.psarChart) {
+                    // Preisdaten aktualisieren
+                    window.psarChart.data.datasets[0].data = filteredData.map(d => ({
+                        x: new Date(d.date),
+                        y: d.close_price
+                    }));
+
+                    // PSAR-Daten aktualisieren
+                    const indicatorLength = stockData.indicators.psar.length;
+                    const priceLength = stockData.price_data.length;
+                    const offset = Math.max(0, priceLength - indicatorLength);
+
+                    const filteredIndices = filteredData.map(d => {
+                        return stockData.price_data.findIndex(p => p.date === d.date);
+                    }).filter(idx => idx !== -1);
+
+                    const psarData = [];
+
+                    filteredIndices.forEach(idx => {
+                        const adjustedIdx = idx - offset;
+                        if (adjustedIdx >= 0 && adjustedIdx < indicatorLength) {
+                            psarData.push(stockData.indicators.psar[adjustedIdx]);
+                        } else {
+                            psarData.push(null);
+                        }
+                    });
+
+                    if (psarData.length > 0) {
+                        window.psarChart.data.datasets[1].data = psarData.map((value, i) => ({
+                            x: chartDates[i],
+                            y: value
+                        }));
+                    }
+
+                    window.psarChart.update();
+                }
+            }
+
+        } catch (error) {
+            console.error('Fehler beim Aktualisieren der Charts:', error);
         }
-    });
+    }
+});
 </script>
 {% endblock %}

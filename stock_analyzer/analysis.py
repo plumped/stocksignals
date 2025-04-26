@@ -48,6 +48,10 @@ class TechnicalAnalyzer:
         # ATR (Average True Range)
         self._calculate_atr()
 
+        self._calculate_roc()
+
+        self._calculate_psar()
+
         return self.df
 
     def _calculate_rsi(self, period=14):
@@ -352,6 +356,67 @@ class TechnicalAnalyzer:
             }
         }
 
+    def _calculate_psar(self, af_start=0.02, af_increment=0.02, af_max=0.2):
+        """Berechnet den Parabolic SAR Indikator"""
+        high = self.df['high_price']
+        low = self.df['low_price']
+        close = self.df['close_price']
+
+        psar = close.copy()
+        bull = True  # Aufwärtstrend zu Beginn
+        af = af_start  # Acceleration Factor
+
+        # Extrempunkte
+        ep = low[0]  # Extrempunkt, starten mit tiefem Wert
+        hp = high[0]  # Höchster Punkt im aktuellen Trend
+        lp = low[0]  # Niedrigster Punkt im aktuellen Trend
+
+        for i in range(2, len(close)):
+            # Vorherige Werte
+            psar[i] = psar[i - 1] + af * (ep - psar[i - 1])
+
+            # Trendumkehr überprüfen
+            reverse = False
+
+            if bull:
+                # Aufwärtstrend
+                if low[i] < psar[i]:
+                    bull = False  # Zu Abwärtstrend wechseln
+                    reverse = True
+                    psar[i] = hp  # Setzen SAR auf höchsten Punkt
+                    ep = low[i]  # Extrempunkt auf niedrigsten Punkt
+                    af = af_start  # AF zurücksetzen
+                else:
+                    if high[i] > hp:
+                        hp = high[i]  # Höchsten Punkt aktualisieren
+                        ep = hp  # Extrempunkt aktualisieren
+                        af = min(af + af_increment, af_max)  # AF erhöhen
+            else:
+                # Abwärtstrend
+                if high[i] > psar[i]:
+                    bull = True  # Zu Aufwärtstrend wechseln
+                    reverse = True
+                    psar[i] = lp  # Setzen SAR auf niedrigsten Punkt
+                    ep = high[i]  # Extrempunkt auf höchsten Punkt
+                    af = af_start  # AF zurücksetzen
+                else:
+                    if low[i] < lp:
+                        lp = low[i]  # Niedrigsten Punkt aktualisieren
+                        ep = lp  # Extrempunkt aktualisieren
+                        af = min(af + af_increment, af_max)  # AF erhöhen
+
+            # Begrenzung des SAR-Werts
+            if bull:
+                psar[i] = min(psar[i], low[i - 1], low[i - 2])
+            else:
+                psar[i] = max(psar[i], high[i - 1], high[i - 2])
+
+        self.df['psar'] = psar
+
+    def _calculate_roc(self, period=14):
+        """Berechnet den Rate of Change (ROC) Indikator"""
+        self.df['roc'] = self.df['close_price'].pct_change(period) * 100
+
     def save_analysis_result(self):
         """Speichert das Analyseergebnis in der Datenbank"""
         result = self.calculate_technical_score()
@@ -422,3 +487,5 @@ def _calculate_indicators_for_dataframe(self, df):
     df_copy['bollinger_lower'] = df_copy['bollinger_middle'] - 2 * std
 
     return df_copy
+
+
