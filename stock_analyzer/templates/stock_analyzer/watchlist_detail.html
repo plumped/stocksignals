@@ -1,0 +1,306 @@
+{% extends 'stock_analyzer/base.html' %}
+{% load stock_tags %}
+
+{% block title %}{{ watchlist.name }} - Watchlist{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Watchlist: {{ watchlist.name }}</h2>
+    <div>
+        <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addStockModal">
+            <i class="bi bi-plus-circle"></i> Aktie hinzufügen
+        </button>
+        <a href="{% url 'my_watchlists' %}" class="btn btn-outline-secondary ms-2">
+            <i class="bi bi-arrow-left"></i> Zurück
+        </a>
+    </div>
+</div>
+
+{% if stocks %}
+<div class="card mb-4">
+    <div class="card-header">
+        Aktien in dieser Watchlist
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Name</th>
+                        <th>Sektor</th>
+                        <th>Letzter Kurs</th>
+                        <th>Score</th>
+                        <th>Empfehlung</th>
+                        <th>Aktionen</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for stock in stocks %}
+                    <tr>
+                        <td><a href="{% url 'stock_detail' stock.symbol %}">{{ stock.symbol }}</a></td>
+                        <td>{{ stock.name }}</td>
+                        <td>{{ stock.sector|default:"-" }}</td>
+                        <td>
+                            {% with last_data=stock.historical_data.first %}
+                            {% if last_data %}
+                                {{ last_data.close_price }} €
+                            {% else %}
+                                -
+                            {% endif %}
+                            {% endwith %}
+                        </td>
+                        <td>
+                            {% if stock.id in latest_analyses %}
+                            <div class="progress">
+                                {% with analysis=latest_analyses|get_item:stock.id %}
+                                {% if analysis.technical_score >= 70 %}
+                                    <div class="progress-bar bg-success" style="width: {{ analysis.technical_score }}%">{{ analysis.technical_score }}</div>
+                                {% elif analysis.technical_score <= 30 %}
+                                    <div class="progress-bar bg-danger" style="width: {{ analysis.technical_score }}%">{{ analysis.technical_score }}</div>
+                                {% else %}
+                                    <div class="progress-bar bg-warning" style="width: {{ analysis.technical_score }}%">{{ analysis.technical_score }}</div>
+                                {% endif %}
+                                {% endwith %}
+                            </div>
+                            {% else %}
+                            <span class="text-muted">Keine Analyse</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if stock.id in latest_analyses %}
+                            {% with analysis=latest_analyses|get_item:stock.id %}
+                            {% if analysis.recommendation == 'BUY' %}
+                                <span class="badge bg-success">KAUFEN</span>
+                            {% elif analysis.recommendation == 'SELL' %}
+                                <span class="badge bg-danger">VERKAUFEN</span>
+                            {% else %}
+                                <span class="badge bg-warning">HALTEN</span>
+                            {% endif %}
+                            {% endwith %}
+                            {% else %}
+                            <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <button class="btn btn-sm btn-outline-danger remove-stock" data-stock-id="{{ stock.id }}" data-watchlist-id="{{ watchlist.id }}">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <div class="card-footer">
+        <button class="btn btn-primary" id="analyze-all-button">
+            <i class="bi bi-graph-up"></i> Alle analysieren
+        </button>
+        <a href="{% url 'export_watchlist' watchlist.id %}" class="btn btn-outline-secondary">
+            <i class="bi bi-download"></i> Als CSV exportieren
+        </a>
+    </div>
+</div>
+{% else %}
+<div class="alert alert-info text-center">
+    <p>Diese Watchlist enthält noch keine Aktien.</p>
+    <p>Füge Aktien hinzu, um sie zu verfolgen und zu analysieren.</p>
+</div>
+{% endif %}
+
+<!-- Modal für Aktien hinzufügen -->
+<div class="modal fade" id="addStockModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Aktie zur Watchlist hinzufügen</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label for="stock-search" class="form-label">Aktie suchen</label>
+                    <input type="text" class="form-control" id="stock-search" placeholder="Symbol oder Name eingeben">
+                </div>
+                <div id="search-results"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Schließen</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Aktie zur Watchlist hinzufügen
+        const stockSearch = document.getElementById('stock-search');
+        const searchResults = document.getElementById('search-results');
+
+        stockSearch.addEventListener('input', function() {
+            const query = this.value.trim();
+            if (query.length < 2) {
+                searchResults.innerHTML = '';
+                return;
+            }
+
+            fetch(`/search/?q=${query}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.results.length > 0) {
+                        let html = '<div class="list-group mt-3">';
+                        data.results.forEach(stock => {
+                            html += `
+                                <button type="button" class="list-group-item list-group-item-action add-stock-item"
+                                  data-stock-id="${stock.id}"
+                                  data-stock-symbol="${stock.symbol}"
+                                  data-watchlist-id="{{ watchlist.id }}">
+                                    <strong>${stock.symbol}</strong> - ${stock.name}
+                                    <small class="text-muted">${stock.sector || ''}</small>
+                                </button>
+                            `;
+                        });
+                        html += '</div>';
+                        searchResults.innerHTML = html;
+
+                        // Event-Listener für die Suchergebnis-Buttons
+                        document.querySelectorAll('.add-stock-item').forEach(item => {
+                            item.addEventListener('click', function() {
+                                console.log('Aktie wurde angeklickt');
+                                const stockId = this.dataset.stockId;
+                                const stockSymbol = this.dataset.stockSymbol;
+                                const watchlistId = this.dataset.watchlistId;
+
+                                console.log(`Stock ID: ${stockId}, Symbol: ${stockSymbol}, Watchlist ID: ${watchlistId}`);
+
+                                if (stockId == 0) {
+                                    // Aktie existiert noch nicht -> erst anlegen
+                                    console.log(`Aktie ${stockSymbol} wird erstellt...`);
+                                    fetch(`/analyze/${stockSymbol}/`)
+                                        .then(response => {
+                                            if (!response.ok) {
+                                                throw new Error('Fehler beim Erstellen der Aktie (Analyze fehlgeschlagen)');
+                                            }
+                                            return response.json();
+                                        })
+                                        .then(data => {
+                                            if (data.status === 'success') {
+                                                console.log('Aktie erfolgreich erstellt. Watchlist wird aktualisiert...');
+                                                // Nach der Analyse nochmals Suche triggern oder Seite neu laden
+                                                window.location.reload();
+                                            } else {
+                                                alert('Fehler beim Erstellen der Aktie: ' + (data.message || 'Unbekannter Fehler'));
+                                            }
+                                        })
+                                        .catch(error => {
+                                            console.error('Fehler beim Erstellen der Aktie:', error);
+                                            alert('Fehler beim Erstellen der Aktie: ' + error.message);
+                                        });
+                                } else {
+                                    // Aktie existiert -> Direkt zur Watchlist hinzufügen
+                                    fetch('/watchlists/add/', {
+                                        method: 'POST',
+                                        headers: {
+                                            'Content-Type': 'application/x-www-form-urlencoded',
+                                            'X-CSRFToken': '{{ csrf_token }}'
+                                        },
+                                        body: `stock_id=${stockId}&watchlist_id=${watchlistId}`
+                                    })
+                                    .then(response => {
+                                        if (!response.ok) {
+                                            throw new Error('Serverantwort war kein OK (Status ' + response.status + ')');
+                                        }
+                                        return response.json();
+                                    })
+                                    .then(data => {
+                                        if (data.status === 'success') {
+                                            window.location.reload();
+                                        } else {
+                                            alert('Fehler beim Hinzufügen der Aktie: ' + (data.message || 'Unbekannter Fehler'));
+                                        }
+                                    })
+                                    .catch(error => {
+                                        console.error('Fehler beim Hinzufügen:', error);
+                                        alert('Fehler beim Hinzufügen: ' + error.message);
+                                    });
+                                }
+                            });
+                        });
+                    } else {
+                        searchResults.innerHTML = '<p class="text-muted">Keine Ergebnisse gefunden.</p>';
+                    }
+                });
+        });
+
+        // Aktie aus Watchlist entfernen
+        document.querySelectorAll('.remove-stock').forEach(btn => {
+            btn.addEventListener('click', function() {
+                if (confirm('Bist du sicher, dass du diese Aktie aus der Watchlist entfernen möchtest?')) {
+                    const stockId = this.dataset.stockId;
+                    const watchlistId = this.dataset.watchlistId;
+
+                    fetch('/watchlists/remove/', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                            'X-CSRFToken': '{{ csrf_token }}'
+                        },
+                        body: `stock_id=${stockId}&watchlist_id=${watchlistId}`
+                    })
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error('Serverantwort war kein OK (Status ' + response.status + ')');
+                        }
+                        return response.json();
+                    })
+                    .then(data => {
+                        if (data.status === 'success') {
+                            window.location.reload();
+                        } else {
+                            alert('Fehler beim Entfernen der Aktie: ' + (data.message || 'Unbekannter Fehler'));
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Fehler beim Entfernen:', error);
+                        alert('Fehler: ' + error.message);
+                    });
+                }
+            });
+        });
+
+        // Alle Aktien analysieren
+        const analyzeAllButton = document.getElementById('analyze-all-button');
+        if (analyzeAllButton) {
+            analyzeAllButton.addEventListener('click', function() {
+                this.disabled = true;
+                this.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Analysiere...';
+
+                const symbols = [];
+                {% for stock in stocks %}
+                symbols.push('{{ stock.symbol }}');
+                {% endfor %}
+
+                fetch('/batch-analyze/', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'X-CSRFToken': '{{ csrf_token }}'
+                    },
+                    body: symbols.map(s => `symbols=${s}`).join('&')
+                })
+                .then(response => response.json())
+                .then(data => {
+                    window.location.reload();
+                })
+                .catch(error => {
+                    alert(`Fehler: ${error.message}`);
+                    this.disabled = false;
+                    this.innerHTML = '<i class="bi bi-graph-up"></i> Alle analysieren';
+                });
+            });
+        }
+    });
+</script>
+{% endblock %}

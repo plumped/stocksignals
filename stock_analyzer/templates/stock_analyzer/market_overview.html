@@ -1,0 +1,162 @@
+<!-- stock_analyzer/templates/stock_analyzer/market_overview.html -->
+{% extends 'stock_analyzer/base.html' %}
+
+{% block title %}Marktübersicht{% endblock %}
+
+{% block content %}
+<h2 class="mb-4">Marktübersicht</h2>
+
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                Marktbreite
+            </div>
+            <div class="card-body">
+                {% if market_breadth %}
+                <div class="text-center mb-3">
+                    <h4>Marktstatus:
+                        {% if market_breadth.market_state == 'Bullisch' %}
+                            <span class="text-success">Bullisch</span>
+                        {% elif market_breadth.market_state == 'Bearisch' %}
+                            <span class="text-danger">Bearisch</span>
+                        {% else %}
+                            <span class="text-warning">Neutral</span>
+                        {% endif %}
+                    </h4>
+                </div>
+                <div class="progress mb-3" style="height: 30px;">
+                    <div class="progress-bar bg-success" role="progressbar" style="width: {{ market_breadth.above_percent }}%">
+                        {{ market_breadth.above_percent|floatformat:1 }}% über MA50
+                    </div>
+                    <div class="progress-bar bg-danger" role="progressbar" style="width: {{ market_breadth.below_percent }}%">
+                        {{ market_breadth.below_percent|floatformat:1 }}% unter MA50
+                    </div>
+                </div>
+                <div class="text-center">
+                    <p>{{ market_breadth.above_ma50 }} Aktien über 50-Tage-Durchschnitt</p>
+                    <p>{{ market_breadth.below_ma50 }} Aktien unter 50-Tage-Durchschnitt</p>
+                    <p>Gesamt analysiert: {{ market_breadth.total_analyzed }}</p>
+                </div>
+                {% else %}
+                <p class="text-center">Keine Daten zur Marktbreite verfügbar</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header bg-info text-white">
+                Sektorperformance (30 Tage)
+            </div>
+            <div class="card-body">
+                {% if sector_performance %}
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>Sektor</th>
+                                <th>Performance</th>
+                                <th>Anzahl Aktien</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for sector, data in sector_performance.items %}
+                            <tr>
+                                <td>{{ sector }}</td>
+                                <td>
+                                    {% if data.performance > 0 %}
+                                        <span class="text-success">+{{ data.performance|floatformat:2 }}%</span>
+                                    {% else %}
+                                        <span class="text-danger">{{ data.performance|floatformat:2 }}%</span>
+                                    {% endif %}
+                                </td>
+                                <td>{{ data.stock_count }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <p class="text-center">Keine Daten zur Sektorperformance verfügbar</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header bg-success text-white">
+                Top-Performer (7 Tage)
+            </div>
+            <div class="card-body">
+                {% if top_performers %}
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Name</th>
+                                <th>Sektor</th>
+                                <th>Performance</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for stock in top_performers %}
+                            <tr>
+                                <td><a href="{% url 'stock_detail' stock.symbol %}">{{ stock.symbol }}</a></td>
+                                <td>{{ stock.name }}</td>
+                                <td>{{ stock.sector }}</td>
+                                <td class="text-success">+{{ stock.performance|floatformat:2 }}%</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <p class="text-center">Keine Daten zu Top-Performern verfügbar</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header bg-danger text-white">
+                Underperformer (7 Tage)
+            </div>
+            <div class="card-body">
+                {% if worst_performers %}
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Name</th>
+                                <th>Sektor</th>
+                                <th>Performance</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for stock in worst_performers %}
+                            <tr>
+                                <td><a href="{% url 'stock_detail' stock.symbol %}">{{ stock.symbol }}</a></td>
+                                <td>{{ stock.name }}</td>
+                                <td>{{ stock.sector }}</td>
+                                <td class="text-danger">{{ stock.performance|floatformat:2 }}%</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <p class="text-center">Keine Daten zu Underperformern verfügbar</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

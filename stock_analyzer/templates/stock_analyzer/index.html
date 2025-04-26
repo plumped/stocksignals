@@ -1,0 +1,177 @@
+<!-- stock_analyzer/templates/stock_analyzer/index.html -->
+{% extends 'stock_analyzer/base.html' %}
+
+{% block title %}Trading Analyzer - Dashboard{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-8">
+        <h2>Dashboard</h2>
+        <div class="card mb-4">
+            <div class="card-header">
+                Neueste Analysen
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Name</th>
+                                <th>Datum</th>
+                                <th>Score</th>
+                                <th>Empfehlung</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for analysis in recent_analyses %}
+                            <tr>
+                                <td><a href="{% url 'stock_detail' analysis.stock.symbol %}">{{ analysis.stock.symbol }}</a></td>
+                                <td>{{ analysis.stock.name }}</td>
+                                <td>{{ analysis.date }}</td>
+                                <td>
+                                    <div class="progress">
+                                        {% if analysis.technical_score >= 70 %}
+                                            <div class="progress-bar bg-success" style="width: {{ analysis.technical_score }}%">{{ analysis.technical_score }}</div>
+                                        {% elif analysis.technical_score <= 30 %}
+                                            <div class="progress-bar bg-danger" style="width: {{ analysis.technical_score }}%">{{ analysis.technical_score }}</div>
+                                        {% else %}
+                                            <div class="progress-bar bg-warning" style="width: {{ analysis.technical_score }}%">{{ analysis.technical_score }}</div>
+                                        {% endif %}
+                                    </div>
+                                </td>
+                                <td>
+                                    {% if analysis.recommendation == 'BUY' %}
+                                        <span class="badge bg-success">KAUFEN</span>
+                                    {% elif analysis.recommendation == 'SELL' %}
+                                        <span class="badge bg-danger">VERKAUFEN</span>
+                                    {% else %}
+                                        <span class="badge bg-warning">HALTEN</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% empty %}
+                            <tr>
+                                <td colspan="5" class="text-center">Keine Analysen gefunden</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-4">
+        <div class="card mb-4">
+            <div class="card-header bg-success text-white">
+                Top Kaufempfehlungen
+            </div>
+            <div class="card-body">
+                <ul class="list-group">
+                    {% for analysis in buy_recommendations %}
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        <a href="{% url 'stock_detail' analysis.stock.symbol %}">
+                            {{ analysis.stock.symbol }} - {{ analysis.stock.name }}
+                        </a>
+                        <span class="badge bg-success rounded-pill">{{ analysis.technical_score }}</span>
+                    </li>
+                    {% empty %}
+                    <li class="list-group-item">Keine Kaufempfehlungen gefunden</li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header bg-danger text-white">
+                Top Verkaufsempfehlungen
+            </div>
+            <div class="card-body">
+                <ul class="list-group">
+                    {% for analysis in sell_recommendations %}
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        <a href="{% url 'stock_detail' analysis.stock.symbol %}">
+                            {{ analysis.stock.symbol }} - {{ analysis.stock.name }}
+                        </a>
+                        <span class="badge bg-danger rounded-pill">{{ analysis.technical_score }}</span>
+                    </li>
+                    {% empty %}
+                    <li class="list-group-item">Keine Verkaufsempfehlungen gefunden</li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                Schnellanalyse
+            </div>
+            <div class="card-body">
+                <form id="quick-analyze-form">
+                    <div class="mb-3">
+                        <label for="symbol-input" class="form-label">Aktien-Symbol</label>
+                        <input type="text" class="form-control" id="symbol-input" placeholder="z.B. AAPL, MSFT">
+                    </div>
+                    <button type="submit" class="btn btn-primary">Analysieren</button>
+                </form>
+                <div id="quick-result" class="mt-3"></div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const quickAnalyzeForm = document.getElementById('quick-analyze-form');
+        const quickResult = document.getElementById('quick-result');
+
+        quickAnalyzeForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            const symbol = document.getElementById('symbol-input').value.trim();
+            if (!symbol) return;
+
+            quickResult.innerHTML = '<div class="text-center"><div class="spinner-border" role="status"></div><p>Analysiere...</p></div>';
+
+            fetch(`/analyze/${symbol}/`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        let badgeClass = '';
+                        let recommendation = '';
+
+                        if (data.recommendation === 'BUY') {
+                            badgeClass = 'bg-success';
+                            recommendation = 'KAUFEN';
+                        } else if (data.recommendation === 'SELL') {
+                            badgeClass = 'bg-danger';
+                            recommendation = 'VERKAUFEN';
+                        } else {
+                            badgeClass = 'bg-warning';
+                            recommendation = 'HALTEN';
+                        }
+
+                        quickResult.innerHTML = `
+                            <div class="alert alert-info">
+                                <h5>${symbol}</h5>
+                                <div class="progress mb-2">
+                                    <div class="progress-bar ${badgeClass}" style="width: ${data.score}%">${data.score}</div>
+                                </div>
+                                <p>Empfehlung: <span class="badge ${badgeClass}">${recommendation}</span></p>
+                                <a href="/stock/${symbol}/" class="btn btn-sm btn-primary">Details anzeigen</a>
+                            </div>
+                        `;
+                    } else {
+                        quickResult.innerHTML = `<div class="alert alert-danger">${data.message || 'Fehler bei der Analyse'}</div>`;
+                    }
+                })
+                .catch(error => {
+                    quickResult.innerHTML = `<div class="alert alert-danger">Fehler: ${error.message}</div>`;
+                });
+        });
+    });
+</script>
+{% endblock %}

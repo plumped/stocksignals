@@ -1,0 +1,154 @@
+<!-- stock_analyzer/templates/stock_analyzer/my_watchlists.html -->
+{% extends 'stock_analyzer/base.html' %}
+{% load stock_tags %}
+
+{% block title %}Meine Watchlists{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Meine Watchlists</h2>
+    <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#createWatchlistModal">
+        <i class="bi bi-plus-circle"></i> Neue Watchlist erstellen
+    </button>
+</div>
+
+{% if watchlists %}
+<div class="row">
+    {% for watchlist in watchlists %}
+    <div class="col-md-6 mb-4">
+        <div class="card">
+            <div class="card-header">
+                {{ watchlist.name }}
+                <span class="badge bg-secondary ms-2">{{ watchlist.stocks.count }}</span>
+            </div>
+            <div class="card-body">
+                {% if watchlist.stocks.exists %}
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Name</th>
+                                <th>Score</th>
+                                <th>Empfehlung</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for stock in watchlist.stocks.all %}
+                            <tr>
+                                <td><a href="{% url 'stock_detail' stock.symbol %}">{{ stock.symbol }}</a></td>
+                                <td>{{ stock.name }}</td>
+                                <td>
+                                    {% if stock.id in latest_analyses %}
+                                    <div class="progress">
+                                        {% with analysis=latest_analyses|get_item:stock.id %}
+                                        {% if analysis.technical_score >= 70 %}
+                                            <div class="progress-bar bg-success" style="width: {{ analysis.technical_score }}%">{{ analysis.technical_score }}</div>
+                                        {% elif analysis.technical_score <= 30 %}
+                                            <div class="progress-bar bg-danger" style="width: {{ analysis.technical_score }}%">{{ analysis.technical_score }}</div>
+                                        {% else %}
+                                            <div class="progress-bar bg-warning" style="width: {{ analysis.technical_score }}%">{{ analysis.technical_score }}</div>
+                                        {% endif %}
+                                        {% endwith %}
+                                    </div>
+                                    {% else %}
+                                    <span class="text-muted">Keine Analyse</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if stock.id in latest_analyses %}
+                                    {% with analysis=latest_analyses|get_item:stock.id %}
+                                    {% if analysis.recommendation == 'BUY' %}
+                                        <span class="badge bg-success">KAUFEN</span>
+                                    {% elif analysis.recommendation == 'SELL' %}
+                                        <span class="badge bg-danger">VERKAUFEN</span>
+                                    {% else %}
+                                        <span class="badge bg-warning">HALTEN</span>
+                                    {% endif %}
+                                    {% endwith %}
+                                    {% else %}
+                                    <span class="text-muted">-</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <p class="text-center">Keine Aktien in dieser Watchlist</p>
+                {% endif %}
+            </div>
+            <div class="card-footer d-flex justify-content-between">
+                <a href="{% url 'watchlist_detail' watchlist.id %}" class="btn btn-outline-primary btn-sm">
+                    <i class="bi bi-eye"></i> Details
+                </a>
+                <button class="btn btn-outline-danger btn-sm delete-watchlist" data-id="{{ watchlist.id }}">
+                    <i class="bi bi-trash"></i> Löschen
+                </button>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="alert alert-info text-center">
+    <p>Du hast noch keine Watchlists erstellt.</p>
+    <p>Erstelle eine neue Watchlist, um deine Lieblingsaktien zu verfolgen.</p>
+</div>
+{% endif %}
+
+<!-- Modal für neue Watchlist -->
+<div class="modal fade" id="createWatchlistModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Neue Watchlist erstellen</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <form action="{% url 'create_watchlist' %}" method="post">
+                {% csrf_token %}
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label for="watchlist-name" class="form-label">Name der Watchlist</label>
+                        <input type="text" class="form-control" id="watchlist-name" name="name" required>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Abbrechen</button>
+                    <button type="submit" class="btn btn-primary">Erstellen</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Watchlist löschen
+        document.querySelectorAll('.delete-watchlist').forEach(btn => {
+            btn.addEventListener('click', function() {
+                if (confirm('Bist du sicher, dass du diese Watchlist löschen möchtest?')) {
+                    const id = this.dataset.id;
+                    // AJAX-Anfrage zum Löschen der Watchlist senden
+                    fetch(`/watchlists/${id}/delete/`, {
+                        method: 'POST',
+                        headers: {
+                            'X-CSRFToken': '{{ csrf_token }}'
+                        }
+                    })
+                    .then(response => {
+                        if (response.ok) {
+                            window.location.reload();
+                        } else {
+                            alert('Fehler beim Löschen der Watchlist');
+                        }
+                    });
+                }
+            });
+        });
+    });
+</script>
+{% endblock %}
