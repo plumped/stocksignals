@@ -5,7 +5,7 @@ from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
 
 from .backtesting import BacktestStrategy
-from .forms import IndicatorWeightForm, UserProfileForm
+from .forms import UserProfileForm
 from .market_analysis import MarketAnalyzer
 from .models import Stock, StockData, AnalysisResult, WatchList, UserProfile
 from .data_service import StockDataService
@@ -458,48 +458,6 @@ def user_profile_settings(request):
 
     return render(request, 'stock_analyzer/user_profile_settings.html', context)
 
-
-@login_required
-def indicator_weights_settings(request):
-    """Benutzereinstellungen für Indikatorgewichtungen"""
-    profile, created = UserProfile.objects.get_or_create(user=request.user)
-
-    # Standardwerte oder gespeicherte Werte abrufen
-    initial_values = profile.custom_weights if profile.custom_weights else {
-        'rsi_weight': 10,
-        'macd_weight': 10,
-        'sma_weight': 20,
-        'bollinger_weight': 10,
-        'stochastic_weight': 10,
-        'adx_weight': 10,
-        'ichimoku_weight': 10,
-        'obv_weight': 10
-    }
-
-    if request.method == 'POST':
-        form = IndicatorWeightForm(request.POST, initial=initial_values)
-        if form.is_valid():
-            profile.custom_weights = {
-                'rsi_weight': form.cleaned_data['rsi_weight'],
-                'macd_weight': form.cleaned_data['macd_weight'],
-                'sma_weight': form.cleaned_data['sma_weight'],
-                'bollinger_weight': form.cleaned_data['bollinger_weight'],
-                'stochastic_weight': form.cleaned_data['stochastic_weight'],
-                'adx_weight': form.cleaned_data['adx_weight'],
-                'ichimoku_weight': form.cleaned_data['ichimoku_weight'],
-                'obv_weight': form.cleaned_data['obv_weight']
-            }
-            profile.save()
-            messages.success(request, "Indikator-Gewichtungen erfolgreich gespeichert.")
-            return redirect('indicator_weights_settings')
-    else:
-        form = IndicatorWeightForm(initial=initial_values)
-
-    context = {
-        'form': form
-    }
-
-    return render(request, 'stock_analyzer/indicator_weights_settings.html', context)
 
 
 @login_required

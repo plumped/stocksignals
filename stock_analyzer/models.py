@@ -14,7 +14,6 @@ class UserProfile(models.Model):
 
     # Analyse-Präferenzen
     preferred_indicators = models.JSONField(default=dict)
-    custom_weights = models.JSONField(default=dict)
 
     # Risikoprofil (1-5, wobei 1 konservativ und 5 aggressiv ist)
     risk_profile = models.IntegerField(choices=[(i, str(i)) for i in range(1, 6)], default=3)

@@ -191,152 +191,123 @@ class TechnicalAnalyzer:
         self.df['atr'] = true_range.rolling(window=period).mean()
 
     def calculate_technical_score(self):
-        """Berechnet einen technischen Score basierend auf allen Indikatoren"""
+        """Berechnet einen präziseren technischen Score basierend auf dynamischen Kriterien"""
         if self.df.empty or 'rsi' not in self.df.columns:
             self.calculate_indicators()
 
         latest = self.df.iloc[-1]
-        score = 50  # Neutraler Ausgangspunkt
+        score = 50  # Neutraler Startwert
         signals = []
 
-        # RSI Signale (0-100)
-        if latest['rsi'] < 30:
-            score += 10  # Überverkauft - Kaufsignal
-            signals.append(("RSI", "BUY", f"Überverkauft ({latest['rsi']:.2f})"))
-        elif latest['rsi'] > 70:
-            score -= 10  # Überkauft - Verkaufssignal
-            signals.append(("RSI", "SELL", f"Überkauft ({latest['rsi']:.2f})"))
+        # --- Einzelne Indikatoren dynamisch bewerten ---
 
-        # MACD Signale
+        # RSI dynamisch
+        if latest['rsi'] < 30:
+            bonus = (30 - latest['rsi']) * 0.5
+            score += bonus
+            signals.append(("RSI", "BUY", f"Überverkauft ({latest['rsi']:.2f}) → +{bonus:.1f}"))
+        elif latest['rsi'] > 70:
+            malus = (latest['rsi'] - 70) * 0.5
+            score -= malus
+            signals.append(("RSI", "SELL", f"Überkauft ({latest['rsi']:.2f}) → -{malus:.1f}"))
+
+        # MACD Signal
         if latest['macd'] > latest['macd_signal']:
             score += 7.5
-            signals.append(("MACD", "BUY", "MACD über Signal-Linie"))
+            signals.append(("MACD", "BUY", "MACD über Signal-Linie → +7.5"))
         else:
             score -= 7.5
-            signals.append(("MACD", "SELL", "MACD unter Signal-Linie"))
+            signals.append(("MACD", "SELL", "MACD unter Signal-Linie → -7.5"))
 
-        # MACD Histogram Trend
-        if self.df['macd_histogram'].iloc[-1] > self.df['macd_histogram'].iloc[-2]:
-            score += 2.5
-            signals.append(("MACD Histogram", "BUY", "Aufwärtstrend"))
-        else:
-            score -= 2.5
-            signals.append(("MACD Histogram", "SELL", "Abwärtstrend"))
-
-        # SMA Signale
+        # SMA Levels
         if latest['close_price'] > latest['sma_20']:
             score += 5
-            signals.append(("SMA 20", "BUY", "Preis über SMA 20"))
+            signals.append(("SMA 20", "BUY", "Preis über SMA 20 → +5"))
         else:
             score -= 5
-            signals.append(("SMA 20", "SELL", "Preis unter SMA 20"))
+            signals.append(("SMA 20", "SELL", "Preis unter SMA 20 → -5"))
 
         if latest['close_price'] > latest['sma_50']:
             score += 5
-            signals.append(("SMA 50", "BUY", "Preis über SMA 50"))
+            signals.append(("SMA 50", "BUY", "Preis über SMA 50 → +5"))
         else:
             score -= 5
-            signals.append(("SMA 50", "SELL", "Preis unter SMA 50"))
+            signals.append(("SMA 50", "SELL", "Preis unter SMA 50 → -5"))
 
         if latest['close_price'] > latest['sma_200']:
             score += 10
-            signals.append(("SMA 200", "BUY", "Preis über SMA 200"))
+            signals.append(("SMA 200", "BUY", "Preis über SMA 200 → +10"))
         else:
             score -= 10
-            signals.append(("SMA 200", "SELL", "Preis unter SMA 200"))
-
-        # Golden/Death Cross
-        if latest['sma_50'] > latest['sma_200'] and self.df['sma_50'].iloc[-2] <= self.df['sma_200'].iloc[-2]:
-            score += 15  # Golden Cross - starkes Kaufsignal
-            signals.append(("Golden Cross", "BUY", "SMA 50 überquert SMA 200 aufwärts"))
-        elif latest['sma_50'] < latest['sma_200'] and self.df['sma_50'].iloc[-2] >= self.df['sma_200'].iloc[-2]:
-            score -= 15  # Death Cross - starkes Verkaufssignal
-            signals.append(("Death Cross", "SELL", "SMA 50 überquert SMA 200 abwärts"))
+            signals.append(("SMA 200", "SELL", "Preis unter SMA 200 → -10"))
 
         # Bollinger Bänder
         if latest['close_price'] > latest['bollinger_upper']:
             score -= 7.5
-            signals.append(("Bollinger Bänder", "SELL", "Preis über oberem Band"))
+            signals.append(("Bollinger Bänder", "SELL", "Preis über oberem Band → -7.5"))
         elif latest['close_price'] < latest['bollinger_lower']:
             score += 7.5
-            signals.append(("Bollinger Bänder", "BUY", "Preis unter unterem Band"))
+            signals.append(("Bollinger Bänder", "BUY", "Preis unter unterem Band → +7.5"))
 
-        # Stochastik
+        # Stochastik Oszillator
         if latest['stoch_k'] < 20 and latest['stoch_d'] < 20:
             score += 5
-            signals.append(("Stochastik", "BUY", "Überverkauft"))
+            signals.append(("Stochastik", "BUY", "Stochastik überverkauft → +5"))
         elif latest['stoch_k'] > 80 and latest['stoch_d'] > 80:
             score -= 5
-            signals.append(("Stochastik", "SELL", "Überkauft"))
-
-        # Stochastik Kreuzung
-        if latest['stoch_k'] > latest['stoch_d'] and self.df['stoch_k'].iloc[-2] <= self.df['stoch_d'].iloc[-2]:
-            score += 5
-            signals.append(("Stochastik Kreuzung", "BUY", "K-Linie überquert D-Linie aufwärts"))
-        elif latest['stoch_k'] < latest['stoch_d'] and self.df['stoch_k'].iloc[-2] >= self.df['stoch_d'].iloc[-2]:
-            score -= 5
-            signals.append(("Stochastik Kreuzung", "SELL", "K-Linie überquert D-Linie abwärts"))
-
-        # ADX (Trendstärke)
-        if latest['adx'] > 25:
-            # Starker Trend - prüfen welche Richtung
-            if latest['+di'] > latest['-di']:
-                score += 10
-                signals.append(("ADX", "BUY", f"Starker Aufwärtstrend (ADX: {latest['adx']:.2f})"))
-            else:
-                score -= 10
-                signals.append(("ADX", "SELL", f"Starker Abwärtstrend (ADX: {latest['adx']:.2f})"))
+            signals.append(("Stochastik", "SELL", "Stochastik überkauft → -5"))
 
         # Ichimoku Cloud
-        if (latest['close_price'] > latest['senkou_span_a'] and
-                latest['close_price'] > latest['senkou_span_b']):
+        if latest['close_price'] > latest['senkou_span_a'] and latest['close_price'] > latest['senkou_span_b']:
             score += 10
-            signals.append(("Ichimoku", "BUY", "Preis über der Cloud"))
-        elif (latest['close_price'] < latest['senkou_span_a'] and
-              latest['close_price'] < latest['senkou_span_b']):
+            signals.append(("Ichimoku", "BUY", "Preis über Cloud → +10"))
+        elif latest['close_price'] < latest['senkou_span_a'] and latest['close_price'] < latest['senkou_span_b']:
             score -= 10
-            signals.append(("Ichimoku", "SELL", "Preis unter der Cloud"))
+            signals.append(("Ichimoku", "SELL", "Preis unter Cloud → -10"))
 
-        # Tenkan-sen / Kijun-sen Kreuzung
-        if (latest['tenkan_sen'] > latest['kijun_sen'] and
-                self.df['tenkan_sen'].iloc[-2] <= self.df['kijun_sen'].iloc[-2]):
-            score += 7.5
-            signals.append(("Ichimoku TK Cross", "BUY", "Tenkan-sen überquert Kijun-sen aufwärts"))
-        elif (latest['tenkan_sen'] < latest['kijun_sen'] and
-              self.df['tenkan_sen'].iloc[-2] >= self.df['kijun_sen'].iloc[-2]):
-            score -= 7.5
-            signals.append(("Ichimoku TK Cross", "SELL", "Tenkan-sen überquert Kijun-sen abwärts"))
+        # OBV Trendbestätigung
+        if 'obv' in self.df.columns:
+            price_change = self.df['close_price'].iloc[-5:].pct_change().sum()
+            obv_change = (self.df['obv'].iloc[-1] - self.df['obv'].iloc[-5]) / abs(self.df['obv'].iloc[-5])
 
-        # OBV Trend mit Preisbewegung vergleichen
-        price_change = self.df['close_price'].iloc[-5:].pct_change().sum()
-        obv_change = (self.df['obv'].iloc[-1] - self.df['obv'].iloc[-5]) / abs(self.df['obv'].iloc[-5])
+            if price_change > 0 and obv_change > 0:
+                score += 5
+                signals.append(("OBV", "BUY", "Volumen bestätigt Anstieg → +5"))
+            elif price_change < 0 and obv_change < 0:
+                score -= 5
+                signals.append(("OBV", "SELL", "Volumen bestätigt Rückgang → -5"))
 
-        if price_change > 0 and obv_change > 0:
-            score += 5  # Preis und Volumen steigen - bullish
-            signals.append(("OBV", "BUY", "Volumen bestätigt Preisanstieg"))
-        elif price_change < 0 and obv_change < 0:
-            score -= 5  # Preis und Volumen fallen - bearish
-            signals.append(("OBV", "SELL", "Volumen bestätigt Preisrückgang"))
-        elif price_change > 0 and obv_change < 0:
-            score -= 2.5  # Preisanstieg ohne Volumenstärke - potentiell bearish
-            signals.append(("OBV", "CAUTION", "Volumen bestätigt Preisanstieg nicht"))
-        elif price_change < 0 and obv_change > 0:
-            score += 2.5  # Preisrückgang mit steigendem Volumen - potentiell bullish
-            signals.append(("OBV", "CAUTION", "Volumen zeigt mögliche Umkehr an"))
+        # --- Bonus für Kombinationen ---
+        if latest['rsi'] < 30 and latest['macd'] > latest['macd_signal'] and latest['close_price'] > latest['sma_20']:
+            score += 10
+            signals.append(("Kombi-Signal", "BUY", "RSI + MACD + SMA positiv → +10"))
+
+        # --- Verstärkung durch Trendstärke (ADX) ---
+        if latest['adx'] > 25:
+            if latest['+di'] > latest['-di']:
+                score *= 1.1
+                signals.append(("ADX Boost", "BUY", "Starker Aufwärtstrend (Verstärkung Score)"))
+            else:
+                score *= 0.9
+                signals.append(("ADX Dämpfung", "SELL", "Starker Abwärtstrend (Dämpfung Score)"))
 
         # Score begrenzen
         score = max(0, min(100, score))
 
-        # Empfehlung generieren
-        if score >= 70:
+        # --- Neue Empfehlungen (5-Stufen) ---
+        if score >= 90:
+            recommendation = "STRONG BUY"
+        elif score >= 70:
             recommendation = "BUY"
-        elif score <= 30:
+        elif score >= 40:
+            recommendation = "HOLD"
+        elif score >= 20:
             recommendation = "SELL"
         else:
-            recommendation = "HOLD"
+            recommendation = "STRONG SELL"
 
         return {
-            'score': score,
+            'score': round(score, 2),
             'recommendation': recommendation,
             'signals': signals,
             'details': {
@@ -418,9 +389,10 @@ class TechnicalAnalyzer:
         self.df['roc'] = self.df['close_price'].pct_change(period) * 100
 
     def save_analysis_result(self):
-        """Speichert das Analyseergebnis in der Datenbank"""
         result = self.calculate_technical_score()
         latest_date = self.df['date'].iloc[-1]
+
+        details = result.get('details', {})
 
         analysis_result, created = AnalysisResult.objects.update_or_create(
             stock=self.stock,
@@ -428,14 +400,14 @@ class TechnicalAnalyzer:
             defaults={
                 'technical_score': result['score'],
                 'recommendation': result['recommendation'],
-                'rsi_value': result['details']['rsi'],
-                'macd_value': result['details']['macd'],
-                'macd_signal': result['details']['macd_signal'],
-                'sma_20': result['details']['sma_20'],
-                'sma_50': result['details']['sma_50'],
-                'sma_200': result['details']['sma_200'],
-                'bollinger_upper': result['details']['bollinger_upper'],
-                'bollinger_lower': result['details']['bollinger_lower']
+                'rsi_value': details.get('rsi'),
+                'macd_value': details.get('macd'),
+                'macd_signal': details.get('macd_signal'),
+                'sma_20': details.get('sma_20'),
+                'sma_50': details.get('sma_50'),
+                'sma_200': details.get('sma_200'),
+                'bollinger_upper': details.get('bollinger_upper'),
+                'bollinger_lower': details.get('bollinger_lower')
             }
         )
 
