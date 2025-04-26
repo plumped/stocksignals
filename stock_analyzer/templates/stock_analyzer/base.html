@@ -27,6 +27,26 @@
                         <a class="nav-link" href="{% url 'my_watchlists' %}">Meine Watchlists</a>
                     </li>
                     {% endif %}
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle" href="#" id="marketDropdown" role="button" data-bs-toggle="dropdown">
+                            Marktanalyse
+                        </a>
+                        <ul class="dropdown-menu" aria-labelledby="marketDropdown">
+                            <li><a class="dropdown-item" href="{% url 'market_overview' %}">Marktübersicht</a></li>
+                            <li><a class="dropdown-item" href="{% url 'correlation_analysis' %}">Korrelationsanalyse</a></li>
+                        </ul>
+                    </li>
+                    {% if user.is_authenticated %}
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle" href="#" id="settingsDropdown" role="button" data-bs-toggle="dropdown">
+                            Einstellungen
+                        </a>
+                        <ul class="dropdown-menu" aria-labelledby="settingsDropdown">
+                            <li><a class="dropdown-item" href="{% url 'user_profile_settings' %}">Benutzerprofil</a></li>
+                            <li><a class="dropdown-item" href="{% url 'indicator_weights_settings' %}">Indikator-Gewichtungen</a></li>
+                        </ul>
+                    </li>
+                    {% endif %}
                 </ul>
                 <form class="d-flex" action="{% url 'search_stocks' %}" method="get" id="search-form">
                     <input class="form-control me-2" type="search" placeholder="Symbol oder Name" name="q" id="search-input">
@@ -39,6 +59,7 @@
                             {{ user.username }}
                         </a>
                         <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="navbarDropdown">
+                            <li><a class="dropdown-item" href="{% url 'user_profile_settings' %}">Benutzerprofil</a></li>
                             <li><a class="dropdown-item" href="{% url 'password_change' %}">Passwort ändern</a></li>
                             <li><hr class="dropdown-divider"></li>
                             <li><a class="dropdown-item" href="{% url 'logout' %}">Abmelden</a></li>

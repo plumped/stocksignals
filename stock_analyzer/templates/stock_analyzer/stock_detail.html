@@ -1,6 +1,8 @@
 <!-- stock_analyzer/templates/stock_analyzer/stock_detail.html -->
 {% extends 'stock_analyzer/base.html' %}
 
+
+
 {% block title %}{{ stock.symbol }} - {{ stock.name }}{% endblock %}
 
 {% block extra_head %}
@@ -21,6 +23,17 @@
         font-weight: bold;
     }
 </style>
+
+<!-- Chart.js -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<!-- Chart.js Annotation Plugin -->
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation"></script>
+
+<script src="https://cdn.jsdelivr.net/npm/luxon"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon"></script>
+
+
 {% endblock %}
 
 {% block content %}

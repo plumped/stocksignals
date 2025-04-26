@@ -1,4 +1,5 @@
 # stock_analyzer/views.py
+import pandas as pd
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
@@ -233,23 +234,44 @@ def search_stocks(request):
 
 
 def api_stock_data(request, symbol):
-    """API-Endpunkt für Aktiendaten (JSON)"""
+    """API-Endpunkt für Kurs- und Indikator-Daten"""
     try:
         stock = Stock.objects.get(symbol=symbol.upper())
 
-        # Kursdaten der letzten 90 Tage
-        price_data = list(StockData.objects.filter(stock=stock).order_by('date')
-                          .values('date', 'open_price', 'high_price', 'low_price', 'close_price', 'volume')[:90])
-
-        # Technische Indikatoren
-        analyzer = TechnicalAnalyzer(symbol)
+        analyzer = TechnicalAnalyzer(stock_symbol=symbol)
         analyzer.calculate_indicators()
 
-        # Indikatorwerte für das Frontend
-        indicators = {}
-        for col in analyzer.df.columns:
-            if col not in ['date', 'open_price', 'high_price', 'low_price', 'close_price', 'volume']:
-                indicators[col] = analyzer.df[col].dropna().tolist()
+        df = analyzer.df  # ACHTUNG: wir nehmen jetzt wirklich den berechneten DataFrame!
+
+        # Preis-Daten
+        price_data = []
+        for _, row in df.iterrows():
+            price_data.append({
+                'date': row['date'].isoformat() if isinstance(row['date'], datetime) else str(row['date']),
+                'open_price': float(row['open_price']),
+                'high_price': float(row['high_price']),
+                'low_price': float(row['low_price']),
+                'close_price': float(row['close_price']),
+                'volume': int(row['volume']) if not pd.isna(row['volume']) else 0
+            })
+
+        # Indikator-Daten
+        indicators = {
+            'rsi': df['rsi'].dropna().tolist() if 'rsi' in df else [],
+            'macd': df['macd'].dropna().tolist() if 'macd' in df else [],
+            'macd_signal': df['macd_signal'].dropna().tolist() if 'macd_signal' in df else [],
+            'macd_histogram': df['macd_histogram'].dropna().tolist() if 'macd_histogram' in df else [],
+            'sma_20': df['sma_20'].dropna().tolist() if 'sma_20' in df else [],
+            'sma_50': df['sma_50'].dropna().tolist() if 'sma_50' in df else [],
+            'sma_200': df['sma_200'].dropna().tolist() if 'sma_200' in df else [],
+            'bollinger_upper': df['bollinger_upper'].dropna().tolist() if 'bollinger_upper' in df else [],
+            'bollinger_lower': df['bollinger_lower'].dropna().tolist() if 'bollinger_lower' in df else [],
+            'obv': df['obv'].dropna().tolist() if 'obv' in df else [],
+            'atr': df['atr'].dropna().tolist() if 'atr' in df else [],
+            'stoch_k': df['stoch_k'].dropna().tolist() if 'stoch_k' in df else [],
+            'stoch_d': df['stoch_d'].dropna().tolist() if 'stoch_d' in df else [],
+            'adx': df['adx'].dropna().tolist() if 'adx' in df else [],
+        }
 
         return JsonResponse({
             'symbol': stock.symbol,
@@ -261,6 +283,7 @@ def api_stock_data(request, symbol):
         return JsonResponse({'error': 'Aktie nicht gefunden'}, status=404)
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
+
 
 
 @login_required
