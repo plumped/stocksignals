@@ -5,9 +5,17 @@ from django.utils.safestring import mark_safe
 register = template.Library()
 
 @register.filter
-def get_item(dictionary, key):
-    """Hilfsfunktion zum Abrufen von Elementen aus einem Dictionary in Templates"""
-    return dictionary.get(key)
+def get_item(obj, attr):
+    """Hilfsfunktion für den Zugriff auf dynamische Attribute oder Dictionary-Keys in Templates"""
+    try:
+        if isinstance(obj, dict):
+            return obj.get(attr)
+        elif hasattr(obj, 'loc'):  # Pandas DataFrame oder Series
+            return obj.loc[attr]
+        else:
+            return getattr(obj, attr, None)
+    except (KeyError, AttributeError, TypeError):
+        return None
 
 @register.filter
 def price_color(value, baseline=0):
@@ -33,3 +41,11 @@ def recommendation_badge(recommendation):
         return mark_safe('<span class="badge bg-danger">VERKAUFEN</span>')
     else:
         return mark_safe('<span class="badge bg-warning">HALTEN</span>')
+
+@register.filter
+def getattr(obj, attr):
+    """Hilfsfunktion für den Zugriff auf dynamische Attribute oder Dictionary-Keys in Templates"""
+    if isinstance(obj, dict):
+        return obj.get(attr)
+    else:
+        return getattr(obj, attr, None)

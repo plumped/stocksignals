@@ -1,0 +1,260 @@
+<!-- stock_analyzer/templates/stock_analyzer/indicator_weights_settings.html -->
+{% extends 'stock_analyzer/base.html' %}
+
+{% block title %}Indikator-Gewichtungen{% endblock %}
+
+{% block extra_head %}
+<style>
+    .range-value {
+        display: inline-block;
+        width: 40px;
+        text-align: right;
+    }
+    .weight-container {
+        display: flex;
+        align-items: center;
+    }
+    .weight-slider {
+        flex-grow: 1;
+        margin: 0 10px;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Indikator-Gewichtungen</h2>
+    <a href="{% url 'index' %}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left"></i> Zurück zum Dashboard
+    </a>
+</div>
+
+<div class="row">
+    <div class="col-md-3 mb-4">
+        <div class="list-group">
+            <a href="{% url 'user_profile_settings' %}" class="list-group-item list-group-item-action">
+                <i class="bi bi-person-fill"></i> Benutzerprofil
+            </a>
+            <a href="{% url 'indicator_weights_settings' %}" class="list-group-item list-group-item-action active">
+                <i class="bi bi-sliders"></i> Indikator-Gewichtungen
+            </a>
+            <a href="{% url 'password_change' %}" class="list-group-item list-group-item-action">
+                <i class="bi bi-key-fill"></i> Passwort ändern
+            </a>
+        </div>
+    </div>
+
+    <div class="col-md-9">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">Indikator-Gewichtungen Einstellungen</h5>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-info">
+                    <h6><i class="bi bi-info-circle"></i> Info</h6>
+                    <p>Hier kannst du die Gewichtung der einzelnen technischen Indikatoren anpassen, die für die Berechnung des technischen Scores verwendet werden. Die Summe aller Gewichtungen muss genau 100 ergeben.</p>
+                </div>
+
+                <form method="post" id="weights-form">
+                    {% csrf_token %}
+
+                    {% if form.non_field_errors %}
+                    <div class="alert alert-danger">
+                        {% for error in form.non_field_errors %}
+                        <p>{{ error }}</p>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+
+                    <div class="mb-3">
+                        <h6 class="mb-3">Momentum Indikatoren</h6>
+
+                        <div class="weight-container mb-3">
+                            <label for="{{ form.rsi_weight.id_for_label }}" class="form-label mb-0">RSI</label>
+                            <input type="range"
+                                   class="form-range weight-slider"
+                                   id="rsi_weight_slider"
+                                   min="0" max="50"
+                                   value="{{ form.rsi_weight.value }}"
+                                   oninput="updateWeightValue('rsi_weight')">
+                            <span class="range-value" id="rsi_weight_value">{{ form.rsi_weight.value }}</span>
+                            {{ form.rsi_weight }}
+                        </div>
+
+                        <div class="weight-container mb-3">
+                            <label for="{{ form.macd_weight.id_for_label }}" class="form-label mb-0">MACD</label>
+                            <input type="range"
+                                   class="form-range weight-slider"
+                                   id="macd_weight_slider"
+                                   min="0" max="50"
+                                   value="{{ form.macd_weight.value }}"
+                                   oninput="updateWeightValue('macd_weight')">
+                            <span class="range-value" id="macd_weight_value">{{ form.macd_weight.value }}</span>
+                            {{ form.macd_weight }}
+                        </div>
+
+                        <div class="weight-container mb-3">
+                            <label for="{{ form.stochastic_weight.id_for_label }}" class="form-label mb-0">Stochastik</label>
+                            <input type="range"
+                                   class="form-range weight-slider"
+                                   id="stochastic_weight_slider"
+                                   min="0" max="50"
+                                   value="{{ form.stochastic_weight.value }}"
+                                   oninput="updateWeightValue('stochastic_weight')">
+                            <span class="range-value" id="stochastic_weight_value">{{ form.stochastic_weight.value }}</span>
+                            {{ form.stochastic_weight }}
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <h6 class="mb-3">Trend Indikatoren</h6>
+
+                        <div class="weight-container mb-3">
+                            <label for="{{ form.sma_weight.id_for_label }}" class="form-label mb-0">Gleitende Durchschnitte</label>
+                            <input type="range"
+                                   class="form-range weight-slider"
+                                   id="sma_weight_slider"
+                                   min="0" max="50"
+                                   value="{{ form.sma_weight.value }}"
+                                   oninput="updateWeightValue('sma_weight')">
+                            <span class="range-value" id="sma_weight_value">{{ form.sma_weight.value }}</span>
+                            {{ form.sma_weight }}
+                        </div>
+
+                        <div class="weight-container mb-3">
+                            <label for="{{ form.adx_weight.id_for_label }}" class="form-label mb-0">ADX</label>
+                            <input type="range"
+                                   class="form-range weight-slider"
+                                   id="adx_weight_slider"
+                                   min="0" max="50"
+                                   value="{{ form.adx_weight.value }}"
+                                   oninput="updateWeightValue('adx_weight')">
+                            <span class="range-value" id="adx_weight_value">{{ form.adx_weight.value }}</span>
+                            {{ form.adx_weight }}
+                        </div>
+
+                        <div class="weight-container mb-3">
+                            <label for="{{ form.ichimoku_weight.id_for_label }}" class="form-label mb-0">Ichimoku Cloud</label>
+                            <input type="range"
+                                   class="form-range weight-slider"
+                                   id="ichimoku_weight_slider"
+                                   min="0" max="50"
+                                   value="{{ form.ichimoku_weight.value }}"
+                                   oninput="updateWeightValue('ichimoku_weight')">
+                            <span class="range-value" id="ichimoku_weight_value">{{ form.ichimoku_weight.value }}</span>
+                            {{ form.ichimoku_weight }}
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <h6 class="mb-3">Volatilität & Volumen</h6>
+
+                        <div class="weight-container mb-3">
+                            <label for="{{ form.bollinger_weight.id_for_label }}" class="form-label mb-0">Bollinger Bänder</label>
+                            <input type="range"
+                                   class="form-range weight-slider"
+                                   id="bollinger_weight_slider"
+                                   min="0" max="50"
+                                   value="{{ form.bollinger_weight.value }}"
+                                   oninput="updateWeightValue('bollinger_weight')">
+                            <span class="range-value" id="bollinger_weight_value">{{ form.bollinger_weight.value }}</span>
+                            {{ form.bollinger_weight }}
+                        </div>
+
+                        <div class="weight-container mb-3">
+                            <label for="{{ form.obv_weight.id_for_label }}" class="form-label mb-0">On-Balance Volume</label>
+                            <input type="range"
+                                   class="form-range weight-slider"
+                                   id="obv_weight_slider"
+                                   min="0" max="50"
+                                   value="{{ form.obv_weight.value }}"
+                                   oninput="updateWeightValue('obv_weight')">
+                            <span class="range-value" id="obv_weight_value">{{ form.obv_weight.value }}</span>
+                            {{ form.obv_weight }}
+                        </div>
+                    </div>
+
+                    <div class="alert alert-warning">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <span>Summe der Gewichtungen:</span>
+                            <span id="total-weight" class="fw-bold">100</span>
+                        </div>
+                        <div class="progress mt-2">
+                            <div id="weight-progress" class="progress-bar" role="progressbar" style="width: 100%;" aria-valuenow="100" aria-valuemin="0" aria-valuemax="100">100 / 100</div>
+                        </div>
+                    </div>
+
+                    <div class="text-end">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-save"></i> Einstellungen speichern
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Verstecke die ursprünglichen Input-Felder
+        {% for field in form %}
+            {% if 'weight' in field.name %}
+                document.getElementById('{{ field.id_for_label }}').style.display = 'none';
+            {% endif %}
+        {% endfor %}
+
+        // Berechne die Gesamtsumme der Gewichtungen
+        updateTotalWeight();
+    });
+
+    // Aktualisiere die Gewichtung wenn der Slider bewegt wird
+    function updateWeightValue(fieldName) {
+        const slider = document.getElementById(fieldName + '_slider');
+        const valueDisplay = document.getElementById(fieldName + '_value');
+        const hiddenInput = document.getElementById('id_' + fieldName);
+
+        valueDisplay.textContent = slider.value;
+        hiddenInput.value = slider.value;
+
+        updateTotalWeight();
+    }
+
+    // Berechne die Gesamtsumme aller Gewichtungen
+    function updateTotalWeight() {
+        let total = 0;
+        const weightFields = [
+            'rsi_weight', 'macd_weight', 'stochastic_weight',
+            'sma_weight', 'adx_weight', 'ichimoku_weight',
+            'bollinger_weight', 'obv_weight'
+        ];
+
+        weightFields.forEach(field => {
+            const value = parseInt(document.getElementById('id_' + field).value) || 0;
+            total += value;
+        });
+
+        const totalElement = document.getElementById('total-weight');
+        const progressBar = document.getElementById('weight-progress');
+
+        totalElement.textContent = total;
+        const percentage = (total / 100) * 100;
+        progressBar.style.width = percentage + '%';
+        progressBar.textContent = total + ' / 100';
+
+        // Ändern der Farbe je nach Summe
+        if (total === 100) {
+            progressBar.classList.remove('bg-danger', 'bg-warning');
+            progressBar.classList.add('bg-success');
+        } else if (total > 100) {
+            progressBar.classList.remove('bg-success', 'bg-warning');
+            progressBar.classList.add('bg-danger');
+        } else {
+            progressBar.classList.remove('bg-success', 'bg-danger');
+            progressBar.classList.add('bg-warning');
+        }
+    }
+</script>
+{% endblock %}

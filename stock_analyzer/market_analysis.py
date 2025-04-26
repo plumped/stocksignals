@@ -19,6 +19,9 @@ class MarketAnalyzer:
                 stock = Stock.objects.get(symbol=symbol)
                 data = StockData.objects.filter(stock=stock).order_by('-date')[:days]
 
+                if not data.exists():
+                    continue  # Überspringe Aktien ohne Daten
+
                 # Umwandeln in eine Zeitreihe
                 prices = pd.Series(
                     [float(d.close_price) for d in data],
@@ -28,15 +31,29 @@ class MarketAnalyzer:
                 stock_data[symbol] = prices
             except Stock.DoesNotExist:
                 continue
+            except Exception as e:
+                print(f"Fehler beim Laden der Daten für {symbol}: {str(e)}")
+                continue
 
         if len(stock_data) < 2:
+            # Nicht genug Daten für eine Korrelation
             return None
 
-        # Dataframe aus den Zeitreihen erstellen
-        df = pd.DataFrame(stock_data)
+        try:
+            # Dataframe aus den Zeitreihen erstellen
+            df = pd.DataFrame(stock_data)
 
-        # Korrelationsmatrix berechnen
-        return df.corr()
+            # Fehlende Werte entfernen
+            df = df.dropna()
+
+            if df.empty or len(df) < 2:
+                return None
+
+            # Korrelationsmatrix berechnen
+            return df.corr()
+        except Exception as e:
+            print(f"Fehler bei der Korrelationsberechnung: {str(e)}")
+            return None
 
     @staticmethod
     def sector_performance(days=30):
@@ -52,11 +69,14 @@ class MarketAnalyzer:
 
             for stock in stocks:
                 # Neuesten und ältesten Preis im Zeitraum abrufen
-                recent_prices = StockData.objects.filter(stock=stock).order_by('-date')[:days]
+                # WICHTIG: Slicing und anschließendes last() verursachen Fehler
+                # Daher holen wir die Daten vollständig und arbeiten mit der Liste
+                recent_prices = list(StockData.objects.filter(stock=stock).order_by('-date')[:days])
 
-                if recent_prices.count() > 0:
-                    newest_price = float(recent_prices.first().close_price)
-                    oldest_price = float(recent_prices.last().close_price)
+                if len(recent_prices) > 0:
+                    newest_price = float(recent_prices[0].close_price)
+                    # Wenn nicht genügend Daten vorhanden sind, nehmen wir einfach den ältesten verfügbaren
+                    oldest_price = float(recent_prices[-1].close_price) if len(recent_prices) > 1 else newest_price
 
                     # Performance berechnen
                     if oldest_price > 0:

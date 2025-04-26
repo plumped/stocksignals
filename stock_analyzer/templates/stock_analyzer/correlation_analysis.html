@@ -1,0 +1,214 @@
+<!-- stock_analyzer/templates/stock_analyzer/correlation_analysis.html -->
+{% extends 'stock_analyzer/base.html' %}
+{% load stock_tags %}
+
+{% block title %}Korrelationsanalyse{% endblock %}
+
+{% block extra_head %}
+<style>
+    .correlation-cell {
+        width: 60px;
+        height: 60px;
+        text-align: center;
+        font-weight: bold;
+        color: white;
+    }
+    .correlation-table th {
+        white-space: nowrap;
+        font-size: 0.9em;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Korrelationsanalyse</h2>
+    <a href="{% url 'market_overview' %}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left"></i> Zurück zur Marktübersicht
+    </a>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header">
+        Einstellungen
+    </div>
+    <div class="card-body">
+        <form method="get" class="row g-3 align-items-end">
+            <div class="col-md-6">
+                <label for="symbols" class="form-label">Aktien/Indizes</label>
+                <select name="symbols" id="symbols" class="form-select" multiple size="5">
+                    {% for stock in all_stocks %}
+                        <option value="{{ stock.symbol }}" {% if stock.symbol in selected_symbols %}selected{% endif %}>
+                            {{ stock.symbol }} - {{ stock.name }}
+                        </option>
+                    {% endfor %}
+                </select>
+                <div class="form-text">STRG+Klick für Mehrfachauswahl</div>
+            </div>
+            <div class="col-md-3">
+                <label for="days" class="form-label">Zeitraum</label>
+                <select name="days" id="days" class="form-select">
+                    <option value="30" {% if days == 30 %}selected{% endif %}>1 Monat</option>
+                    <option value="90" {% if days == 90 %}selected{% endif %}>3 Monate</option>
+                    <option value="180" {% if days == 180 %}selected{% endif %}>6 Monate</option>
+                    <option value="365" {% if days == 365 %}selected{% endif %}>1 Jahr</option>
+                </select>
+            </div>
+            <div class="col-md-3">
+                <button type="submit" class="btn btn-primary w-100">
+                    <i class="bi bi-search"></i> Analysieren
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+{% if correlation_matrix is not None %}
+<div class="card">
+    <div class="card-header">
+        Korrelationsmatrix
+    </div>
+    <div class="card-body">
+        <div class="text-center mb-3">
+            <p class="mb-1"><strong>Legende:</strong></p>
+            <div class="d-inline-block mx-2" style="background-color: #198754; width: 20px; height: 20px;"></div> Starke positive Korrelation (0.7 bis 1.0)
+            <div class="d-inline-block mx-2" style="background-color: #20c997; width: 20px; height: 20px;"></div> Moderate positive Korrelation (0.3 bis 0.7)
+            <div class="d-inline-block mx-2" style="background-color: #6c757d; width: 20px; height: 20px;"></div> Schwache/Keine Korrelation (-0.3 bis 0.3)
+            <div class="d-inline-block mx-2" style="background-color: #fd7e14; width: 20px; height: 20px;"></div> Moderate negative Korrelation (-0.7 bis -0.3)
+            <div class="d-inline-block mx-2" style="background-color: #dc3545; width: 20px; height: 20px;"></div> Starke negative Korrelation (-1.0 bis -0.7)
+        </div>
+
+        <div class="table-responsive">
+            <table class="table table-bordered correlation-table">
+                <thead>
+                    <tr>
+                        <th></th>
+                        {% for symbol in selected_symbols %}
+                            <th>{{ symbol }}</th>
+                        {% endfor %}
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row_symbol in selected_symbols %}
+                        <tr>
+                            <th>{{ row_symbol }}</th>
+                            {% for col_symbol in selected_symbols %}
+                                <td>
+                                    {% if correlation_matrix is not None and row_symbol in correlation_matrix.index and col_symbol in correlation_matrix.columns %}
+                                        {% with value=correlation_matrix|get_item:row_symbol|get_item:col_symbol %}
+                                            {% if value == 1 %}
+                                                <div class="correlation-cell" style="background-color: #000000;">1.00</div>
+                                            {% elif value >= 0.7 %}
+                                                <div class="correlation-cell" style="background-color: #198754;">{{ value|floatformat:2 }}</div>
+                                            {% elif value >= 0.3 %}
+                                                <div class="correlation-cell" style="background-color: #20c997;">{{ value|floatformat:2 }}</div>
+                                            {% elif value > -0.3 %}
+                                                <div class="correlation-cell" style="background-color: #6c757d;">{{ value|floatformat:2 }}</div>
+                                            {% elif value > -0.7 %}
+                                                <div class="correlation-cell" style="background-color: #fd7e14;">{{ value|floatformat:2 }}</div>
+                                            {% else %}
+                                                <div class="correlation-cell" style="background-color: #dc3545;">{{ value|floatformat:2 }}</div>
+                                            {% endif %}
+                                        {% endwith %}
+                                    {% else %}
+                                        <div class="correlation-cell bg-secondary">N/A</div>
+                                    {% endif %}
+                                </td>
+                            {% endfor %}
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="card mt-4">
+    <div class="card-header">
+        Korrelationsgrafik
+    </div>
+    <div class="card-body">
+        <canvas id="correlation-chart" height="500"></canvas>
+    </div>
+</div>
+{% else %}
+<div class="alert alert-info text-center">
+    <p>Wähle mindestens zwei Aktien oder Indizes aus, um die Korrelation zu analysieren.</p>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_scripts %}
+{% if correlation_matrix is not None %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Daten für die Heatmap vorbereiten
+        const symbols = {{ selected_symbols|safe }};
+        const correlationData = [];
+
+        {% for row_symbol in selected_symbols %}
+            {% for col_symbol in selected_symbols %}
+                {% if correlation_matrix and row_symbol in correlation_matrix.index and col_symbol in correlation_matrix.columns %}
+                    correlationData.push({
+                        x: "{{ col_symbol }}",
+                        y: "{{ row_symbol }}",
+                        value: {{ correlation_matrix|getattr:row_symbol|getattr:col_symbol }}
+                    });
+                {% endif %}
+            {% endfor %}
+        {% endfor %}
+
+        // Korrelationsgrafik erstellen
+        const ctx = document.getElementById('correlation-chart').getContext('2d');
+        new Chart(ctx, {
+            type: 'scatter',
+            data: {
+                datasets: symbols.map((symbol, index) => {
+                    return {
+                        label: symbol,
+                        data: [
+                            {% with days_range=days|default:30 %}
+                            {% for i in "x"|rjust:days_range %}
+                                { x: {{ forloop.counter0 }}, y: {{ forloop.counter0 }} * 0.1 + {{ forloop.counter }} }{% if not forloop.last %},{% endif %}
+                            {% endfor %}
+                            {% endwith %}
+                        ],
+                        borderColor: getRandomColor(index),
+                        backgroundColor: getRandomColor(index),
+                        fill: false
+                    };
+                })
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        type: 'linear',
+                        position: 'bottom',
+                        title: {
+                            display: true,
+                            text: 'Tage'
+                        }
+                    },
+                    y: {
+                        title: {
+                            display: true,
+                            text: 'Normalisierter Preis'
+                        }
+                    }
+                }
+            }
+        });
+
+        function getRandomColor(index) {
+            const colors = [
+                '#4285F4', '#EA4335', '#FBBC05', '#34A853',
+                '#FF6D01', '#46BDC6', '#7B0099', '#FF9900'
+            ];
+            return colors[index % colors.length];
+        }
+    });
+</script>
+{% endif %}
+{% endblock %}

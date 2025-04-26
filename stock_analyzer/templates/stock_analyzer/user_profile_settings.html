@@ -1,0 +1,96 @@
+<!-- stock_analyzer/templates/stock_analyzer/user_profile_settings.html -->
+{% extends 'stock_analyzer/base.html' %}
+
+{% block title %}Benutzereinstellungen{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Benutzereinstellungen</h2>
+    <a href="{% url 'index' %}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left"></i> Zurück zum Dashboard
+    </a>
+</div>
+
+<div class="row">
+    <div class="col-md-3 mb-4">
+        <div class="list-group">
+            <a href="{% url 'user_profile_settings' %}" class="list-group-item list-group-item-action active">
+                <i class="bi bi-person-fill"></i> Benutzerprofil
+            </a>
+            <a href="{% url 'indicator_weights_settings' %}" class="list-group-item list-group-item-action">
+                <i class="bi bi-sliders"></i> Indikator-Gewichtungen
+            </a>
+            <a href="{% url 'password_change' %}" class="list-group-item list-group-item-action">
+                <i class="bi bi-key-fill"></i> Passwort ändern
+            </a>
+        </div>
+    </div>
+
+    <div class="col-md-9">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">Benutzerprofil Einstellungen</h5>
+            </div>
+            <div class="card-body">
+                <form method="post">
+                    {% csrf_token %}
+
+                    <h6 class="mb-3">Benachrichtigungen</h6>
+                    <div class="mb-3 form-check">
+                        {{ form.notify_on_buy_signals }}
+                        <label class="form-check-label" for="{{ form.notify_on_buy_signals.id_for_label }}">
+                            Benachrichtigungen bei Kaufsignalen
+                        </label>
+                    </div>
+
+                    <div class="mb-3 form-check">
+                        {{ form.notify_on_sell_signals }}
+                        <label class="form-check-label" for="{{ form.notify_on_sell_signals.id_for_label }}">
+                            Benachrichtigungen bei Verkaufssignalen
+                        </label>
+                    </div>
+
+                    <div class="row mb-4">
+                        <div class="col-md-6">
+                            <label for="{{ form.min_score_for_buy_notification.id_for_label }}" class="form-label">
+                                Min. Score für Kaufbenachrichtigungen
+                            </label>
+                            <div class="input-group">
+                                {{ form.min_score_for_buy_notification }}
+                                <span class="input-group-text">/ 100</span>
+                            </div>
+                            <div class="form-text">Nur Kaufsignale mit einem höheren Score werden gemeldet</div>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="{{ form.max_score_for_sell_notification.id_for_label }}" class="form-label">
+                                Max. Score für Verkaufsbenachrichtigungen
+                            </label>
+                            <div class="input-group">
+                                {{ form.max_score_for_sell_notification }}
+                                <span class="input-group-text">/ 100</span>
+                            </div>
+                            <div class="form-text">Nur Verkaufssignale mit einem niedrigeren Score werden gemeldet</div>
+                        </div>
+                    </div>
+
+                    <h6 class="mb-3">Risikoprofil</h6>
+                    <div class="mb-4">
+                        <label for="{{ form.risk_profile.id_for_label }}" class="form-label">Risikoprofil</label>
+                        {{ form.risk_profile }}
+                        <div class="form-text">
+                            1 = Konservativ (tendenziell mehr Halten-Empfehlungen)<br>
+                            5 = Aggressiv (tendenziell mehr Kauf-/Verkauf-Empfehlungen)
+                        </div>
+                    </div>
+
+                    <div class="text-end">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-save"></i> Einstellungen speichern
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

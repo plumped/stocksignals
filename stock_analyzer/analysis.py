@@ -11,7 +11,6 @@ class TechnicalAnalyzer:
         data = StockData.objects.filter(stock=self.stock).order_by('date')[:days]
         self.df = pd.DataFrame(list(data.values()))
 
-        # 💥 HIER die Typkonvertierung einfügen
         if not self.df.empty:
             for col in ['open_price', 'high_price', 'low_price', 'close_price', 'adjusted_close', 'volume']:
                 if col in self.df.columns:
@@ -376,3 +375,50 @@ class TechnicalAnalyzer:
         )
 
         return analysis_result
+
+
+def _calculate_indicators_for_dataframe(self, df):
+    """Berechnet Indikatoren für ein bereitgestelltes DataFrame (für Backtesting)"""
+    # Kopie erstellen, um das Originaldatenframe nicht zu verändern
+    df_copy = df.copy()
+
+    # Sicherstellen, dass die Spalten korrekte Datentypen haben
+    for col in ['open_price', 'high_price', 'low_price', 'close_price', 'volume']:
+        if col in df_copy.columns:
+            df_copy[col] = df_copy[col].astype(float)
+
+    # RSI berechnen
+    delta = df_copy['close_price'].diff()
+    gain = delta.copy()
+    loss = delta.copy()
+    gain[gain < 0] = 0
+    loss[loss > 0] = 0
+    loss = abs(loss)
+
+    avg_gain = gain.rolling(window=14).mean()
+    avg_loss = loss.rolling(window=14).mean()
+
+    rs = avg_gain / avg_loss
+    df_copy['rsi'] = 100 - (100 / (1 + rs))
+
+    # Moving Averages
+    df_copy['sma_20'] = df_copy['close_price'].rolling(window=20).mean()
+    df_copy['sma_50'] = df_copy['close_price'].rolling(window=50).mean()
+    df_copy['sma_200'] = df_copy['close_price'].rolling(window=200).mean()
+
+    # EMA für MACD
+    df_copy['ema_12'] = df_copy['close_price'].ewm(span=12, adjust=False).mean()
+    df_copy['ema_26'] = df_copy['close_price'].ewm(span=26, adjust=False).mean()
+
+    # MACD
+    df_copy['macd'] = df_copy['ema_12'] - df_copy['ema_26']
+    df_copy['macd_signal'] = df_copy['macd'].ewm(span=9, adjust=False).mean()
+    df_copy['macd_histogram'] = df_copy['macd'] - df_copy['macd_signal']
+
+    # Bollinger Bands
+    df_copy['bollinger_middle'] = df_copy['close_price'].rolling(window=20).mean()
+    std = df_copy['close_price'].rolling(window=20).std()
+    df_copy['bollinger_upper'] = df_copy['bollinger_middle'] + 2 * std
+    df_copy['bollinger_lower'] = df_copy['bollinger_middle'] - 2 * std
+
+    return df_copy

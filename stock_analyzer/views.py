@@ -527,14 +527,15 @@ def market_overview(request):
 
     for stock in Stock.objects.all():
         try:
-            recent_data = StockData.objects.filter(
+            # Hier ist der Fehler - wir holen die Daten und ordnen sie in einem Schritt
+            recent_data = list(StockData.objects.filter(
                 stock=stock,
                 date__gte=one_week_ago
-            ).order_by('date')
+            ).order_by('date'))  # Konvertiere zu einer Liste, um Slicing-Probleme zu vermeiden
 
-            if recent_data.count() >= 2:
-                first_price = float(recent_data.first().close_price)
-                last_price = float(recent_data.last().close_price)
+            if len(recent_data) >= 2:
+                first_price = float(recent_data[0].close_price)
+                last_price = float(recent_data[-1].close_price)
 
                 if first_price > 0:
                     performance = (last_price - first_price) / first_price * 100
@@ -561,7 +562,9 @@ def market_overview(request):
                         worst_performers.append(stock_info)
                         worst_performers.sort(key=lambda x: x['performance'])
                         worst_performers = worst_performers[:10]
-        except Exception:
+        except Exception as e:
+            # Protokolliere den Fehler für die Fehlerbehebung
+            print(f"Fehler bei der Berechnung der Performance für {stock.symbol}: {str(e)}")
             continue
 
     context = {
@@ -585,7 +588,12 @@ def correlation_analysis(request):
     days = int(request.GET.get('days', 90))
 
     # Korrelationsmatrix berechnen
-    correlation_matrix = MarketAnalyzer.calculate_correlations(symbols, days)
+    correlation_matrix = None
+    if len(symbols) >= 2:
+        try:
+            correlation_matrix = MarketAnalyzer.calculate_correlations(symbols, days)
+        except Exception as e:
+            messages.error(request, f"Fehler bei der Korrelationsanalyse: {str(e)}")
 
     # Alle Aktien für die Dropdown-Liste
     all_stocks = Stock.objects.all().order_by('symbol')
@@ -598,6 +606,7 @@ def correlation_analysis(request):
     }
 
     return render(request, 'stock_analyzer/correlation_analysis.html', context)
+
 
 @login_required
 def delete_watchlist(request, watchlist_id):
