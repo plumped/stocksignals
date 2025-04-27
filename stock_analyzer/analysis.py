@@ -4,6 +4,8 @@ from datetime import timedelta
 import numpy as np
 import pandas as pd
 from .models import Stock, StockData, AnalysisResult
+from scipy.signal import argrelextrema
+from stockstats import StockDataFrame
 
 
 class TechnicalAnalyzer:
@@ -471,3 +473,470 @@ def _calculate_indicators_for_dataframe(self, df):
     return df_copy
 
 
+class AdvancedIndicators:
+    def __init__(self, df):
+        """Initialisiert die erweiterten Indikatoren mit einem DataFrame"""
+        self.df = df.copy()
+        # Stellt sicher, dass das DataFrame die richtigen Spalten hat
+        required_columns = ['open_price', 'high_price', 'low_price', 'close_price', 'volume']
+        for col in required_columns:
+            if col not in self.df.columns:
+                raise ValueError(f"DataFrame muss Spalte '{col}' enthalten")
+
+        # Spaltennamen anpassen für stockstats (falls benötigt)
+        column_map = {
+            'open_price': 'open',
+            'high_price': 'high',
+            'low_price': 'low',
+            'close_price': 'close',
+            'volume': 'volume'
+        }
+
+        # Erstelle eine Kopie mit den angepassten Spaltennamen
+        self.stock_df = self.df.copy()
+        for old_col, new_col in column_map.items():
+            if old_col in self.stock_df.columns:
+                self.stock_df[new_col] = self.stock_df[old_col]
+
+        # Konvertiere zu StockDataFrame
+        self.stock_df = StockDataFrame.retype(self.stock_df)
+
+    def calculate_heikin_ashi(self):
+        """
+        Berechnet Heikin-Ashi-Kerzen.
+        Heikin-Ashi sind modifizierte Kerzen, die weniger Rauschen und klarere Trends zeigen.
+        """
+        ha_df = self.df.copy()
+
+        # HA Eröffnung = (Vortag HA Eröffnung + Vortag HA Schluss) / 2
+        ha_df['ha_open'] = (self.df['open_price'] + self.df['close_price']).shift(1) / 2
+
+        # Für die erste Zeile (keine Vortageswerte)
+        ha_df.loc[0, 'ha_open'] = self.df.loc[0, 'open_price']
+
+        # HA Schluss = (Eröffnung + Hoch + Tief + Schluss) / 4
+        ha_df['ha_close'] = (self.df['open_price'] + self.df['high_price'] +
+                             self.df['low_price'] + self.df['close_price']) / 4
+
+        # HA Hoch = max(Hoch, ha_open, ha_close)
+        ha_df['ha_high'] = ha_df[['ha_open', 'ha_close']].max(axis=1).combine(self.df['high_price'], max)
+
+        # HA Tief = min(Tief, ha_open, ha_close)
+        ha_df['ha_low'] = ha_df[['ha_open', 'ha_close']].min(axis=1).combine(self.df['low_price'], min)
+
+        # Füge die Heikin-Ashi-Kerzen zum originalen DataFrame hinzu
+        for col in ['ha_open', 'ha_high', 'ha_low', 'ha_close']:
+            self.df[col] = ha_df[col]
+
+        # Bestimme Trend basierend auf Heikin-Ashi
+        self.df['ha_trend'] = np.where(
+            self.df['ha_close'] > self.df['ha_open'],
+            1,  # Grüne Kerze = Aufwärtstrend
+            -1  # Rote Kerze = Abwärtstrend
+        )
+
+        return self.df
+
+    def calculate_fibonacci_levels(self, window=100):
+        """
+        Berechnet Fibonacci-Retracement-Levels basierend auf den letzten X Tagen.
+        """
+        # Bestimme lokale Hochs und Tiefs im Fenster
+        self.df['local_max'] = self.df['high_price'].rolling(window=window, center=True).max()
+        self.df['local_min'] = self.df['low_price'].rolling(window=window, center=True).min()
+
+        # Fibonacci-Levels: 0, 0.236, 0.382, 0.5, 0.618, 0.786, 1
+        fib_levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1]
+
+        for i, level in enumerate(fib_levels):
+            # Retracement-Levels nach unten (von Hochs)
+            self.df[f'fib_down_{int(level * 1000)}'] = (
+                    self.df['local_max'] - (self.df['local_max'] - self.df['local_min']) * level
+            )
+
+            # Retracement-Levels nach oben (von Tiefs)
+            self.df[f'fib_up_{int(level * 1000)}'] = (
+                    self.df['local_min'] + (self.df['local_max'] - self.df['local_min']) * level
+            )
+
+        # Fibonacci-Extensions: 1.618, 2.618, 4.236
+        ext_levels = [1.618, 2.618, 4.236]
+
+        for level in ext_levels:
+            # Extension-Levels nach oben
+            self.df[f'fib_ext_up_{int(level * 1000)}'] = (
+                    self.df['local_min'] + (self.df['local_max'] - self.df['local_min']) * level
+            )
+
+            # Extension-Levels nach unten
+            self.df[f'fib_ext_down_{int(level * 1000)}'] = (
+                    self.df['local_max'] - (self.df['local_max'] - self.df['local_min']) * level
+            )
+
+        return self.df
+
+    def detect_chart_patterns(self, window=20):
+        """
+        Erkennt gängige Chartmuster wie Head-and-Shoulders, Double Top/Bottom, etc.
+        """
+        # Initialisiere Musterspalten mit 0 (kein Muster erkannt)
+        patterns = [
+            'double_top', 'double_bottom', 'head_shoulders', 'inv_head_shoulders',
+            'triangle_ascending', 'triangle_descending', 'flag_bullish', 'flag_bearish'
+        ]
+
+        for pattern in patterns:
+            self.df[f'pattern_{pattern}'] = 0
+
+        # Extrahiere Hochs und Tiefs
+        order = int(window / 4)  # Ordnung für lokale Extrema
+
+        # Finde lokale Maxima
+        ilocs_max = argrelextrema(self.df['high_price'].values, np.greater, order=order)[0]
+
+        # Finde lokale Minima
+        ilocs_min = argrelextrema(self.df['low_price'].values, np.less, order=order)[0]
+
+        # Double Top Erkennung
+        for i in range(len(ilocs_max) - 1):
+            # Zwei ähnliche Hochs mit einem Tief dazwischen
+            if i + 1 < len(ilocs_max):
+                peak1 = self.df['high_price'].iloc[ilocs_max[i]]
+                peak2 = self.df['high_price'].iloc[ilocs_max[i + 1]]
+
+                # Finde das Tief zwischen den beiden Hochs
+                between_idx = self.df.index[(self.df.index > ilocs_max[i]) &
+                                            (self.df.index < ilocs_max[i + 1])]
+
+                if len(between_idx) > 0:
+                    valley = self.df['low_price'].loc[between_idx].min()
+
+                    # Kriterien für Double Top:
+                    # 1. Ähnliche Hochpunkte (nicht mehr als 3% Unterschied)
+                    # 2. Valley mind. 3% unter den Hochs
+                    if (abs(peak1 - peak2) / peak1 < 0.03 and
+                            valley < min(peak1, peak2) * 0.97):
+                        # Markiere das zweite Hoch als Double Top
+                        self.df.loc[self.df.index[ilocs_max[i + 1]], 'pattern_double_top'] = 1
+
+        # Double Bottom Erkennung (analog zu Double Top)
+        for i in range(len(ilocs_min) - 1):
+            if i + 1 < len(ilocs_min):
+                valley1 = self.df['low_price'].iloc[ilocs_min[i]]
+                valley2 = self.df['low_price'].iloc[ilocs_min[i + 1]]
+
+                between_idx = self.df.index[(self.df.index > ilocs_min[i]) &
+                                            (self.df.index < ilocs_min[i + 1])]
+
+                if len(between_idx) > 0:
+                    peak = self.df['high_price'].loc[between_idx].max()
+
+                    if (abs(valley1 - valley2) / valley1 < 0.03 and
+                            peak > max(valley1, valley2) * 1.03):
+                        self.df.loc[self.df.index[ilocs_min[i + 1]], 'pattern_double_bottom'] = 1
+
+        # Head and Shoulders Erkennung
+        for i in range(len(ilocs_max) - 2):
+            if i + 2 < len(ilocs_max):
+                left_shoulder = self.df['high_price'].iloc[ilocs_max[i]]
+                head = self.df['high_price'].iloc[ilocs_max[i + 1]]
+                right_shoulder = self.df['high_price'].iloc[ilocs_max[i + 2]]
+
+                # Kriterien für Head and Shoulders:
+                # 1. Head ist höher als beide Schultern
+                # 2. Schultern sind auf ähnlicher Höhe (±5%)
+                if (head > left_shoulder and head > right_shoulder and
+                        abs(left_shoulder - right_shoulder) / left_shoulder < 0.05):
+
+                    # Finde Nackenlinie (Tiefstwerte zwischen Schultern und Kopf)
+                    left_valley_idx = self.df.index[(self.df.index > ilocs_max[i]) &
+                                                    (self.df.index < ilocs_max[i + 1])]
+                    right_valley_idx = self.df.index[(self.df.index > ilocs_max[i + 1]) &
+                                                     (self.df.index < ilocs_max[i + 2])]
+
+                    if len(left_valley_idx) > 0 and len(right_valley_idx) > 0:
+                        left_valley = self.df['low_price'].loc[left_valley_idx].min()
+                        right_valley = self.df['low_price'].loc[right_valley_idx].min()
+
+                        # Nackenlinie sollte relativ gerade sein
+                        if abs(left_valley - right_valley) / left_valley < 0.03:
+                            # Markiere das Muster am rechten Rand
+                            self.df.loc[self.df.index[ilocs_max[i + 2]], 'pattern_head_shoulders'] = 1
+
+        # Inverse Head and Shoulders (analog zu Head and Shoulders)
+        for i in range(len(ilocs_min) - 2):
+            if i + 2 < len(ilocs_min):
+                left_shoulder = self.df['low_price'].iloc[ilocs_min[i]]
+                head = self.df['low_price'].iloc[ilocs_min[i + 1]]
+                right_shoulder = self.df['low_price'].iloc[ilocs_min[i + 2]]
+
+                if (head < left_shoulder and head < right_shoulder and
+                        abs(left_shoulder - right_shoulder) / left_shoulder < 0.05):
+
+                    left_peak_idx = self.df.index[(self.df.index > ilocs_min[i]) &
+                                                  (self.df.index < ilocs_min[i + 1])]
+                    right_peak_idx = self.df.index[(self.df.index > ilocs_min[i + 1]) &
+                                                   (self.df.index < ilocs_min[i + 2])]
+
+                    if len(left_peak_idx) > 0 and len(right_peak_idx) > 0:
+                        left_peak = self.df['high_price'].loc[left_peak_idx].max()
+                        right_peak = self.df['high_price'].loc[right_peak_idx].max()
+
+                        if abs(left_peak - right_peak) / left_peak < 0.03:
+                            self.df.loc[self.df.index[ilocs_min[i + 2]], 'pattern_inv_head_shoulders'] = 1
+
+        # Erkennung von Dreiecksformationen
+        window_size = min(window, len(self.df) // 3)
+        for i in range(window_size, len(self.df)):
+            segment = self.df.iloc[i - window_size:i]
+
+            # Aufsteigendes Dreieck: Flache Widerstände, steigende Unterstützung
+            highs = segment['high_price'].rolling(window=5).max()
+            lows = segment['low_price']
+
+            high_line_slope = self._calculate_slope(highs.dropna())
+            low_line_slope = self._calculate_slope(lows.dropna())
+
+            if abs(high_line_slope) < 0.001 and low_line_slope > 0.002:
+                self.df.loc[self.df.index[i - 1], 'pattern_triangle_ascending'] = 1
+
+            # Absteigendes Dreieck: Flache Unterstützung, fallende Widerstände
+            if abs(low_line_slope) < 0.001 and high_line_slope < -0.002:
+                self.df.loc[self.df.index[i - 1], 'pattern_triangle_descending'] = 1
+
+        return self.df
+
+    def _calculate_slope(self, series):
+        """Hilfsfunktion zur Berechnung der Steigung einer linearen Regression"""
+        if len(series) < 2:
+            return 0
+
+        x = np.arange(len(series))
+        y = series.values
+
+        # Steigung der linearen Regression berechnen
+        slope = np.polyfit(x, y, 1)[0]
+        return slope
+
+    def calculate_supertrend(self, period=10, multiplier=3.0):
+        """
+        Berechnet den SuperTrend-Indikator, ein Trendfolge-Indikator basierend auf ATR
+        """
+        # ATR berechnen
+        high_low = self.df['high_price'] - self.df['low_price']
+        high_close = abs(self.df['high_price'] - self.df['close_price'].shift())
+        low_close = abs(self.df['low_price'] - self.df['close_price'].shift())
+
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = ranges.max(axis=1)
+
+        # ATR berechnen
+        atr = true_range.rolling(window=period).mean()
+
+        # Grundlegende Berechnungen für SuperTrend
+        hl2 = (self.df['high_price'] + self.df['low_price']) / 2
+
+        # Oberes Band und unteres Band
+        upper_band = hl2 + (multiplier * atr)
+        lower_band = hl2 - (multiplier * atr)
+
+        # SuperTrend-Berechnung
+        supertrend = pd.Series(0.0, index=self.df.index)
+        direction = pd.Series(1, index=self.df.index)  # 1: aufwärts, -1: abwärts
+
+        # Erste Werte setzen
+        supertrend.iloc[0] = lower_band.iloc[0]
+
+        # SuperTrend für jeden Zeitpunkt berechnen
+        for i in range(1, len(self.df)):
+            curr_close = self.df['close_price'].iloc[i]
+            curr_upper = upper_band.iloc[i]
+            curr_lower = lower_band.iloc[i]
+            prev_supertrend = supertrend.iloc[i - 1]
+
+            # Aktuellen SuperTrend berechnen basierend auf vorherigem Wert
+            if prev_supertrend <= curr_upper:
+                curr_supertrend = curr_lower
+            else:
+                curr_supertrend = curr_upper
+
+            # Richtung bestimmen
+            if curr_close <= curr_supertrend:
+                direction.iloc[i] = -1  # abwärts
+            else:
+                direction.iloc[i] = 1  # aufwärts
+
+            # SuperTrend-Wert aktualisieren
+            supertrend.iloc[i] = curr_supertrend
+
+        # SuperTrend und Richtung zum DataFrame hinzufügen
+        self.df['supertrend'] = supertrend
+        self.df['supertrend_direction'] = direction
+
+        return self.df
+
+    def calculate_elliott_wave_points(self, window=100):
+        """
+        Identifiziert potenzielle Elliott Wave Punkte im Kursverlauf.
+        Dies ist eine vereinfachte Version, die mögliche Wendepunkte markiert.
+        """
+        # Lokale Maxima und Minima finden
+        order = int(window / 10)  # Ordnung für lokale Extrema
+
+        # Finde lokale Maxima
+        max_idx = argrelextrema(self.df['high_price'].values, np.greater, order=order)[0]
+
+        # Finde lokale Minima
+        min_idx = argrelextrema(self.df['low_price'].values, np.less, order=order)[0]
+
+        # Initialisiere Spalte für Elliott Wave Punkte
+        self.df['elliott_wave_point'] = 0
+
+        # Markiere potenzielle Elliott Wave Punkte
+        for idx in max_idx:
+            self.df.loc[self.df.index[idx], 'elliott_wave_point'] = 1  # 1 für Hochpunkte
+
+        for idx in min_idx:
+            self.df.loc[self.df.index[idx], 'elliott_wave_point'] = -1  # -1 für Tiefpunkte
+
+        # Identifiziere 5-Wellen-Muster (vereinfacht)
+        for i in range(len(self.df) - window, len(self.df)):
+            if i - window >= 0:
+                segment = self.df.iloc[i - window:i]
+                wave_points = segment[segment['elliott_wave_point'] != 0]
+
+                # Mindestens 5 Wendepunkte für ein Elliott-Wellen-Muster
+                if len(wave_points) >= 5:
+                    # Prüfe, ob die letzten 5 Wendepunkte ein abwechselndes Muster bilden
+                    last_5_points = wave_points['elliott_wave_point'].tail(5).values
+
+                    # Prüfe auf abwechselndes Muster (+1, -1, +1, -1, +1) oder (-1, +1, -1, +1, -1)
+                    alternating = True
+                    for j in range(1, 5):
+                        if last_5_points[j] == last_5_points[j - 1]:
+                            alternating = False
+                            break
+
+                    if alternating:
+                        # Der letzte Punkt im 5-Wellen-Muster
+                        self.df.loc[wave_points.index[-1], 'elliott_wave_pattern'] = last_5_points[-1]
+
+        return self.df
+
+    def calculate_vwap(self):
+        """
+        Berechnet den Volume Weighted Average Price (VWAP)
+        """
+        # Berechne typischen Preis für jeden Tag: (Hoch + Tief + Schluss) / 3
+        typical_price = (self.df['high_price'] + self.df['low_price'] + self.df['close_price']) / 3
+
+        # Berechne typischen Preis × Volumen
+        price_volume = typical_price * self.df['volume']
+
+        # Berechne kumulative Summen
+        cumulative_price_volume = price_volume.cumsum()
+        cumulative_volume = self.df['volume'].cumsum()
+
+        # VWAP = Kumulative Summe (Preis × Volumen) / Kumulative Summe (Volumen)
+        self.df['vwap'] = cumulative_price_volume / cumulative_volume
+
+        return self.df
+
+    def calculate_all_indicators(self):
+        """
+        Berechnet alle implementierten fortgeschrittenen Indikatoren
+        """
+        self.calculate_heikin_ashi()
+        self.calculate_fibonacci_levels()
+        self.calculate_supertrend()
+        self.calculate_vwap()
+        self.detect_chart_patterns()
+        self.calculate_elliott_wave_points()
+
+        return self.df
+
+
+# Erweitere die TechnicalAnalyzer-Klasse um die fortgeschrittenen Indikatoren
+def extend_technical_analyzer(TechnicalAnalyzer):
+    """
+    Erweitert die TechnicalAnalyzer-Klasse um die neuen fortgeschrittenen Indikatoren.
+    Diese Funktion sollte aufgerufen werden, nachdem die TechnicalAnalyzer-Klasse definiert wurde.
+    """
+
+    # Füge neue Methoden zur TechnicalAnalyzer-Klasse hinzu
+    def calculate_advanced_indicators(self):
+        """Berechnet alle fortgeschrittenen Indikatoren"""
+        advanced_indicators = AdvancedIndicators(self.df)
+        self.df = advanced_indicators.calculate_all_indicators()
+        return self.df
+
+    def calculate_heikin_ashi(self):
+        """Berechnet Heikin-Ashi-Kerzen"""
+        advanced_indicators = AdvancedIndicators(self.df)
+        self.df = advanced_indicators.calculate_heikin_ashi()
+        return self.df
+
+    def calculate_fibonacci_levels(self, window=100):
+        """Berechnet Fibonacci-Retracement-Levels"""
+        advanced_indicators = AdvancedIndicators(self.df)
+        self.df = advanced_indicators.calculate_fibonacci_levels(window)
+        return self.df
+
+    def detect_chart_patterns(self, window=20):
+        """Erkennt gängige Chartmuster"""
+        advanced_indicators = AdvancedIndicators(self.df)
+        self.df = advanced_indicators.detect_chart_patterns(window)
+        return self.df
+
+    def calculate_supertrend(self, period=10, multiplier=3.0):
+        """Berechnet den SuperTrend-Indikator"""
+        advanced_indicators = AdvancedIndicators(self.df)
+        self.df = advanced_indicators.calculate_supertrend(period, multiplier)
+        return self.df
+
+    def calculate_elliott_wave_points(self, window=100):
+        """Identifiziert potenzielle Elliott Wave Punkte"""
+        advanced_indicators = AdvancedIndicators(self.df)
+        self.df = advanced_indicators.calculate_elliott_wave_points(window)
+        return self.df
+
+    def calculate_vwap(self):
+        """Berechnet den Volume Weighted Average Price"""
+        advanced_indicators = AdvancedIndicators(self.df)
+        self.df = advanced_indicators.calculate_vwap()
+        return self.df
+
+    # Füge die neuen Methoden zur TechnicalAnalyzer-Klasse hinzu
+    TechnicalAnalyzer.calculate_advanced_indicators = calculate_advanced_indicators
+    TechnicalAnalyzer.calculate_heikin_ashi = calculate_heikin_ashi
+    TechnicalAnalyzer.calculate_fibonacci_levels = calculate_fibonacci_levels
+    TechnicalAnalyzer.detect_chart_patterns = detect_chart_patterns
+    TechnicalAnalyzer.calculate_supertrend = calculate_supertrend
+    TechnicalAnalyzer.calculate_elliott_wave_points = calculate_elliott_wave_points
+    TechnicalAnalyzer.calculate_vwap = calculate_vwap
+
+    # Überschreibe die calculate_indicators-Methode, um optional auch fortgeschrittene Indikatoren zu berechnen
+    original_calculate_indicators = TechnicalAnalyzer.calculate_indicators
+
+    def new_calculate_indicators(self, include_advanced=False):
+        """
+        Berechnet alle technischen Indikatoren, optional auch die fortgeschrittenen
+
+        Args:
+            include_advanced: Wenn True, werden auch fortgeschrittene Indikatoren berechnet
+        """
+        # Rufe zuerst die Original-Methode auf
+        original_calculate_indicators(self)
+
+        # Wenn fortgeschrittene Indikatoren gewünscht sind, berechne diese
+        if include_advanced:
+            self.calculate_advanced_indicators()
+
+        return self.df
+
+    # Überschreibe die originale Methode
+    TechnicalAnalyzer.calculate_indicators = new_calculate_indicators
+
+    return TechnicalAnalyzer
+
+TechnicalAnalyzer = extend_technical_analyzer(TechnicalAnalyzer)

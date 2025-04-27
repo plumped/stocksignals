@@ -17,6 +17,8 @@ urlpatterns = [
     path('api/stock/<str:symbol>/', views.api_stock_data, name='api_stock_data'),
     path('batch-analyze/', views.batch_analyze, name='batch_analyze'),
     path('settings/profile/', views.user_profile_settings, name='user_profile_settings'),
+    path('stock/<str:symbol>/advanced/', views.advanced_indicators, name='advanced_indicators'),
+    path('api/stock/<str:symbol>/advanced/', views.api_advanced_indicators, name='api_advanced_indicators'),
 
     # Backtesting
     path('backtest/<str:symbol>/', views.run_backtest, name='run_backtest'),

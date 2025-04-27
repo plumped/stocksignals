@@ -1,0 +1,767 @@
+<!-- stock_analyzer/templates/stock_analyzer/advanced_indicators.html -->
+{% extends 'stock_analyzer/base.html' %}
+
+{% block title %}Fortgeschrittene Indikatoren für {{ stock.symbol }}{% endblock %}
+
+{% block extra_head %}
+<style>
+    .indicator-card {
+        height: 100%;
+        margin-bottom: 20px;
+    }
+    .pattern-signal {
+        padding: 5px 10px;
+        margin: 3px;
+        border-radius: 4px;
+        display: inline-block;
+    }
+    .pattern-buy {
+        background-color: rgba(40, 167, 69, 0.2);
+        border: 1px solid #28a745;
+    }
+    .pattern-sell {
+        background-color: rgba(220, 53, 69, 0.2);
+        border: 1px solid #dc3545;
+    }
+    .fibonacci-line {
+        height: 2px;
+        margin: 3px 0;
+        width: 100%;
+    }
+    .pattern-detected {
+        background-color: #f8f9fa;
+        border-left: 4px solid #007bff;
+        padding: 10px;
+        margin-bottom: 10px;
+    }
+    .fibonacci-level {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 5px;
+    }
+    .fibonacci-value {
+        font-weight: bold;
+    }
+    .chart-container {
+        height: 400px;  /* Feste Höhe für den Container */
+    }
+
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Fortgeschrittene Indikatoren: {{ stock.symbol }} - {{ stock.name }}</h2>
+    <div>
+        <a href="{% url 'stock_detail' stock.symbol %}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left"></i> Zurück zur Aktiendetailansicht
+        </a>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>Heikin-Ashi Kursverlauf</span>
+                <div class="btn-group btn-group-sm">
+                    <button type="button" class="btn btn-outline-secondary time-range" data-range="30">1M</button>
+                    <button type="button" class="btn btn-outline-secondary time-range" data-range="90">3M</button>
+                    <button type="button" class="btn btn-outline-secondary time-range active" data-range="180">6M</button>
+                    <button type="button" class="btn btn-outline-secondary time-range" data-range="365">1J</button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="chart-container">
+                    <canvas id="heikin-ashi-chart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header">
+                Erkannte Chartmuster
+            </div>
+            <div class="card-body">
+                <div id="patterns-container">
+                    {% if detected_patterns %}
+                        {% for pattern in detected_patterns %}
+                            <div class="pattern-detected">
+                                <h5>{{ pattern.name }}</h5>
+                                <p>{{ pattern.description }}</p>
+                                <span class="badge {% if pattern.signal == 'BUY' %}bg-success{% elif pattern.signal == 'SELL' %}bg-danger{% else %}bg-warning{% endif %}">
+                                    {{ pattern.signal }}
+                                </span>
+                                <small class="text-muted">Erkannt am {{ pattern.date }}</small>
+                            </div>
+                        {% endfor %}
+                    {% else %}
+                        <p class="text-center">Keine Chartmuster in den aktuellen Daten erkannt.</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <div class="card mt-3">
+            <div class="card-header">
+                Fibonacci-Retracement
+            </div>
+            <div class="card-body">
+                <div id="fibonacci-container">
+                    {% if fibonacci_levels %}
+                        <p>Basierend auf dem aktuellen Aufwärts-/Abwärtstrend:</p>
+                        <div class="fibonacci-levels">
+                            {% for level in fibonacci_levels %}
+                                <div class="fibonacci-level">
+                                    <span>{{ level.name }}</span>
+                                    <span class="fibonacci-value">{{ level.value|floatformat:2 }}</span>
+                                </div>
+                                <div class="fibonacci-line" style="background-color: {{ level.color }};"></div>
+                            {% endfor %}
+                        </div>
+                    {% else %}
+                        <p class="text-center">Keine Fibonacci-Levels verfügbar.</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-12">
+        <ul class="nav nav-tabs" id="advancedIndicatorTabs">
+            <li class="nav-item">
+                <a class="nav-link active" id="supertrend-tab" data-bs-toggle="tab" href="#supertrend">SuperTrend</a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" id="elliott-waves-tab" data-bs-toggle="tab" href="#elliott-waves">Elliott Waves</a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" id="patterns-tab" data-bs-toggle="tab" href="#patterns">Muster-Erkennung</a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" id="vwap-tab" data-bs-toggle="tab" href="#vwap">VWAP</a>
+            </li>
+        </ul>
+
+        <div class="tab-content mt-3" id="advancedIndicatorTabsContent">
+            <div class="tab-pane fade show active" id="supertrend">
+                <div class="row">
+                    <div class="col-md-8 mb-4">
+                        <div class="card indicator-card">
+                            <div class="card-header">SuperTrend Indikator</div>
+                            <div class="card-body">
+                                <div class="chart-container">
+                                    <canvas id="supertrend-chart"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4 mb-4">
+                        <div class="card indicator-card">
+                            <div class="card-header">SuperTrend Erklärung</div>
+                            <div class="card-body">
+                                <p>Der SuperTrend ist ein trendbasierter Indikator, der auf der Average True Range (ATR) basiert. Er hilft, den aktuellen Markttrend zu identifizieren und kann als Signalgeber für Ein- und Ausstiegspunkte dienen.</p>
+
+                                <h6 class="mt-3">Interpretation:</h6>
+                                <ul>
+                                    <li><span class="text-success">Grüne Linie (über dem Preis):</span> Aufwärtstrend, Kaufsignal</li>
+                                    <li><span class="text-danger">Rote Linie (unter dem Preis):</span> Abwärtstrend, Verkaufssignal</li>
+                                </ul>
+
+                                <h6 class="mt-3">Aktuelles Signal:</h6>
+                                {% if supertrend_signal == 'BUY' %}
+                                    <div class="alert alert-success">
+                                        <i class="bi bi-arrow-up-circle-fill"></i> KAUFEN
+                                    </div>
+                                {% elif supertrend_signal == 'SELL' %}
+                                    <div class="alert alert-danger">
+                                        <i class="bi bi-arrow-down-circle-fill"></i> VERKAUFEN
+                                    </div>
+                                {% else %}
+                                    <div class="alert alert-secondary">
+                                        Kein eindeutiges Signal
+                                    </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-pane fade" id="elliott-waves">
+                <div class="row">
+                    <div class="col-md-8 mb-4">
+                        <div class="card indicator-card">
+                            <div class="card-header">Elliott Wave Analyse</div>
+                            <div class="card-body">
+                                <div class="chart-container">
+                                    <canvas id="elliott-wave-chart"</canvas>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4 mb-4">
+                        <div class="card indicator-card">
+                            <div class="card-header">Elliott Wave Erklärung</div>
+                            <div class="card-body">
+                                <p>Die Elliott-Wellen-Theorie beschreibt Preisbewegungen in einem wiederholbaren Muster von 5 Impulswellen und 3 Korrekturwellen. Die Identifikation dieser Wellen kann Hinweise auf zukünftige Preisbewegungen geben.</p>
+
+                                <h6 class="mt-3">Wellenstruktur:</h6>
+                                <ul>
+                                    <li><strong>Wellen 1-5:</strong> Impulswellen in Trendrichtung</li>
+                                    <li><strong>Wellen A-C:</strong> Korrekturwellen gegen den Trend</li>
+                                </ul>
+
+                                <h6 class="mt-3">Aktuelle Wave-Analyse:</h6>
+                                {% if elliott_wave_analysis %}
+                                    <p>{{ elliott_wave_analysis.current_wave }}</p>
+                                    <p>{{ elliott_wave_analysis.description }}</p>
+                                {% else %}
+                                    <p>Keine Elliott Wave Analyse verfügbar</p>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-pane fade" id="patterns">
+                <div class="row">
+                    <div class="col-md-12 mb-4">
+                        <div class="card">
+                            <div class="card-header">Chart-Muster Erkennung</div>
+                            <div class="card-body">
+                                <div class="table-responsive">
+                                    <table class="table table-striped">
+                                        <thead>
+                                            <tr>
+                                                <th>Muster</th>
+                                                <th>Signal</th>
+                                                <th>Datum</th>
+                                                <th>Zuverlässigkeit</th>
+                                                <th>Beschreibung</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {% for pattern in all_detected_patterns %}
+                                            <tr>
+                                                <td>{{ pattern.name }}</td>
+                                                <td>
+                                                    <span class="badge {% if pattern.signal == 'BUY' %}bg-success{% elif pattern.signal == 'SELL' %}bg-danger{% else %}bg-warning{% endif %}">
+                                                        {{ pattern.signal }}
+                                                    </span>
+                                                </td>
+                                                <td>{{ pattern.date }}</td>
+                                                <td>
+                                                    <div class="progress">
+                                                        <div class="progress-bar" role="progressbar" style="width: {{ pattern.reliability }}%;"
+                                                             aria-valuenow="{{ pattern.reliability }}" aria-valuemin="0" aria-valuemax="100">
+                                                            {{ pattern.reliability }}%
+                                                        </div>
+                                                    </div>
+                                                </td>
+                                                <td>{{ pattern.description }}</td>
+                                            </tr>
+                                            {% empty %}
+                                            <tr>
+                                                <td colspan="5" class="text-center">Keine Chartmuster erkannt</td>
+                                            </tr>
+                                            {% endfor %}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-pane fade" id="vwap">
+                <div class="row">
+                    <div class="col-md-8 mb-4">
+                        <div class="card indicator-card">
+                            <div class="card-header">Volume Weighted Average Price (VWAP)</div>
+                            <div class="card-body">
+                                <div class="chart-container">
+                                    <canvas id="vwap-chart"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4 mb-4">
+                        <div class="card indicator-card">
+                            <div class="card-header">VWAP Erklärung</div>
+                            <div class="card-body">
+                                <p>Der Volume Weighted Average Price (VWAP) ist ein Trading-Benchmark, der das Verhältnis zwischen Handelsvolumen und Preis zeigt. Er berechnet den Durchschnittspreis, gewichtet nach Volumen.</p>
+
+                                <h6 class="mt-3">Interpretation:</h6>
+                                <ul>
+                                    <li><strong>Preis > VWAP:</strong> Aktueller Preis über dem gewichteten Durchschnitt (potenzieller Kaufdruck)</li>
+                                    <li><strong>Preis < VWAP:</strong> Aktueller Preis unter dem gewichteten Durchschnitt (potenzieller Verkaufsdruck)</li>
+                                </ul>
+
+                                <h6 class="mt-3">Aktueller Stand:</h6>
+                                {% if vwap_data %}
+                                    <p>Aktueller Preis: {{ current_price|floatformat:2 }}</p>
+                                    <p>VWAP: {{ vwap_data.current|floatformat:2 }}</p>
+
+                                    {% if current_price > vwap_data.current %}
+                                        <div class="alert alert-success">
+                                            Preis liegt {{ vwap_data.difference|floatformat:2 }}% über VWAP
+                                        </div>
+                                    {% else %}
+                                        <div class="alert alert-danger">
+                                            Preis liegt {{ vwap_data.difference|floatformat:2 }}% unter VWAP
+                                        </div>
+                                    {% endif %}
+                                {% else %}
+                                    <p>Keine VWAP-Daten verfügbar</p>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const symbol = document.querySelector('h2').textContent.split(':')[1].split('-')[0].trim();
+        let stockData = null;
+        let heikinAshiChart = null;
+        let supertrendChart = null;
+        let elliottWaveChart = null;
+        let vwapChart = null;
+
+        // Tabs konfigurieren
+        document.querySelectorAll('.time-range').forEach(btn => {
+            btn.addEventListener('click', function() {
+                document.querySelectorAll('.time-range').forEach(b => b.classList.remove('active'));
+                this.classList.add('active');
+                updateCharts(parseInt(this.dataset.range));
+            });
+        });
+
+        // Daten laden und Charts initialisieren
+        fetch(`/api/stock/${symbol}/advanced/`)
+            .then(response => {
+                console.log('API Response status:', response.status);
+                if (!response.ok) {
+                    throw new Error('Netzwerkantwort war nicht ok');
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log('API Response data:', data);
+                stockData = data;
+                console.log('stockData.indicators:', stockData.indicators);
+                initCharts();
+                updateCharts(180); // Standardmäßig 6 Monate anzeigen
+            })
+            .catch(error => {
+                console.error('Fehler beim Laden der fortgeschrittenen Indikator-Daten:', error);
+            });
+
+        function initCharts() {
+            console.log('initCharts called');
+            // Überprüfen, ob Daten vorhanden sind
+            if (!stockData || !stockData.price_data || stockData.price_data.length === 0) {
+                console.error('Keine Daten zum Initialisieren der Charts verfügbar');
+                return;
+            }
+            console.log('Price data length:', stockData.price_data.length);
+
+            // Heikin-Ashi Chart
+            const heikinAshiCtx = document.getElementById('heikin-ashi-chart');
+            if (heikinAshiCtx) {
+                heikinAshiChart = new Chart(heikinAshiCtx.getContext('2d'), {
+                    type: 'candlestick',
+                    data: {
+                        datasets: [{
+                            label: 'Heikin-Ashi',
+                            data: []
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        scales: {
+                            x: {
+                                type: 'time',
+                                time: {
+                                    unit: 'day',
+                                    tooltipFormat: 'dd.MM.yyyy'
+                                },
+                                title: {
+                                    display: true,
+                                    text: 'Datum'
+                                }
+                            },
+                            y: {
+                                title: {
+                                    display: true,
+                                    text: 'Preis'
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
+            // SuperTrend Chart
+            const supertrendCtx = document.getElementById('supertrend-chart');
+            if (supertrendCtx) {
+                supertrendChart = new Chart(supertrendCtx.getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        datasets: [{
+                            label: 'Kurs',
+                            borderColor: 'rgb(0, 0, 0)',
+                            backgroundColor: 'rgba(0, 0, 0, 0.1)',
+                            fill: false,
+                            pointRadius: 0,
+                            data: []
+                        }, {
+                            label: 'SuperTrend',
+                            borderColor: function(context) {
+                                // Farbe je nach SuperTrend-Richtung
+                                const index = context.dataIndex;
+                                if (!stockData || !stockData.indicators || !stockData.indicators.supertrend_direction) {
+                                    return 'rgb(0, 0, 0)';
+                                }
+                                const direction = stockData.indicators.supertrend_direction[index];
+                                return direction > 0 ? 'rgb(40, 167, 69)' : 'rgb(220, 53, 69)';
+                            },
+                            borderWidth: 2,
+                            pointRadius: 0,
+                            data: []
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        scales: {
+                            x: {
+                                type: 'time',
+                                time: {
+                                    unit: 'day',
+                                    tooltipFormat: 'dd.MM.yyyy'
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
+            // Elliott Wave Chart
+            const elliottWaveCtx = document.getElementById('elliott-wave-chart');
+            if (elliottWaveCtx) {
+                elliottWaveChart = new Chart(elliottWaveCtx.getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        datasets: [{
+                            label: 'Kurs',
+                            borderColor: 'rgb(0, 0, 0)',
+                            backgroundColor: 'rgba(0, 0, 0, 0.1)',
+                            fill: false,
+                            data: []
+                        }, {
+                            label: 'Elliott Wave Punkte',
+                            borderColor: 'rgba(0, 0, 0, 0)',
+                            backgroundColor: function(context) {
+                                const index = context.dataIndex;
+                                if (!stockData || !stockData.indicators || !stockData.indicators.elliott_wave_point) {
+                                    return 'rgba(0, 0, 0, 0)';
+                                }
+                                const point = stockData.indicators.elliott_wave_point[index];
+                                if (point === 1) {
+                                    return 'rgb(40, 167, 69)';  // Grün für Hochpunkte
+                                } else if (point === -1) {
+                                    return 'rgb(220, 53, 69)';  // Rot für Tiefpunkte
+                                } else {
+                                    return 'rgba(0, 0, 0, 0)';  // Transparent für keine Punkte
+                                }
+                            },
+                            pointRadius: function(context) {
+                                const index = context.dataIndex;
+                                if (!stockData || !stockData.indicators || !stockData.indicators.elliott_wave_point) {
+                                    return 0;
+                                }
+                                const point = stockData.indicators.elliott_wave_point[index];
+                                return point !== 0 ? 5 : 0;  // Nur Elliott Wave Punkte zeigen
+                            },
+                            pointStyle: 'circle',
+                            data: []
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        scales: {
+                            x: {
+                                type: 'time',
+                                time: {
+                                    unit: 'day',
+                                    tooltipFormat: 'dd.MM.yyyy'
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
+            // VWAP Chart
+            const vwapCtx = document.getElementById('vwap-chart');
+            if (vwapCtx) {
+                vwapChart = new Chart(vwapCtx.getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        datasets: [{
+                            label: 'Kurs',
+                            borderColor: 'rgb(0, 0, 0)',
+                            backgroundColor: 'rgba(0, 0, 0, 0.1)',
+                            fill: false,
+                            data: []
+                        }, {
+                            label: 'VWAP',
+                            borderColor: 'rgb(75, 192, 192)',
+                            borderWidth: 2,
+                            pointRadius: 0,
+                            data: []
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        scales: {
+                            x: {
+                                type: 'time',
+                                time: {
+                                    unit: 'day',
+                                    tooltipFormat: 'dd.MM.yyyy'
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        }
+
+        function updateCharts(days) {
+            console.log('updateCharts called with days:', days);
+            if (!stockData || !stockData.price_data || stockData.price_data.length === 0) {
+                console.error('Keine Daten zum Aktualisieren der Charts verfügbar');
+                return;
+            }
+
+            try {
+                // Die neuesten Daten sollten am Ende des Arrays sein
+                const reversedData = [...stockData.price_data].reverse();
+                console.log('Reversed data length:', reversedData.length);
+
+                // Zeitraum berechnen
+                const endDate = new Date(reversedData[0].date);
+                const startDate = new Date(endDate);
+                startDate.setDate(endDate.getDate() - days);
+                console.log('Date range:', startDate, 'to', endDate);
+
+                // Daten nach Datum filtern
+                const filteredData = reversedData.filter(d => {
+                    const date = new Date(d.date);
+                    return date >= startDate && date <= endDate;
+                });
+
+                console.log('Filtered data length:', filteredData.length);
+
+                if (heikinAshiChart && stockData.indicators) {
+                    console.log('HA indicators available:',
+                        'ha_open' in stockData.indicators,
+                        'ha_high' in stockData.indicators,
+                        'ha_low' in stockData.indicators,
+                        'ha_close' in stockData.indicators);
+                }
+                if (filteredData.length === 0) {
+                    console.warn('Keine gefilterten Daten verfügbar');
+                    return;
+                }
+
+                // Daten für die Charts vorbereiten
+                const chartDates = filteredData.map(d => new Date(d.date));
+
+                // Heikin-Ashi Chart aktualisieren
+                if (heikinAshiChart && stockData.indicators &&
+                    stockData.indicators.ha_open &&
+                    stockData.indicators.ha_high &&
+                    stockData.indicators.ha_low &&
+                    stockData.indicators.ha_close) {
+
+                    const haData = [];
+
+                    // Die gleiche Logik für Offset und gefilterte Indizes wie bei anderen Indikatoren
+                    const indicatorLength = stockData.indicators.ha_open.length;
+                    const priceLength = stockData.price_data.length;
+                    const offset = Math.max(0, priceLength - indicatorLength);
+
+                    const filteredIndices = filteredData.map(d => {
+                        return stockData.price_data.findIndex(p => p.date === d.date);
+                    }).filter(idx => idx !== -1);
+                    console.log('Filtered indices for HA:', filteredIndices.length); // Debug: Anzahl der Indizes
+
+                    if (filteredIndices.length > 0) {
+                        const sampleIdx = filteredIndices[0];
+                        const adjustedIdx = sampleIdx - offset;
+                        console.log('Sample HA calculation:', {
+                            sampleIdx,
+                            adjustedIdx,
+                            'has valid index': adjustedIdx >= 0 && adjustedIdx < indicatorLength,
+                            'values': adjustedIdx >= 0 && adjustedIdx < indicatorLength ? {
+                                date: stockData.price_data[sampleIdx].date,
+                                ha_open: stockData.indicators.ha_open[adjustedIdx],
+                                ha_high: stockData.indicators.ha_high[adjustedIdx],
+                                ha_low: stockData.indicators.ha_low[adjustedIdx],
+                                ha_close: stockData.indicators.ha_close[adjustedIdx]
+                            } : 'N/A'
+                        });
+                    }
+
+                    filteredIndices.forEach(idx => {
+                        const adjustedIdx = idx - offset;
+                        if (adjustedIdx >= 0 && adjustedIdx < indicatorLength) {
+                            haData.push({
+                                x: new Date(stockData.price_data[idx].date),
+                                o: stockData.indicators.ha_open[adjustedIdx],
+                                h: stockData.indicators.ha_high[adjustedIdx],
+                                l: stockData.indicators.ha_low[adjustedIdx],
+                                c: stockData.indicators.ha_close[adjustedIdx]
+                            });
+                        }
+                    });
+
+                    if (haData.length > 0) {
+                        heikinAshiChart.data.datasets[0].data = haData;
+                        heikinAshiChart.update();
+                    }
+                }
+
+                // SuperTrend Chart aktualisieren
+                if (supertrendChart && stockData.indicators && stockData.indicators.supertrend) {
+                    // Preisdaten
+                    supertrendChart.data.datasets[0].data = filteredData.map(d => ({
+                        x: new Date(d.date),
+                        y: d.close_price
+                    }));
+
+                    // SuperTrend-Daten
+                    const indicatorLength = stockData.indicators.supertrend.length;
+                    const priceLength = stockData.price_data.length;
+                    const offset = Math.max(0, priceLength - indicatorLength);
+
+                    const filteredIndices = filteredData.map(d => {
+                        return stockData.price_data.findIndex(p => p.date === d.date);
+                    }).filter(idx => idx !== -1);
+
+                    const supertrendData = [];
+
+                    filteredIndices.forEach(idx => {
+                        const adjustedIdx = idx - offset;
+                        if (adjustedIdx >= 0 && adjustedIdx < indicatorLength) {
+                            supertrendData.push({
+                                x: new Date(stockData.price_data[idx].date),
+                                y: stockData.indicators.supertrend[adjustedIdx]
+                            });
+                        }
+                    });
+
+                    if (supertrendData.length > 0) {
+                        supertrendChart.data.datasets[1].data = supertrendData;
+                        supertrendChart.update();
+                    }
+                }
+
+                // Elliott Wave Chart aktualisieren
+                if (elliottWaveChart) {
+                    // Preisdaten
+                    elliottWaveChart.data.datasets[0].data = filteredData.map(d => ({
+                        x: new Date(d.date),
+                        y: d.close_price
+                    }));
+
+                    // Elliott Wave Punkte
+                    if (stockData.indicators && stockData.indicators.elliott_wave_point) {
+                        const indicatorLength = stockData.indicators.elliott_wave_point.length;
+                        const priceLength = stockData.price_data.length;
+                        const offset = Math.max(0, priceLength - indicatorLength);
+
+                        const filteredIndices = filteredData.map(d => {
+                            return stockData.price_data.findIndex(p => p.date === d.date);
+                        }).filter(idx => idx !== -1);
+
+                        const elliottData = [];
+
+                        filteredIndices.forEach(idx => {
+                            const adjustedIdx = idx - offset;
+                            if (adjustedIdx >= 0 && adjustedIdx < indicatorLength) {
+                                elliottData.push({
+                                    x: new Date(stockData.price_data[idx].date),
+                                    y: stockData.price_data[idx].close_price
+                                });
+                            }
+                        });
+
+                        if (elliottData.length > 0) {
+                            elliottWaveChart.data.datasets[1].data = elliottData;
+                            elliottWaveChart.update();
+                        }
+                    }
+                }
+
+                // VWAP Chart aktualisieren
+                if (vwapChart && stockData.indicators && stockData.indicators.vwap) {
+                    // Preisdaten
+                    vwapChart.data.datasets[0].data = filteredData.map(d => ({
+                        x: new Date(d.date),
+                        y: d.close_price
+                    }));
+
+                    // VWAP-Daten
+                    const indicatorLength = stockData.indicators.vwap.length;
+                    const priceLength = stockData.price_data.length;
+                    const offset = Math.max(0, priceLength - indicatorLength);
+
+                    const filteredIndices = filteredData.map(d => {
+                        return stockData.price_data.findIndex(p => p.date === d.date);
+                    }).filter(idx => idx !== -1);
+
+                    const vwapData = [];
+
+                    filteredIndices.forEach(idx => {
+                        const adjustedIdx = idx - offset;
+                        if (adjustedIdx >= 0 && adjustedIdx < indicatorLength) {
+                            vwapData.push({
+                                x: new Date(stockData.price_data[idx].date),
+                                y: stockData.indicators.vwap[adjustedIdx]
+                            });
+                        }
+                    });
+
+                    if (vwapData.length > 0) {
+                        vwapChart.data.datasets[1].data = vwapData;
+                        vwapChart.update();
+                    }
+                }
+
+            } catch (error) {
+                console.error('Fehler beim Aktualisieren der Charts:', error);
+            }
+        }
+    });
+</script>
+{% endblock %}
