@@ -611,9 +611,7 @@ def delete_watchlist(request, watchlist_id):
 
 
 def advanced_indicators(request, symbol):
-    """
-    Zeigt fortgeschrittene technische Indikatoren für eine bestimmte Aktie an
-    """
+    """Zeigt fortgeschrittene technische Indikatoren für eine bestimmte Aktie an"""
     stock = get_object_or_404(Stock, symbol=symbol.upper())
 
     # Analyzer mit erweiterten Indikatoren erstellen
@@ -626,56 +624,61 @@ def advanced_indicators(request, symbol):
     last_date = analyzer.df['date'].iloc[-1]
     latest_close = float(analyzer.df['close_price'].iloc[-1])
 
-    # Erkannte Chartmuster finden
-    detected_patterns = []
+    # Erkannte Chartmuster finden - VERBESSERTE VERSION
+    # Alle erkannten Muster für die Tabelle
+    all_detected_patterns = []
     pattern_columns = [col for col in analyzer.df.columns if col.startswith('pattern_')]
 
     if pattern_columns:
-        last_row = analyzer.df.iloc[-1]
-        for col in pattern_columns:
-            if last_row[col] == 1:
-                pattern_name = col.replace('pattern_', '').replace('_', ' ').title()
+        # Hier ist der wichtige Teil: Prüfe die letzten 5-10 Tage auf Muster
+        recent_days = min(10, len(analyzer.df))
+        recent_data = analyzer.df.tail(recent_days)
 
-                # Signaltyp und Beschreibung basierend auf dem Mustertyp
-                signal = 'HOLD'
-                description = 'Mögliche Trendwende.'
-                reliability = 70  # Standardwert
+        for _, row in recent_data.iterrows():
+            for col in pattern_columns:
+                if row[col] == 1:  # Muster erkannt
+                    pattern_name = col.replace('pattern_', '').replace('_', ' ').title()
 
-                if 'double_top' in col or 'head_shoulders' in col:
-                    signal = 'SELL'
-                    description = 'Potentielles Trendumkehrmuster nach oben. Verkaufssignal.'
-                    reliability = 75
-                elif 'double_bottom' in col or 'inv_head_shoulders' in col:
-                    signal = 'BUY'
-                    description = 'Potentielles Trendumkehrmuster nach unten. Kaufsignal.'
-                    reliability = 75
-                elif 'triangle_ascending' in col:
-                    signal = 'BUY'
-                    description = 'Aufsteigendes Dreieck. Fortsetzung des Aufwärtstrends wahrscheinlich.'
-                    reliability = 80
-                elif 'triangle_descending' in col:
-                    signal = 'SELL'
-                    description = 'Absteigendes Dreieck. Fortsetzung des Abwärtstrends wahrscheinlich.'
-                    reliability = 80
-                elif 'flag_bullish' in col:
-                    signal = 'BUY'
-                    description = 'Bullische Flagge. Fortsetzung des Aufwärtstrends wahrscheinlich.'
-                    reliability = 85
-                elif 'flag_bearish' in col:
-                    signal = 'SELL'
-                    description = 'Bärische Flagge. Fortsetzung des Abwärtstrends wahrscheinlich.'
-                    reliability = 85
+                    # Signaltyp und Beschreibung basierend auf dem Mustertyp
+                    signal = 'HOLD'
+                    description = 'Mögliche Trendwende.'
+                    reliability = 70
 
-                detected_patterns.append({
-                    'name': pattern_name,
-                    'signal': signal,
-                    'description': description,
-                    'reliability': reliability,
-                    'date': last_date
-                })
+                    if 'double_top' in col or 'head_shoulders' in col:
+                        signal = 'SELL'
+                        description = 'Potentielles Trendumkehrmuster nach oben. Verkaufssignal.'
+                        reliability = 75
+                    elif 'double_bottom' in col or 'inv_head_shoulders' in col:
+                        signal = 'BUY'
+                        description = 'Potentielles Trendumkehrmuster nach unten. Kaufsignal.'
+                        reliability = 75
+                    elif 'triangle_ascending' in col:
+                        signal = 'BUY'
+                        description = 'Aufsteigendes Dreieck. Fortsetzung des Aufwärtstrends wahrscheinlich.'
+                        reliability = 80
+                    elif 'triangle_descending' in col:
+                        signal = 'SELL'
+                        description = 'Absteigendes Dreieck. Fortsetzung des Abwärtstrends wahrscheinlich.'
+                        reliability = 80
+                    elif 'flag_bullish' in col:
+                        signal = 'BUY'
+                        description = 'Bullische Flagge. Fortsetzung des Aufwärtstrends wahrscheinlich.'
+                        reliability = 85
+                    elif 'flag_bearish' in col:
+                        signal = 'SELL'
+                        description = 'Bärische Flagge. Fortsetzung des Abwärtstrends wahrscheinlich.'
+                        reliability = 85
 
-    # Alle erkannten Muster für die Tabelle
-    all_detected_patterns = []
+                    # Füge das erkannte Muster zur Liste hinzu
+                    all_detected_patterns.append({
+                        'name': pattern_name,
+                        'signal': signal,
+                        'description': description,
+                        'reliability': reliability,
+                        'date': row['date']
+                    })
+
+
 
     # Suche nach Mustern in den letzten 30 Tagen
     last_30_days = analyzer.df.tail(30)
@@ -768,13 +771,15 @@ def advanced_indicators(request, symbol):
 
     # Fibonacci-Levels
     fibonacci_levels = []
-    if 'fib_up_618' in analyzer.df.columns and 'fib_down_618' in analyzer.df.columns:
-        # Bestimme, ob wir uns in einem Aufwärts- oder Abwärtstrend befinden
-        trend_up = latest_close > analyzer.df['sma_50'].iloc[-1] if 'sma_50' in analyzer.df.columns else True
 
-        # Wähle die entsprechenden Fibonacci-Levels basierend auf dem Trend
-        fib_prefix = 'fib_up_' if not trend_up else 'fib_down_'
+    # Bestimme, ob wir uns in einem Aufwärts- oder Abwärtstrend befinden
+    trend_up = latest_close > analyzer.df['sma_50'].iloc[-1] if 'sma_50' in analyzer.df.columns else True
 
+    # Suche nach Fibonacci-Retracement-Columns
+    fib_prefix = 'fib_up_' if not trend_up else 'fib_down_'
+    fib_columns = [col for col in analyzer.df.columns if col.startswith(fib_prefix)]
+
+    if fib_columns:
         # Fibonacci-Level-Namen und deren Prozentwerte
         fib_mappings = {
             '0': 0,
@@ -801,16 +806,35 @@ def advanced_indicators(request, symbol):
             col_name = f"{fib_prefix}{suffix}"
             if col_name in analyzer.df.columns:
                 fib_value = float(analyzer.df[col_name].iloc[-1])
-                fibonacci_levels.append({
-                    'name': f"Fibonacci {value}",
-                    'value': fib_value,
-                    'color': fib_colors.get(suffix, '#000000')
-                })
+                # Prüfe auf NaN oder ungültige Werte
+                if not pd.isna(fib_value) and fib_value > 0:
+                    fibonacci_levels.append({
+                        'name': f"Fibonacci {value}",
+                        'value': fib_value,
+                        'color': fib_colors.get(suffix, '#000000')
+                    })
+                else:
+                    # Fallback-Wert basierend auf aktuellem Preis und Level
+                    if trend_up:
+                        fallback_value = latest_close * (1 - value * 0.1)
+                    else:
+                        fallback_value = latest_close * (1 + value * 0.1)
+
+                    fibonacci_levels.append({
+                        'name': f"Fibonacci {value}",
+                        'value': fallback_value,
+                        'color': fib_colors.get(suffix, '#000000')
+                    })
 
     # VWAP-Daten
     vwap_data = None
     if 'vwap' in analyzer.df.columns:
         current_vwap = float(analyzer.df['vwap'].iloc[-1])
+        # Prüfe auf NaN
+        if pd.isna(current_vwap):
+            # Fallback: Verwende den aktuellen Preis als VWAP
+            current_vwap = latest_close
+
         difference = ((latest_close - current_vwap) / current_vwap) * 100
 
         vwap_data = {
@@ -821,7 +845,6 @@ def advanced_indicators(request, symbol):
     context = {
         'stock': stock,
         'current_price': latest_close,
-        'detected_patterns': detected_patterns,
         'all_detected_patterns': all_detected_patterns,
         'supertrend_signal': supertrend_signal,
         'elliott_wave_analysis': elliott_wave_analysis,

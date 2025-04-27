@@ -86,8 +86,8 @@
             </div>
             <div class="card-body">
                 <div id="patterns-container">
-                    {% if detected_patterns %}
-                        {% for pattern in detected_patterns %}
+                    {% if all_detected_patterns  %}
+                        {% for pattern in all_detected_patterns %}
                             <div class="pattern-detected">
                                 <h5>{{ pattern.name }}</h5>
                                 <p>{{ pattern.description }}</p>

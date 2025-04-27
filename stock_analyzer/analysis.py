@@ -541,36 +541,73 @@ class AdvancedIndicators:
         """
         Berechnet Fibonacci-Retracement-Levels basierend auf den letzten X Tagen.
         """
-        # Bestimme lokale Hochs und Tiefs im Fenster
-        self.df['local_max'] = self.df['high_price'].rolling(window=window, center=True).max()
-        self.df['local_min'] = self.df['low_price'].rolling(window=window, center=True).min()
+        # Stelle sicher, dass genug Daten vorhanden sind
+        if len(self.df) < window:
+            window = max(len(self.df) // 2, 2)  # Mindestens 2 Datenpunkte
+
+        # Bestimme lokale Hochs und Tiefs im letzten Fenster
+        segment = self.df.tail(window)
+
+        local_max = segment['high_price'].max()
+        local_min = segment['low_price'].min()
+
+        # Prüfe, ob die Werte gültig sind
+        if pd.isna(local_max) or pd.isna(local_min) or local_max <= local_min:
+            # Fallback: Verwende einfach den höchsten und niedrigsten Wert im gesamten DataFrame
+            local_max = self.df['high_price'].max()
+            local_min = self.df['low_price'].min()
+
+            # Wenn immer noch ungültig, setze Standard-Werte
+            if pd.isna(local_max) or pd.isna(local_min) or local_max <= local_min:
+                if 'close_price' in self.df.columns and len(self.df) > 0:
+                    most_recent = float(self.df['close_price'].iloc[-1])
+                    if not pd.isna(most_recent) and most_recent > 0:
+                        local_max = most_recent * 1.1  # 10% über aktuellem Preis
+                        local_min = most_recent * 0.9  # 10% unter aktuellem Preis
+                    else:
+                        local_max = 110
+                        local_min = 90
+                else:
+                    local_max = 110
+                    local_min = 90
 
         # Fibonacci-Levels: 0, 0.236, 0.382, 0.5, 0.618, 0.786, 1
         fib_levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1]
 
-        for i, level in enumerate(fib_levels):
+        # Bestimme den aktuellen Trend
+        if 'close_price' in self.df.columns and len(self.df) >= 20:
+            recent_trend = self.df['close_price'].tail(20).diff().mean()
+            trend_is_up = recent_trend >= 0
+        else:
+            # Fallback: Nehme an, dass der Trend aufwärts ist
+            trend_is_up = True
+
+        # Retracement-Levels für beide Richtungen berechnen
+        for level in fib_levels:
             # Retracement-Levels nach unten (von Hochs)
-            self.df[f'fib_down_{int(level * 1000)}'] = (
-                    self.df['local_max'] - (self.df['local_max'] - self.df['local_min']) * level
+            level_val = int(level * 1000)
+            self.df[f'fib_down_{level_val}'] = (
+                    local_max - (local_max - local_min) * level
             )
 
             # Retracement-Levels nach oben (von Tiefs)
-            self.df[f'fib_up_{int(level * 1000)}'] = (
-                    self.df['local_min'] + (self.df['local_max'] - self.df['local_min']) * level
+            self.df[f'fib_up_{level_val}'] = (
+                    local_min + (local_max - local_min) * level
             )
 
         # Fibonacci-Extensions: 1.618, 2.618, 4.236
         ext_levels = [1.618, 2.618, 4.236]
 
         for level in ext_levels:
+            level_val = int(level * 1000)
             # Extension-Levels nach oben
-            self.df[f'fib_ext_up_{int(level * 1000)}'] = (
-                    self.df['local_min'] + (self.df['local_max'] - self.df['local_min']) * level
+            self.df[f'fib_ext_up_{level_val}'] = (
+                    local_min + (local_max - local_min) * level
             )
 
             # Extension-Levels nach unten
-            self.df[f'fib_ext_down_{int(level * 1000)}'] = (
-                    self.df['local_max'] - (self.df['local_max'] - self.df['local_min']) * level
+            self.df[f'fib_ext_down_{level_val}'] = (
+                    local_max - (local_max - local_min) * level
             )
 
         return self.df
