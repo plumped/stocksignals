@@ -1,4 +1,6 @@
 # stock_analyzer/analysis.py
+from datetime import timedelta
+
 import numpy as np
 import pandas as pd
 from .models import Stock, StockData, AnalysisResult
@@ -7,8 +9,16 @@ from .models import Stock, StockData, AnalysisResult
 class TechnicalAnalyzer:
     def __init__(self, stock_symbol, days=365):
         self.stock = Stock.objects.get(symbol=stock_symbol)
-        # Historische Daten abrufen und in ein DataFrame umwandeln
-        data = StockData.objects.filter(stock=self.stock).order_by('date')[:days]
+
+        # Das neueste Datum (letzte historische Daten)
+        last_date = StockData.objects.filter(stock=self.stock).order_by('-date').first().date
+
+        # Berechne das Startdatum
+        start_date = last_date - timedelta(days=days)
+
+        # Historische Daten für den Zeitraum ab dem Startdatum laden
+        data = StockData.objects.filter(stock=self.stock, date__range=[start_date, last_date]).order_by('date')
+
         self.df = pd.DataFrame(list(data.values()))
 
         if not self.df.empty:
