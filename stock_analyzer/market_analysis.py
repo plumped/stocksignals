@@ -1,6 +1,9 @@
 # stock_analyzer/market_analysis.py
 import numpy as np
 import pandas as pd
+from django.db.models import Avg
+
+from .analysis import TechnicalAnalyzer
 from .models import Stock, StockData
 
 
@@ -154,3 +157,95 @@ class MarketAnalyzer:
             return result
 
         return None
+
+# stock_analyzer/market_analysis.py
+
+class TraditionalAnalyzer:
+
+    @staticmethod
+    def evaluate_traditional_performance(symbol):
+        """Neue intelligente Bewertung einer Aktie basierend auf technischer Analyse und Marktbreite"""
+        try:
+            analyzer = TechnicalAnalyzer(symbol)
+            analyzer.calculate_indicators()
+
+            df = analyzer.df
+            latest = df.iloc[-1]
+
+            close_price = latest.get('close_price', 1)
+
+            # 1. RSI Bewertung
+            rsi = latest.get('rsi', 50)
+            if rsi < 30:
+                rsi_score = 90  # Stark überverkauft -> große Chance
+            elif rsi > 70:
+                rsi_score = 30  # Stark überkauft -> Risiko
+            else:
+                rsi_score = 70  # Neutral
+
+            # 2. MACD Bewertung
+            macd = latest.get('macd', 0)
+            macd_signal = latest.get('macd_signal', 0)
+            macd_score = 90 if macd > macd_signal else 40
+
+            # 3. Volatilität Bewertung (ATR anstatt Standardabweichung)
+            if 'atr' in df.columns:
+                atr = latest.get('atr', 0)
+                atr_percentage = atr / close_price if close_price else 0
+                if atr_percentage < 0.02:
+                    volatility_score = 85  # Ruhig = Stabil
+                elif atr_percentage > 0.05:
+                    volatility_score = 40  # Sehr volatil
+                else:
+                    volatility_score = 65  # Normal
+            else:
+                volatility_score = 65  # Fallback
+
+            # 4. Trendbewertung (SMA 20 vs SMA 50)
+            sma_20 = latest.get('sma_20', close_price)
+            sma_50 = latest.get('sma_50', close_price)
+            trend_score = 85 if sma_20 > sma_50 else 45
+
+            # 5. Marktbreite (Market Breadth)
+            market_breadth = MarketAnalyzer.market_breadth()
+            if market_breadth:
+                above_percent = market_breadth.get('above_percent', 50)
+                if above_percent >= 70:
+                    market_breadth_score = 85  # Bullischer Gesamtmarkt
+                elif above_percent <= 30:
+                    market_breadth_score = 40  # Bärischer Gesamtmarkt
+                else:
+                    market_breadth_score = 65  # Neutraler Markt
+            else:
+                market_breadth_score = 65  # Fallback-Wert
+
+            # --- Finales Scoring nach deiner Gewichtung ---
+            final_score = (
+                rsi_score * 0.20 +
+                macd_score * 0.25 +
+                volatility_score * 0.15 +
+                trend_score * 0.25 +
+                market_breadth_score * 0.15
+            )
+
+            return {
+                'accuracy': round(rsi_score, 1),
+                'return': round(macd_score, 1),
+                'speed': round(volatility_score, 1),
+                'adaptability': round(trend_score, 1),
+                'robustness': round(market_breadth_score, 1),
+                'final_score': round(final_score, 1)
+            }
+
+        except Exception as e:
+            print(f"Fehler in TraditionalAnalyzer: {str(e)}")
+            return {
+                'accuracy': 65,
+                'return': 70,
+                'speed': 75,
+                'adaptability': 60,
+                'robustness': 65,
+                'final_score': 67
+            }
+
+

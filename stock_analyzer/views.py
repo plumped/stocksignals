@@ -6,7 +6,7 @@ from django.http import JsonResponse
 
 from .backtesting import BacktestStrategy
 from .forms import UserProfileForm
-from .market_analysis import MarketAnalyzer
+from .market_analysis import MarketAnalyzer, TraditionalAnalyzer
 from .ml_models import MLPredictor, AdaptiveAnalyzer
 from .models import Stock, StockData, AnalysisResult, WatchList, UserProfile, MLPrediction, MLModelMetrics
 from .data_service import StockDataService
@@ -1066,6 +1066,7 @@ def ml_dashboard(request):
         confidence__gte=0.6
     ).order_by('predicted_return')[:10]
 
+    # ML-Performance abrufen
     metrics = MLModelMetrics.objects.order_by('-date')[:10]
 
     symbols = []
@@ -1076,15 +1077,32 @@ def ml_dashboard(request):
             symbols.append(metric.stock.symbol)
             accuracies.append(round(metric.accuracy * 100, 2))
 
-    # Korrektur: Fallback-Daten nur setzen, wenn *nichts* da ist
-    if not symbols:
-        symbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA']
-        accuracies = [78.0, 82.0, 75.0, 80.0, 85.0]
+    # Traditionelle Performance - NEU
+    traditional_performance = TraditionalAnalyzer.evaluate_traditional_performance(symbols[0]) if symbols else {
+        'accuracy': 65,
+        'return': 70,
+        'speed': 85,
+        'adaptability': 50,
+        'robustness': 80
+    }
 
-    # Immer performance_data korrekt erzeugen
     performance_data = {
         'symbols': json.dumps(symbols),
-        'accuracy': json.dumps(accuracies)
+        'accuracy': json.dumps(accuracies),
+        'traditional': json.dumps([
+            float(traditional_performance['accuracy']),
+            float(traditional_performance['return']),
+            float(traditional_performance['speed']),
+            float(traditional_performance['adaptability']),
+            float(traditional_performance['robustness'])
+        ]),
+        'traditional_final': round((
+                float(traditional_performance['accuracy']) * 0.3 +
+                float(traditional_performance['return']) * 0.25 +
+                float(traditional_performance['speed']) * 0.2 +
+                float(traditional_performance['adaptability']) * 0.15 +
+                float(traditional_performance['robustness']) * 0.1
+        ), 1)
     }
 
     # Aktien mit genug Daten für ML abrufen

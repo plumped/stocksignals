@@ -135,6 +135,17 @@
             </div>
         </div>
     </div>
+
+    <div class="col-md-6 mt-4">
+        <div class="card">
+            <div class="card-header">
+                Traditionelle Analyse Gesamtscore
+            </div>
+            <div class="card-body">
+                <canvas id="traditional-final-chart" height="100"></canvas>
+            </div>
+        </div>
+    </div>
 </div>
 
 <div class="row mt-4">
@@ -216,13 +227,13 @@
                 labels: ['Genauigkeit', 'Rendite', 'Reaktionszeit', 'Anpassungsfähigkeit', 'Robustheit'],
                 datasets: [{
                     label: 'ML-Analyse',
-                    data: [75, 82, 60, 90, 70],
+                    data: {{ performance_data.accuracy|safe }},
                     backgroundColor: 'rgba(54, 162, 235, 0.2)',
                     borderColor: 'rgba(54, 162, 235, 1)',
                     borderWidth: 1
                 }, {
                     label: 'Traditionelle Analyse',
-                    data: [65, 70, 85, 50, 80],
+                    data: {{ performance_data.traditional|safe }},
                     backgroundColor: 'rgba(255, 99, 132, 0.2)',
                     borderColor: 'rgba(255, 99, 132, 1)',
                     borderWidth: 1
@@ -232,6 +243,50 @@
                 responsive: true,
                 scales: {
                     r: {
+                        beginAtZero: true,
+                        max: 100
+                    }
+                }
+            }
+        });
+
+        // Neuer Traditioneller Final Score Chart
+        const tradFinalCtx = document.getElementById('traditional-final-chart').getContext('2d');
+        new Chart(tradFinalCtx, {
+            type: 'bar',
+            data: {
+                labels: ['Traditionelle Analyse'],
+                datasets: [{
+                    label: 'Gesamtscore (%)',
+                    data: [{{ performance_data.traditional_final|default:"0"|safe }}],
+                    backgroundColor: function(context) {
+                        const value = context.raw;
+                        if (value >= 70) {
+                            return 'rgba(40, 167, 69, 0.5)'; // Grün
+                        } else if (value >= 50) {
+                            return 'rgba(255, 193, 7, 0.5)'; // Gelb
+                        } else {
+                            return 'rgba(220, 53, 69, 0.5)'; // Rot
+                        }
+                    },
+                    borderColor: function(context) {
+                        const value = context.raw;
+                        if (value >= 70) {
+                            return 'rgba(40, 167, 69, 1)';
+                        } else if (value >= 50) {
+                            return 'rgba(255, 193, 7, 1)';
+                        } else {
+                            return 'rgba(220, 53, 69, 1)';
+                        }
+                    },
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                indexAxis: 'y',
+                scales: {
+                    x: {
                         beginAtZero: true,
                         max: 100
                     }
@@ -293,3 +348,4 @@
     });
 </script>
 {% endblock %}
+

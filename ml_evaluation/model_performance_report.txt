@@ -1,0 +1,17 @@
+ML-Modell Performance Zusammenfassung
+===================================
+
+Erstellt am: 2025-04-28 22:01:23
+
+Anzahl der evaluierten Modelle: 5
+Durchschnittliche Richtungs-Genauigkeit: 70.72%
+Durchschnittliche Signal-Genauigkeit: 55.27%
+
+Top 5 Modelle nach Richtungs-Genauigkeit:
+  - WW: 88.89%
+  - SENS: 77.78%
+  - GME: 69.57%
+  - AAPL: 60.87%
+  - AMC: 56.52%
+
+Weitere Details in 'model_performance_summary.csv'
