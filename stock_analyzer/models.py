@@ -1,6 +1,7 @@
 # stock_analyzer/models.py
 from django.db import models
 from django.contrib.auth.models import User
+from decimal import Decimal
 
 
 class UserProfile(models.Model):
@@ -20,6 +21,7 @@ class UserProfile(models.Model):
 
     def __str__(self):
         return f"Profil von {self.user.username}"
+
 
 class Stock(models.Model):
     symbol = models.CharField(max_length=10, unique=True)
@@ -71,6 +73,24 @@ class AnalysisResult(models.Model):
 
     def __str__(self):
         return f"{self.stock.symbol} - {self.date} - {self.recommendation}"
+
+
+class MLPrediction(models.Model):
+    """Machine Learning predictions for stocks"""
+    stock = models.ForeignKey(Stock, on_delete=models.CASCADE, related_name='ml_predictions')
+    date = models.DateField()
+    predicted_return = models.FloatField(help_text="Vorhergesagte prozentuale Veränderung")
+    predicted_price = models.FloatField(help_text="Vorhergesagter Preis")
+    recommendation = models.CharField(max_length=10, help_text="BUY, SELL, HOLD")
+    confidence = models.FloatField(default=0.0, help_text="Konfidenz der ML-Vorhersage (0-1)")
+    prediction_days = models.IntegerField(default=5, help_text="Anzahl der Tage für die Vorhersage")
+
+    class Meta:
+        unique_together = ('stock', 'date')
+        ordering = ['-date']
+
+    def __str__(self):
+        return f"{self.stock.symbol} - {self.date} - {self.recommendation} ({self.confidence:.2f})"
 
 
 class WatchList(models.Model):

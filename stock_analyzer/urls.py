@@ -32,4 +32,8 @@ urlpatterns = [
     path('export/stock/<str:symbol>/analysis/', views.export_analysis_results, name='export_analysis_results'),
     # ... andere URLs ...
     path('export_watchlist/<int:watchlist_id>/', views.export_watchlist, name='export_watchlist'),
+
+    path('ml/predict/<str:symbol>/', views.generate_ml_prediction, name='generate_ml_prediction'),
+    path('ml/evaluate/<str:symbol>/', views.evaluate_ml_model, name='evaluate_ml_model'),
+    path('ml/dashboard/', views.ml_dashboard, name='ml_dashboard'),
 ]

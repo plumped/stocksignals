@@ -1,0 +1,610 @@
+# stock_analyzer/ml_models.py
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingRegressor
+from sklearn.model_selection import train_test_split, TimeSeriesSplit
+from sklearn.metrics import accuracy_score, mean_squared_error, classification_report
+import joblib
+import os
+from datetime import datetime, timedelta
+import logging
+from .models import Stock, StockData, AnalysisResult, MLPrediction
+
+logger = logging.getLogger(__name__)
+
+
+class MLPredictor:
+    """Machine Learning model for stock price prediction and signal generation"""
+
+    def __init__(self, stock_symbol, prediction_days=5, training_window=365):
+        """
+        Initialize the ML predictor
+
+        Args:
+            stock_symbol: Symbol of the stock to analyze
+            prediction_days: Number of days to predict ahead
+            training_window: Number of days of historical data to use for training
+        """
+        self.stock_symbol = stock_symbol
+        self.prediction_days = prediction_days
+        self.training_window = training_window
+        self.models_dir = 'ml_models'
+
+        # Create models directory if it doesn't exist
+        if not os.path.exists(self.models_dir):
+            os.makedirs(self.models_dir)
+
+        # Model file paths
+        self.price_model_path = os.path.join(self.models_dir, f'{stock_symbol}_price_model.pkl')
+        self.signal_model_path = os.path.join(self.models_dir, f'{stock_symbol}_signal_model.pkl')
+
+        # Load or train models
+        self.price_model = self._load_or_train_model('price')
+        self.signal_model = self._load_or_train_model('signal')
+
+    def prepare_data(self):
+        """Prepare data for model training and prediction"""
+        try:
+            # Get stock data
+            stock = Stock.objects.get(symbol=self.stock_symbol)
+
+            # Get historical data with enough history for training
+            end_date = datetime.now().date()
+            start_date = end_date - timedelta(days=self.training_window + 100)  # Extra buffer
+
+            data = StockData.objects.filter(
+                stock=stock,
+                date__range=[start_date, end_date]
+            ).order_by('date')
+
+            if not data.exists():
+                logger.error(f"No data found for {self.stock_symbol} in the specified date range")
+                return None, None, None
+
+            # Convert to DataFrame
+            df = pd.DataFrame(list(data.values()))
+
+            # Ensure numeric columns
+            for col in ['open_price', 'high_price', 'low_price', 'close_price', 'volume']:
+                df[col] = pd.to_numeric(df[col])
+
+            # Calculate additional features
+            df = self._calculate_features(df)
+
+            # Prepare features and targets for both models
+            features = df.dropna()
+
+            # For price prediction: target is the next n-day percentage change
+            features['future_return'] = features['close_price'].pct_change(self.prediction_days).shift(
+                -self.prediction_days)
+
+            # For signal prediction: create a categorical target (1=Buy, 0=Hold, -1=Sell) based on future returns
+            features['signal_target'] = 0
+            threshold = 0.02  # 2% movement threshold for signal
+            features.loc[features['future_return'] > threshold, 'signal_target'] = 1
+            features.loc[features['future_return'] < -threshold, 'signal_target'] = -1
+
+            # Remove NaN values
+            features = features.dropna()
+
+            if len(features) < 30:  # Need at least 30 data points for meaningful modeling
+                logger.error(f"Not enough data points for {self.stock_symbol} after feature calculation")
+                return None, None, None
+
+            # Features for models (exclude target columns and non-feature columns)
+            feature_columns = [col for col in features.columns if col not in
+                               ['id', 'stock_id', 'date', 'future_return', 'signal_target']]
+
+            X = features[feature_columns]
+            y_price = features['future_return']
+            y_signal = features['signal_target']
+
+            # Scale features
+            scaler = MinMaxScaler()
+            X_scaled = scaler.fit_transform(X)
+
+            return X_scaled, y_price, y_signal
+
+        except Exception as e:
+            logger.error(f"Error preparing data for {self.stock_symbol}: {str(e)}")
+            return None, None, None
+
+    def _calculate_features(self, df):
+        """Calculate technical indicators and other features for ML models"""
+        # Copy dataframe to avoid modifying the original
+        df_features = df.copy()
+
+        # Calculate returns
+        df_features['daily_return'] = df_features['close_price'].pct_change()
+        df_features['weekly_return'] = df_features['close_price'].pct_change(5)
+        df_features['monthly_return'] = df_features['close_price'].pct_change(20)
+
+        # Price ratios
+        df_features['hl_ratio'] = df_features['high_price'] / df_features['low_price']
+        df_features['co_ratio'] = df_features['close_price'] / df_features['open_price']
+
+        # Moving averages
+        for window in [5, 10, 20, 50, 200]:
+            df_features[f'ma_{window}'] = df_features['close_price'].rolling(window=window).mean()
+            # Distance from moving average (%)
+            df_features[f'ma_{window}_dist'] = (df_features['close_price'] - df_features[f'ma_{window}']) / df_features[
+                f'ma_{window}']
+
+        # Moving average crossovers
+        df_features['ma_5_10_cross'] = df_features['ma_5'] - df_features['ma_10']
+        df_features['ma_10_50_cross'] = df_features['ma_10'] - df_features['ma_50']
+        df_features['ma_50_200_cross'] = df_features['ma_50'] - df_features['ma_200']
+
+        # Volatility measures
+        df_features['volatility_5'] = df_features['daily_return'].rolling(window=5).std()
+        df_features['volatility_20'] = df_features['daily_return'].rolling(window=20).std()
+
+        # Volume features
+        df_features['volume_ma_5'] = df_features['volume'].rolling(window=5).mean()
+        df_features['volume_ma_20'] = df_features['volume'].rolling(window=20).mean()
+        df_features['volume_ratio'] = df_features['volume'] / df_features['volume_ma_20']
+
+        # RSI
+        delta = df_features['close_price'].diff()
+        up = delta.clip(lower=0)
+        down = -delta.clip(upper=0)
+        ema_up = up.ewm(com=13, adjust=False).mean()
+        ema_down = down.ewm(com=13, adjust=False).mean()
+        rs = ema_up / ema_down
+        df_features['rsi'] = 100 - (100 / (1 + rs))
+
+        # MACD
+        df_features['ema_12'] = df_features['close_price'].ewm(span=12, adjust=False).mean()
+        df_features['ema_26'] = df_features['close_price'].ewm(span=26, adjust=False).mean()
+        df_features['macd'] = df_features['ema_12'] - df_features['ema_26']
+        df_features['macd_signal'] = df_features['macd'].ewm(span=9, adjust=False).mean()
+        df_features['macd_hist'] = df_features['macd'] - df_features['macd_signal']
+
+        # Bollinger Bands
+        df_features['bb_middle'] = df_features['close_price'].rolling(window=20).mean()
+        std = df_features['close_price'].rolling(window=20).std()
+        df_features['bb_upper'] = df_features['bb_middle'] + 2 * std
+        df_features['bb_lower'] = df_features['bb_middle'] - 2 * std
+        df_features['bb_width'] = (df_features['bb_upper'] - df_features['bb_lower']) / df_features['bb_middle']
+        df_features['bb_position'] = (df_features['close_price'] - df_features['bb_lower']) / (
+                    df_features['bb_upper'] - df_features['bb_lower'])
+
+        # Price momentum
+        for window in [5, 10, 20]:
+            df_features[f'momentum_{window}'] = df_features['close_price'] / df_features['close_price'].shift(
+                window) - 1
+
+        # Check for any infinities or NaNs and replace with 0
+        df_features = df_features.replace([np.inf, -np.inf], np.nan)
+
+        return df_features
+
+    def _load_or_train_model(self, model_type):
+        """Load a saved model or train a new one if no saved model exists"""
+        model_path = self.price_model_path if model_type == 'price' else self.signal_model_path
+
+        try:
+            # Try to load the model
+            if os.path.exists(model_path):
+                model_age = datetime.now() - datetime.fromtimestamp(os.path.getmtime(model_path))
+
+                # Retrain model if it's older than 30 days
+                if model_age.days > 30:
+                    return self._train_model(model_type)
+
+                logger.info(f"Loading existing {model_type} model for {self.stock_symbol}")
+                return joblib.load(model_path)
+            else:
+                # Train a new model if none exists
+                return self._train_model(model_type)
+
+        except Exception as e:
+            logger.error(f"Error loading {model_type} model for {self.stock_symbol}: {str(e)}")
+            # Train a new model if there was an error loading
+            return self._train_model(model_type)
+
+    def _train_model(self, model_type):
+        """Train a new model and save it"""
+        X, y_price, y_signal = self.prepare_data()
+
+        if X is None or len(X) < 30:
+            logger.error(f"Insufficient data to train {model_type} model for {self.stock_symbol}")
+            return None
+
+        try:
+            # Use time series split for validation
+            tscv = TimeSeriesSplit(n_splits=5)
+
+            if model_type == 'price':
+                # Regression model for price prediction
+                model = GradientBoostingRegressor(
+                    n_estimators=100,
+                    learning_rate=0.1,
+                    max_depth=4,
+                    random_state=42
+                )
+                y = y_price
+                model_path = self.price_model_path
+            else:
+                # Classification model for signal prediction
+                model = RandomForestClassifier(
+                    n_estimators=100,
+                    max_depth=6,
+                    min_samples_split=5,
+                    random_state=42
+                )
+                y = y_signal
+                model_path = self.signal_model_path
+
+            # Train with cross-validation
+            best_score = float('-inf')
+            best_model = None
+
+            for train_idx, test_idx in tscv.split(X):
+                X_train, X_test = X[train_idx], X[test_idx]
+                y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+
+                model.fit(X_train, y_train)
+
+                if model_type == 'price':
+                    score = -mean_squared_error(y_test, model.predict(X_test))  # Negative MSE as score
+                else:
+                    score = accuracy_score(y_test, model.predict(X_test))
+
+                if score > best_score:
+                    best_score = score
+                    best_model = model
+
+            # Save the best model
+            if best_model is not None:
+                joblib.dump(best_model, model_path)
+                logger.info(
+                    f"Trained and saved new {model_type} model for {self.stock_symbol} with score: {best_score}")
+                return best_model
+            else:
+                logger.error(f"Failed to train {model_type} model for {self.stock_symbol}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error training {model_type} model for {self.stock_symbol}: {str(e)}")
+            return None
+
+    def predict(self):
+        """Make predictions with the trained models"""
+        try:
+            X, _, _ = self.prepare_data()
+
+            if X is None or X.shape[0] == 0:
+                logger.error(f"No data available for prediction for {self.stock_symbol}")
+                return None
+
+            # Get the latest data point for prediction
+            latest_features = X[-1].reshape(1, -1)
+
+            # Make predictions
+            price_prediction = None
+            signal_prediction = None
+            confidence = 0.0
+
+            if self.price_model is not None:
+                price_prediction = self.price_model.predict(latest_features)[0]
+
+                if hasattr(self.price_model, 'predict_proba'):
+                    # For models that provide prediction probabilities
+                    probas = self.price_model.predict_proba(latest_features)
+                    confidence = probas[0][np.argmax(probas[0])]
+                else:
+                    # For regression models without probabilities
+                    confidence = 0.7  # Default confidence
+
+            if self.signal_model is not None:
+                signal_prediction = self.signal_model.predict(latest_features)[0]
+
+                # Get probabilities from the classifier
+                if hasattr(self.signal_model, 'predict_proba'):
+                    probas = self.signal_model.predict_proba(latest_features)
+                    confidence = max(probas[0])
+
+            # Get current stock price
+            stock = Stock.objects.get(symbol=self.stock_symbol)
+            current_price = StockData.objects.filter(stock=stock).order_by('-date').first().close_price
+            current_price = float(current_price)
+
+            # Calculate predicted price
+            predicted_price = current_price * (1 + price_prediction) if price_prediction is not None else None
+
+            # Convert signal to recommendation
+            if signal_prediction == 1:
+                recommendation = 'BUY'
+            elif signal_prediction == -1:
+                recommendation = 'SELL'
+            else:
+                recommendation = 'HOLD'
+
+            # Format the prediction results
+            result = {
+                'stock_symbol': self.stock_symbol,
+                'current_price': current_price,
+                'predicted_return': price_prediction if price_prediction is not None else 0,
+                'predicted_price': predicted_price if predicted_price is not None else 0,
+                'recommendation': recommendation,
+                'confidence': confidence,
+                'prediction_days': self.prediction_days
+            }
+
+            # Save prediction to database
+            self._save_prediction(result)
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error making prediction for {self.stock_symbol}: {str(e)}")
+            return None
+
+    def _save_prediction(self, prediction):
+        """Save the prediction to the database"""
+        try:
+            stock = Stock.objects.get(symbol=self.stock_symbol)
+
+            # Create or update the prediction
+            MLPrediction.objects.update_or_create(
+                stock=stock,
+                defaults={
+                    'predicted_return': prediction['predicted_return'],
+                    'predicted_price': prediction['predicted_price'],
+                    'recommendation': prediction['recommendation'],
+                    'confidence': prediction['confidence'],
+                    'prediction_days': self.prediction_days,
+                    'date': datetime.now().date()
+                }
+            )
+
+            logger.info(f"Saved prediction for {self.stock_symbol}")
+
+        except Exception as e:
+            logger.error(f"Error saving prediction for {self.stock_symbol}: {str(e)}")
+
+    def evaluate_model_performance(self):
+        """Evaluate the performance of the models on historical data"""
+        try:
+            X, y_price, y_signal = self.prepare_data()
+
+            if X is None or y_price is None or y_signal is None:
+                return None
+
+            # Split data for evaluation (time-based)
+            train_size = int(0.8 * len(X))
+            X_train, X_test = X[:train_size], X[train_size:]
+            y_price_train, y_price_test = y_price[:train_size], y_price[train_size:]
+            y_signal_train, y_signal_test = y_signal[:train_size], y_signal[train_size:]
+
+            performance = {}
+
+            # Evaluate price prediction model
+            if self.price_model is not None:
+                price_pred = self.price_model.predict(X_test)
+                price_mse = mean_squared_error(y_price_test, price_pred)
+                performance['price_mse'] = price_mse
+                performance['price_rmse'] = np.sqrt(price_mse)
+
+                # Calculate directional accuracy (correct prediction of up/down)
+                direction_actual = np.sign(y_price_test)
+                direction_pred = np.sign(price_pred)
+                direction_accuracy = np.mean(direction_actual == direction_pred)
+                performance['price_direction_accuracy'] = direction_accuracy
+
+            # Evaluate signal prediction model
+            if self.signal_model is not None:
+                signal_pred = self.signal_model.predict(X_test)
+                signal_accuracy = accuracy_score(y_signal_test, signal_pred)
+                performance['signal_accuracy'] = signal_accuracy
+
+                # Classification report
+                report = classification_report(y_signal_test, signal_pred, output_dict=True)
+                performance['classification_report'] = report
+
+                # Feature importance
+                if hasattr(self.signal_model, 'feature_importances_'):
+                    # Get feature names from original dataframe
+                    stock = Stock.objects.get(symbol=self.stock_symbol)
+                    df = pd.DataFrame(list(StockData.objects.filter(stock=stock).order_by('date').values()))
+                    df = self._calculate_features(df)
+                    feature_columns = [col for col in df.columns if col not in
+                                       ['id', 'stock_id', 'date', 'future_return', 'signal_target']]
+
+                    # Create importance dictionary
+                    importances = self.signal_model.feature_importances_
+                    feature_importance = dict(zip(feature_columns, importances))
+                    performance['feature_importance'] = {k: v for k, v in sorted(
+                        feature_importance.items(), key=lambda item: item[1], reverse=True
+                    )}
+
+            return performance
+
+        except Exception as e:
+            logger.error(f"Error evaluating model performance for {self.stock_symbol}: {str(e)}")
+            return None
+
+
+class AdaptiveAnalyzer:
+    """
+    Analyzer that combines traditional technical analysis with ML predictions
+    to create an adaptive scoring system
+    """
+
+    def __init__(self, stock_symbol):
+        """Initialize the adaptive analyzer"""
+        self.stock_symbol = stock_symbol
+        self.ml_predictor = MLPredictor(stock_symbol)
+
+    def get_adaptive_score(self):
+        """
+        Calculate an adaptive technical score that combines traditional
+        technical analysis with ML predictions
+        """
+        try:
+            from .analysis import TechnicalAnalyzer
+
+            # Get traditional technical analysis
+            ta = TechnicalAnalyzer(self.stock_symbol)
+            ta_result = ta.calculate_technical_score()
+            ta_score = ta_result['score']
+            ta_recommendation = ta_result['recommendation']
+
+            # Get ML prediction
+            ml_prediction = self.ml_predictor.predict()
+
+            if ml_prediction is None:
+                # If ML prediction failed, return only the traditional analysis
+                return ta_result
+
+            # Convert ML recommendation to score modifier
+            ml_score_modifier = 0
+            if ml_prediction['recommendation'] == 'BUY':
+                ml_score_modifier = 10 * ml_prediction['confidence']
+            elif ml_prediction['recommendation'] == 'SELL':
+                ml_score_modifier = -10 * ml_prediction['confidence']
+
+            # Calculate predicted return impact
+            return_modifier = ml_prediction['predicted_return'] * 100  # Convert to percentage points
+
+            # Combine scores with adaptive weighting
+            # Higher confidence in ML predictions gives them more weight
+            ml_weight = min(0.3, ml_prediction['confidence'] * 0.4)  # Cap ML weight at 30%
+            ta_weight = 1 - ml_weight
+
+            adaptive_score = (ta_weight * ta_score) + (ml_weight * (ta_score + ml_score_modifier + return_modifier))
+
+            # Ensure score is within bounds
+            adaptive_score = max(0, min(100, adaptive_score))
+
+            # Determine final recommendation based on the adaptive score
+            if adaptive_score >= 90:
+                recommendation = "STRONG BUY"
+            elif adaptive_score >= 70:
+                recommendation = "BUY"
+            elif adaptive_score >= 40:
+                recommendation = "HOLD"
+            elif adaptive_score >= 20:
+                recommendation = "SELL"
+            else:
+                recommendation = "STRONG SELL"
+
+            # Add ML-specific signals to the result
+            ml_signals = [
+                ("ML Prediction", ml_prediction['recommendation'],
+                 f"ML predicts {ml_prediction['predicted_return']:.2%} return in {ml_prediction['prediction_days']} days",
+                 ml_score_modifier),
+            ]
+
+            # Combine signals
+            all_signals = ta_result['signals'] + ml_signals
+
+            # Create the final result
+            result = {
+                'score': round(adaptive_score, 2),
+                'recommendation': recommendation,
+                'signals': all_signals,
+                'details': ta_result['details'],
+                'ml_prediction': ml_prediction
+            }
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error calculating adaptive score for {self.stock_symbol}: {str(e)}")
+            # Fall back to traditional analysis if there's an error
+            from .analysis import TechnicalAnalyzer
+            ta = TechnicalAnalyzer(self.stock_symbol)
+            return ta.calculate_technical_score()
+
+    def save_analysis_result(self):
+        """Save the adaptive analysis result"""
+        try:
+            from .models import Stock
+
+            result = self.get_adaptive_score()
+            stock = Stock.objects.get(symbol=self.stock_symbol)
+
+            # Current date
+            from datetime import datetime
+            date = datetime.now().date()
+
+            # Get details from the result
+            details = result.get('details', {})
+
+            # Save to AnalysisResult
+            analysis_result, created = AnalysisResult.objects.update_or_create(
+                stock=stock,
+                date=date,
+                defaults={
+                    'technical_score': result['score'],
+                    'recommendation': result['recommendation'],
+                    'rsi_value': details.get('rsi'),
+                    'macd_value': details.get('macd'),
+                    'macd_signal': details.get('macd_signal'),
+                    'sma_20': details.get('sma_20'),
+                    'sma_50': details.get('sma_50'),
+                    'sma_200': details.get('sma_200'),
+                    'bollinger_upper': details.get('bollinger_upper'),
+                    'bollinger_lower': details.get('bollinger_lower')
+                }
+            )
+
+            return analysis_result
+
+        except Exception as e:
+            logger.error(f"Error saving adaptive analysis for {self.stock_symbol}: {str(e)}")
+            # Fall back to traditional analysis save
+            from .analysis import TechnicalAnalyzer
+            ta = TechnicalAnalyzer(self.stock_symbol)
+            return ta.save_analysis_result()
+
+
+def batch_ml_predictions(symbols=None, force_retrain=False):
+    """Run ML predictions for multiple stocks"""
+    if symbols is None:
+        # Get all stocks with sufficient data for ML
+        from .models import Stock, StockData
+        from django.db.models import Count
+
+        # Find stocks with at least 200 days of data
+        stocks_with_data = StockData.objects.values('stock') \
+            .annotate(data_count=Count('id')) \
+            .filter(data_count__gte=200)
+
+        stock_ids = [item['stock'] for item in stocks_with_data]
+        symbols = Stock.objects.filter(id__in=stock_ids).values_list('symbol', flat=True)
+
+    results = {}
+
+    for symbol in symbols:
+        try:
+            predictor = MLPredictor(symbol)
+
+            # Force retrain if requested
+            if force_retrain:
+                predictor._train_model('price')
+                predictor._train_model('signal')
+
+            prediction = predictor.predict()
+
+            if prediction:
+                results[symbol] = {
+                    'status': 'success',
+                    'prediction': prediction
+                }
+            else:
+                results[symbol] = {
+                    'status': 'error',
+                    'message': 'Prediction failed'
+                }
+
+        except Exception as e:
+            results[symbol] = {
+                'status': 'error',
+                'message': str(e)
+            }
+
+    return results

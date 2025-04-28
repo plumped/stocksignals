@@ -1,0 +1,52 @@
+<!-- stock_analyzer/templates/stock_analyzer/ml_prediction_card.html -->
+<div class="card mt-3">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span>ML-Vorhersage</span>
+        <span class="badge {% if ml_prediction.confidence >= 0.7 %}bg-success{% elif ml_prediction.confidence >= 0.5 %}bg-warning{% else %}bg-secondary{% endif %}">
+            Konfidenz: {{ ml_prediction.confidence|floatformat:2 }}
+        </span>
+    </div>
+    <div class="card-body">
+        {% if ml_prediction %}
+            <div class="row">
+                <div class="col-6">
+                    <h5 class="card-title">{{ ml_prediction.prediction_days }}-Tage Prognose</h5>
+                    <div class="d-flex align-items-center mb-2">
+                        <span class="me-2">Kursänderung:</span>
+                        <span class="{% if ml_prediction.predicted_return > 0 %}text-success{% elif ml_prediction.predicted_return < 0 %}text-danger{% else %}text-secondary{% endif %} fw-bold">
+                            {{ ml_prediction.predicted_return|floatformat:2 }}%
+                        </span>
+                    </div>
+                    <div class="d-flex align-items-center">
+                        <span class="me-2">Zielkurs:</span>
+                        <span class="fw-bold">{{ ml_prediction.predicted_price|floatformat:2 }} €</span>
+                    </div>
+                </div>
+                <div class="col-6 text-center">
+                    <div class="mb-2">Empfehlung:</div>
+                    {% if ml_prediction.recommendation == 'BUY' %}
+                        <div class="badge bg-success fs-5 p-2">KAUFEN</div>
+                    {% elif ml_prediction.recommendation == 'SELL' %}
+                        <div class="badge bg-danger fs-5 p-2">VERKAUFEN</div>
+                    {% else %}
+                        <div class="badge bg-warning fs-5 p-2">HALTEN</div>
+                    {% endif %}
+                </div>
+            </div>
+            <hr>
+            <div class="alert alert-info small mb-0">
+                <i class="bi bi-info-circle"></i> Diese Vorhersage basiert auf Machine Learning und analysiert historische Muster. Sie sollte als zusätzliche Information und nicht als alleinige Entscheidungsgrundlage betrachtet werden.
+            </div>
+        {% else %}
+            <p class="text-center">Keine ML-Vorhersage verfügbar für diese Aktie.</p>
+            <button id="generate-ml-prediction" class="btn btn-outline-primary btn-sm w-100">
+                <i class="bi bi-lightning"></i> ML-Vorhersage generieren
+            </button>
+        {% endif %}
+    </div>
+    <div class="card-footer text-muted small">
+        {% if ml_prediction %}
+            Letzte Aktualisierung: {{ ml_prediction.date }}
+        {% endif %}
+    </div>
+</div>

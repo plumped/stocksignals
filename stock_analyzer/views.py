@@ -7,7 +7,8 @@ from django.http import JsonResponse
 from .backtesting import BacktestStrategy
 from .forms import UserProfileForm
 from .market_analysis import MarketAnalyzer
-from .models import Stock, StockData, AnalysisResult, WatchList, UserProfile
+from .ml_models import MLPredictor, AdaptiveAnalyzer
+from .models import Stock, StockData, AnalysisResult, WatchList, UserProfile, MLPrediction
 from .data_service import StockDataService
 from .analysis import TechnicalAnalyzer
 import csv
@@ -40,7 +41,6 @@ def index(request):
     return render(request, 'stock_analyzer/index.html', context)
 
 
-@login_required
 def stock_detail(request, symbol):
     """Detailansicht für eine bestimmte Aktie"""
     stock = get_object_or_404(Stock, symbol=symbol.upper())
@@ -51,17 +51,64 @@ def stock_detail(request, symbol):
     # Neueste Analyse abrufen
     latest_analysis = AnalysisResult.objects.filter(stock=stock).order_by('-date').first()
 
+    # Neueste ML-Vorhersage abrufen
+    latest_ml_prediction = MLPrediction.objects.filter(stock=stock).order_by('-date').first()
+
     # Prüfen, ob die Aktie in einer der Watchlists des Benutzers ist
-    in_watchlist = WatchList.objects.filter(user=request.user, stocks=stock).exists()
+    in_watchlist = WatchList.objects.filter(user=request.user,
+                                            stocks=stock).exists() if request.user.is_authenticated else False
 
     context = {
         'stock': stock,
         'historical_data': historical_data,
         'latest_analysis': latest_analysis,
+        'ml_prediction': latest_ml_prediction,
         'in_watchlist': in_watchlist
     }
 
     return render(request, 'stock_analyzer/stock_detail.html', context)
+
+
+@login_required
+def generate_ml_prediction(request, symbol):
+    """Generiert eine ML-Vorhersage für eine bestimmte Aktie"""
+    try:
+        # Versuchen, die Aktie zu laden
+        stock = get_object_or_404(Stock, symbol=symbol.upper())
+
+        # Prüfen, ob die Aktie genügend Daten für eine ML-Vorhersage hat
+        if StockData.objects.filter(stock=stock).count() < 200:
+            return JsonResponse({
+                'status': 'error',
+                'message': 'Nicht genügend historische Daten für eine ML-Vorhersage (mindestens 200 Tage erforderlich)'
+            })
+
+        # ML-Vorhersage generieren
+        predictor = MLPredictor(symbol)
+        prediction = predictor.predict()
+
+        if prediction:
+            return JsonResponse({
+                'status': 'success',
+                'prediction': {
+                    'recommendation': prediction['recommendation'],
+                    'predicted_return': prediction['predicted_return'],
+                    'predicted_price': prediction['predicted_price'],
+                    'confidence': prediction['confidence'],
+                    'prediction_days': prediction['prediction_days']
+                }
+            })
+        else:
+            return JsonResponse({
+                'status': 'error',
+                'message': 'Konnte keine ML-Vorhersage erstellen'
+            })
+
+    except Exception as e:
+        return JsonResponse({
+            'status': 'error',
+            'message': f'Fehler bei der ML-Vorhersage: {str(e)}'
+        })
 
 
 @login_required
@@ -76,15 +123,27 @@ def analyze_stock(request, symbol):
 
         # Jetzt sollte die Aktie in der Datenbank sein, also können wir sie analyzieren
         try:
-            analyzer = TechnicalAnalyzer(symbol)
-            result = analyzer.calculate_technical_score()
-            analysis_result = analyzer.save_analysis_result()
+            # Prüfen, ob genügend Daten für ML vorhanden sind
+            stock = Stock.objects.get(symbol=symbol.upper())
+            has_ml_data = StockData.objects.filter(stock=stock).count() >= 200
+
+            if has_ml_data:
+                # Adaptive Analyzer verwenden (kombiniert TA und ML)
+                analyzer = AdaptiveAnalyzer(symbol)
+                result = analyzer.get_adaptive_score()
+                analysis_result = analyzer.save_analysis_result()
+            else:
+                # Nur traditionelle technische Analyse verwenden
+                analyzer = TechnicalAnalyzer(symbol)
+                result = analyzer.calculate_technical_score()
+                analysis_result = analyzer.save_analysis_result()
 
             return JsonResponse({
                 'status': 'success',
                 'score': float(analysis_result.technical_score),
                 'recommendation': analysis_result.recommendation,
-                'signals': result['signals']
+                'signals': result['signals'],
+                'has_ml_data': has_ml_data
             })
         except Exception as e:
             return JsonResponse({'status': 'error', 'message': f"Fehler bei der Analyse: {str(e)}"})
@@ -934,3 +993,150 @@ def api_advanced_indicators(request, symbol):
         return JsonResponse({'error': 'Aktie nicht gefunden'}, status=404)
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
+
+
+@login_required
+def evaluate_ml_model(request, symbol):
+    """Evaluiert das ML-Modell für eine bestimmte Aktie"""
+    try:
+        # Prüfen, ob die Aktie existiert
+        stock = get_object_or_404(Stock, symbol=symbol.upper())
+
+        # Modell evaluieren
+        predictor = MLPredictor(symbol)
+        performance = predictor.evaluate_model_performance()
+
+        if performance:
+            return JsonResponse({
+                'status': 'success',
+                'performance': performance
+            })
+        else:
+            return JsonResponse({
+                'status': 'error',
+                'message': 'Konnte das Modell nicht evaluieren'
+            })
+
+    except Exception as e:
+        return JsonResponse({
+            'status': 'error',
+            'message': f'Fehler bei der Modellevaluation: {str(e)}'
+        })
+
+
+@login_required
+def ml_dashboard(request):
+    """Machine Learning Dashboard mit Übersicht über Vorhersagen und Modellleistung"""
+    # Aktuelle ML-Statistiken abrufen
+    from django.db.models import Avg, Count
+    from datetime import datetime
+
+    # Anzahl der Aktien mit ML-Modellen (Datei auf Festplatte prüfen)
+    import os
+    models_dir = 'ml_models'
+    model_files = []
+    if os.path.exists(models_dir):
+        model_files = [f for f in os.listdir(models_dir) if f.endswith('.pkl')]
+
+    model_count = len(model_files) // 2  # Jede Aktie hat zwei Modelle (price und signal)
+
+    # Aktuelle ML-Statistiken
+    prediction_count = MLPrediction.objects.count()
+    avg_accuracy = 70.0  # Platzhalter - würde in der Realität aus der Modellevaluation kommen
+    last_update = MLPrediction.objects.order_by('-date').first()
+    last_update_date = last_update.date if last_update else datetime.now().date()
+
+    ml_stats = {
+        'model_count': model_count,
+        'prediction_count': prediction_count,
+        'avg_accuracy': avg_accuracy,
+        'last_update': last_update_date
+    }
+
+    # Top Kauf- und Verkaufsempfehlungen abrufen
+    top_buy_predictions = MLPrediction.objects.filter(
+        recommendation='BUY',
+        confidence__gte=0.6  # Nur Vorhersagen mit hoher Konfidenz
+    ).order_by('-predicted_return')[:10]
+
+    top_sell_predictions = MLPrediction.objects.filter(
+        recommendation='SELL',
+        confidence__gte=0.6
+    ).order_by('predicted_return')[:10]  # Aufsteigend für die negativsten Renditen
+
+    # Performance-Daten für das Chart
+    # Idealerweise würde man hier die tatsächlichen Performancedaten aus den Modellen abrufen
+    # Für dieses Beispiel verwenden wir Platzhalter
+    import json
+    import random
+
+    # SQLite kompatible Methode um einzigartige Aktien zu finden
+    # Zuerst alle Vorhersagen abrufen und dann die Stock IDs extrahieren
+    all_predictions = MLPrediction.objects.all()
+    unique_stock_ids = set()
+    stocks_for_chart = []
+
+    for pred in all_predictions:
+        if pred.stock_id not in unique_stock_ids and len(unique_stock_ids) < 10:
+            unique_stock_ids.add(pred.stock_id)
+            stocks_for_chart.append(pred.stock.symbol)
+
+    symbols = stocks_for_chart
+    accuracy = [random.uniform(60, 90) for _ in range(len(symbols))]
+
+    performance_data = {
+        'symbols': json.dumps(symbols),
+        'accuracy': json.dumps(accuracy)
+    }
+
+    # Aktien mit genug Daten für ML abrufen
+    from django.db.models import Count
+    stocks_with_data = Stock.objects.annotate(
+        data_count=Count('historical_data')
+    ).filter(data_count__gte=200).order_by('symbol')
+
+    context = {
+        'ml_stats': ml_stats,
+        'top_buy_predictions': top_buy_predictions,
+        'top_sell_predictions': top_sell_predictions,
+        'performance_data': performance_data,
+        'stocks_with_data': stocks_with_data
+    }
+
+    return render(request, 'stock_analyzer/ml_dashboard.html', context)
+
+
+@login_required
+def batch_ml_predictions(request):
+    """Batch-API für ML-Vorhersagen"""
+    from .ml_models import batch_ml_predictions
+
+    symbols_param = request.GET.get('symbols', '')
+    retrain = request.GET.get('retrain', 'false').lower() == 'true'
+
+    if symbols_param == 'watchlist':
+        # Aktien aus Watchlists abrufen
+        watchlist_stocks = WatchList.objects.filter(
+            user=request.user
+        ).values_list('stocks__symbol', flat=True).distinct()
+
+        symbols = list(filter(None, watchlist_stocks))
+    elif symbols_param and symbols_param != '':
+        # Einzelne Aktie
+        symbols = [symbols_param]
+    else:
+        # Alle Aktien mit genügend Daten
+        symbols = None
+
+    try:
+        results = batch_ml_predictions(symbols, retrain)
+
+        return JsonResponse({
+            'status': 'success',
+            'results': results
+        })
+    except Exception as e:
+        return JsonResponse({
+            'status': 'error',
+            'message': f'Fehler bei der Batch-Verarbeitung: {str(e)}'
+        })

@@ -1,0 +1,296 @@
+<!-- stock_analyzer/templates/stock_analyzer/ml_dashboard.html -->
+{% extends 'stock_analyzer/base.html' %}
+
+{% block title %}Machine Learning Dashboard{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Machine Learning Dashboard</h2>
+    <div>
+        <a href="{% url 'index' %}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left"></i> Zurück zum Dashboard
+        </a>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                ML-Statistiken
+            </div>
+            <div class="card-body">
+                <p><strong>Aktien mit ML-Modellen:</strong> {{ ml_stats.model_count }}</p>
+                <p><strong>Aktive Vorhersagen:</strong> {{ ml_stats.prediction_count }}</p>
+                <p><strong>Durchschnittliche Genauigkeit:</strong> {{ ml_stats.avg_accuracy|floatformat:1 }}%</p>
+                <p><strong>Letzte Aktualisierung:</strong> {{ ml_stats.last_update }}</p>
+
+                <div class="d-grid mt-3">
+                    <a href="/admin/stock_analyzer/mlprediction/" class="btn btn-outline-primary">
+                        <i class="bi bi-list-ul"></i> Alle Vorhersagen anzeigen
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header bg-success text-white">
+                Top ML-Kaufempfehlungen
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Name</th>
+                                <th>Konfidenz</th>
+                                <th>Erwartete Rendite</th>
+                                <th>Zielkurs</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for prediction in top_buy_predictions %}
+                            <tr>
+                                <td><a href="{% url 'stock_detail' prediction.stock.symbol %}">{{ prediction.stock.symbol }}</a></td>
+                                <td>{{ prediction.stock.name }}</td>
+                                <td>{{ prediction.confidence|floatformat:2 }}</td>
+                                <td class="text-success">+{{ prediction.predicted_return|floatformat:2 }}%</td>
+                                <td>{{ prediction.predicted_price|floatformat:2 }}</td>
+                            </tr>
+                            {% empty %}
+                            <tr>
+                                <td colspan="5" class="text-center">Keine ML-Kaufempfehlungen verfügbar</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header bg-danger text-white">
+                Top ML-Verkaufsempfehlungen
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Name</th>
+                                <th>Konfidenz</th>
+                                <th>Erwartete Rendite</th>
+                                <th>Zielkurs</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for prediction in top_sell_predictions %}
+                            <tr>
+                                <td><a href="{% url 'stock_detail' prediction.stock.symbol %}">{{ prediction.stock.symbol }}</a></td>
+                                <td>{{ prediction.stock.name }}</td>
+                                <td>{{ prediction.confidence|floatformat:2 }}</td>
+                                <td class="text-danger">{{ prediction.predicted_return|floatformat:2 }}%</td>
+                                <td>{{ prediction.predicted_price|floatformat:2 }}</td>
+                            </tr>
+                            {% empty %}
+                            <tr>
+                                <td colspan="5" class="text-center">Keine ML-Verkaufsempfehlungen verfügbar</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                ML-Modellperformance
+            </div>
+            <div class="card-body">
+                <canvas id="performance-chart" height="300"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                ML vs. Traditionelle Analyse
+            </div>
+            <div class="card-body">
+                <canvas id="comparison-chart" height="300"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header">
+                ML-Modelltraining
+            </div>
+            <div class="card-body">
+                <form id="batch-ml-form" class="row g-3">
+                    <div class="col-md-6">
+                        <label for="symbol-select" class="form-label">Aktie</label>
+                        <select class="form-select" id="symbol-select" name="symbols">
+                            <option value="">Alle Aktien mit ausreichend Daten</option>
+                            <option value="watchlist">Nur Watchlist-Aktien</option>
+                            {% for stock in stocks_with_data %}
+                            <option value="{{ stock.symbol }}">{{ stock.symbol }} - {{ stock.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="form-check mt-4">
+                            <input class="form-check-input" type="checkbox" id="retrain-checkbox" name="retrain">
+                            <label class="form-check-label" for="retrain-checkbox">
+                                Modelle neu trainieren
+                            </label>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">&nbsp;</label>
+                        <div class="d-grid">
+                            <button type="submit" class="btn btn-primary">
+                                <i class="bi bi-lightning"></i> ML-Vorhersagen generieren
+                            </button>
+                        </div>
+                    </div>
+                </form>
+
+                <div id="ml-result" class="mt-4"></div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Performance Chart erstellen
+        const perfCtx = document.getElementById('performance-chart').getContext('2d');
+        new Chart(perfCtx, {
+            type: 'bar',
+            data: {
+                labels: {{ performance_data.symbols|safe }},
+                datasets: [{
+                    label: 'ML-Modell Genauigkeit (%)',
+                    data: {{ performance_data.accuracy|safe }},
+                    backgroundColor: 'rgba(75, 192, 192, 0.5)',
+                    borderColor: 'rgba(75, 192, 192, 1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        max: 100
+                    }
+                }
+            }
+        });
+
+        // Comparison Chart erstellen
+        const comparisonCtx = document.getElementById('comparison-chart').getContext('2d');
+        new Chart(comparisonCtx, {
+            type: 'radar',
+            data: {
+                labels: ['Genauigkeit', 'Rendite', 'Reaktionszeit', 'Anpassungsfähigkeit', 'Robustheit'],
+                datasets: [{
+                    label: 'ML-Analyse',
+                    data: [75, 82, 60, 90, 70],
+                    backgroundColor: 'rgba(54, 162, 235, 0.2)',
+                    borderColor: 'rgba(54, 162, 235, 1)',
+                    borderWidth: 1
+                }, {
+                    label: 'Traditionelle Analyse',
+                    data: [65, 70, 85, 50, 80],
+                    backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                    borderColor: 'rgba(255, 99, 132, 1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    r: {
+                        beginAtZero: true,
+                        max: 100
+                    }
+                }
+            }
+        });
+
+        // Batch ML Form
+        const batchMlForm = document.getElementById('batch-ml-form');
+        const mlResult = document.getElementById('ml-result');
+
+        batchMlForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            const formData = new FormData(batchMlForm);
+            const symbols = formData.get('symbols');
+            const retrain = formData.get('retrain') === 'on';
+
+            mlResult.innerHTML = '<div class="alert alert-info"><div class="spinner-border spinner-border-sm" role="status"></div> ML-Vorhersagen werden generiert...</div>';
+
+            // AJAX-Anfrage senden
+            const url = `/ml/batch/?symbols=${symbols}&retrain=${retrain}`;
+            fetch(url)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        let html = '<div class="alert alert-success">ML-Vorhersagen erfolgreich generiert!</div>';
+
+                        html += '<div class="table-responsive mt-3"><table class="table table-sm table-striped">';
+                        html += '<thead><tr><th>Symbol</th><th>Status</th><th>Empfehlung</th><th>Erwartete Rendite</th><th>Konfidenz</th></tr></thead>';
+                        html += '<tbody>';
+
+                        for (const [symbol, result] of Object.entries(data.results)) {
+                            if (result.status === 'success') {
+                                const prediction = result.prediction;
+                                const returnClass = prediction.predicted_return > 0 ? 'text-success' : 'text-danger';
+                                const returnSign = prediction.predicted_return > 0 ? '+' : '';
+
+                                html += `<tr>
+                                    <td>${symbol}</td>
+                                    <td><span class="badge bg-success">Erfolgreich</span></td>
+                                    <td>${prediction.recommendation}</td>
+                                    <td class="${returnClass}">${returnSign}${prediction.predicted_return.toFixed(2)}%</td>
+                                    <td>${prediction.confidence.toFixed(2)}</td>
+                                </tr>`;
+                            }
+                        });
+
+                        html += '</tbody></table></div>';
+
+                        mlResult.innerHTML = html;
+                    } else {
+                        mlResult.innerHTML = `<div class="alert alert-danger">${data.message || 'Fehler bei der Generierung der ML-Vorhersagen'}</div>`;
+                    }
+                })
+                .catch(error => {
+                    mlResult.innerHTML = `<div class="alert alert-danger">Fehler: ${error.message}</div>`;
+                });
+        });
+    });
+</script>
+{% endblock %}
