@@ -592,18 +592,18 @@ class AdaptiveAnalyzer:
             return ta.save_analysis_result()
 
 
+# stock_analyzer/ml_models.py
+
 def batch_ml_predictions(symbols=None, force_retrain=False):
     """Run ML predictions for multiple stocks"""
-    if symbols is None:
-        # Get all stocks with sufficient data for ML
-        from .models import Stock, StockData
-        from django.db.models import Count
+    from .models import Stock, StockData
+    from django.db.models import Count
+    from .ml_models import MLPredictor
 
-        # Find stocks with at least 200 days of data
+    if symbols is None:
         stocks_with_data = StockData.objects.values('stock') \
             .annotate(data_count=Count('id')) \
             .filter(data_count__gte=200)
-
         stock_ids = [item['stock'] for item in stocks_with_data]
         symbols = Stock.objects.filter(id__in=stock_ids).values_list('symbol', flat=True)
 
@@ -613,7 +613,6 @@ def batch_ml_predictions(symbols=None, force_retrain=False):
         try:
             predictor = MLPredictor(symbol)
 
-            # Force retrain if requested
             if force_retrain:
                 predictor._train_model('price')
                 predictor._train_model('signal')
@@ -621,16 +620,26 @@ def batch_ml_predictions(symbols=None, force_retrain=False):
             prediction = predictor.predict()
 
             if prediction:
+                predicted_return = prediction['predicted_return']
+                confidence = prediction['confidence']
+
+                if predicted_return > 0.05 and confidence >= 0.65:
+                    signal_color = "green"
+                elif 0.01 < predicted_return <= 0.05 or 0.50 <= confidence < 0.65:
+                    signal_color = "yellow"
+                else:
+                    signal_color = "red"
+
                 results[symbol] = {
                     'status': 'success',
-                    'prediction': prediction
+                    'prediction': prediction,
+                    'signal_color': signal_color
                 }
             else:
                 results[symbol] = {
                     'status': 'error',
                     'message': 'Prediction failed'
                 }
-
         except Exception as e:
             results[symbol] = {
                 'status': 'error',

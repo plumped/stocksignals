@@ -114,41 +114,6 @@
 </div>
 
 <div class="row mt-4">
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header">
-                ML-Modellperformance
-            </div>
-            <div class="card-body">
-                <canvas id="performance-chart" height="300"></canvas>
-            </div>
-        </div>
-    </div>
-
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header">
-                ML vs. Traditionelle Analyse
-            </div>
-            <div class="card-body">
-                <canvas id="comparison-chart" height="300"></canvas>
-            </div>
-        </div>
-    </div>
-
-    <div class="col-md-6 mt-4">
-        <div class="card">
-            <div class="card-header">
-                Traditionelle Analyse Gesamtscore
-            </div>
-            <div class="card-body">
-                <canvas id="traditional-final-chart" height="100"></canvas>
-            </div>
-        </div>
-    </div>
-</div>
-
-<div class="row mt-4">
     <div class="col-md-12">
         <div class="card">
             <div class="card-header">
@@ -189,6 +154,43 @@
         </div>
     </div>
 </div>
+
+<div class="row mt-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                ML-Modellperformance
+            </div>
+            <div class="card-body">
+                <canvas id="performance-chart" height="300"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                ML vs. Traditionelle Analyse
+            </div>
+            <div class="card-body">
+                <canvas id="comparison-chart" height="300"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-6 mt-4">
+        <div class="card">
+            <div class="card-header">
+                Traditionelle Analyse Gesamtscore
+            </div>
+            <div class="card-body">
+                <canvas id="traditional-final-chart" height="100"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+
 {% endblock %}
 
 {% block extra_scripts %}
@@ -250,7 +252,7 @@
             }
         });
 
-        // Neuer Traditioneller Final Score Chart
+        // Traditioneller Final Score Chart
         const tradFinalCtx = document.getElementById('traditional-final-chart').getContext('2d');
         new Chart(tradFinalCtx, {
             type: 'bar',
@@ -262,11 +264,11 @@
                     backgroundColor: function(context) {
                         const value = context.raw;
                         if (value >= 70) {
-                            return 'rgba(40, 167, 69, 0.5)'; // Grün
+                            return 'rgba(40, 167, 69, 0.5)';
                         } else if (value >= 50) {
-                            return 'rgba(255, 193, 7, 0.5)'; // Gelb
+                            return 'rgba(255, 193, 7, 0.5)';
                         } else {
-                            return 'rgba(220, 53, 69, 0.5)'; // Rot
+                            return 'rgba(220, 53, 69, 0.5)';
                         }
                     },
                     borderColor: function(context) {
@@ -309,11 +311,17 @@
 
             const url = `/ml/batch/?symbols=${symbols}&retrain=${retrain}`;
             fetch(url)
-                .then(response => response.json())
+                .then(response => {
+                    if (!response.ok) {
+                        return response.text().then(text => {
+                            throw new Error(`Serverfehler: ${response.status}\n${text}`);
+                        });
+                    }
+                    return response.json();
+                })
                 .then(data => {
                     if (data.status === 'success') {
                         let html = '<div class="alert alert-success">ML-Vorhersagen erfolgreich generiert!</div>';
-
                         html += '<div class="table-responsive mt-3"><table class="table table-sm table-striped">';
                         html += '<thead><tr><th>Symbol</th><th>Status</th><th>Empfehlung</th><th>Erwartete Rendite</th><th>Konfidenz</th></tr></thead>';
                         html += '<tbody>';
@@ -323,9 +331,12 @@
                                 const prediction = result.prediction;
                                 const returnClass = prediction.predicted_return > 0 ? 'text-success' : 'text-danger';
                                 const returnSign = prediction.predicted_return > 0 ? '+' : '';
+                                const signalColor = result.signal_color || 'gray';
+
+                                const icon = signalColor === 'green' ? '🟢' : signalColor === 'yellow' ? '🟡' : '🔴';
 
                                 html += `<tr>
-                                    <td>${symbol}</td>
+                                    <td>${symbol} <span style="margin-left: 5px;">${icon}</span></td>
                                     <td><span class="badge bg-success">Erfolgreich</span></td>
                                     <td>${prediction.recommendation}</td>
                                     <td class="${returnClass}">${returnSign}${prediction.predicted_return.toFixed(2)}%</td>
@@ -335,7 +346,6 @@
                         }
 
                         html += '</tbody></table></div>';
-
                         mlResult.innerHTML = html;
                     } else {
                         mlResult.innerHTML = `<div class="alert alert-danger">${data.message || 'Fehler bei der Generierung der ML-Vorhersagen'}</div>`;
@@ -344,8 +354,10 @@
                 .catch(error => {
                     mlResult.innerHTML = `<div class="alert alert-danger">Fehler: ${error.message}</div>`;
                 });
+
         });
     });
 </script>
 {% endblock %}
+
 

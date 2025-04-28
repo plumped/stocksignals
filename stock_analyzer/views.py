@@ -1122,30 +1122,30 @@ def ml_dashboard(request):
 
 
 
+
+
+
 @login_required
-def batch_ml_predictions(request):
-    """Batch-API für ML-Vorhersagen"""
-    from .ml_models import batch_ml_predictions
+def batch_ml_predictions_view(request):
+    """Django-View für Batch-ML-Vorhersagen"""
+    from .ml_models import batch_ml_predictions as run_batch_predictions  # <- wichtig!
 
     symbols_param = request.GET.get('symbols', '')
     retrain = request.GET.get('retrain', 'false').lower() == 'true'
 
     if symbols_param == 'watchlist':
-        # Aktien aus Watchlists abrufen
         watchlist_stocks = WatchList.objects.filter(
             user=request.user
         ).values_list('stocks__symbol', flat=True).distinct()
 
         symbols = list(filter(None, watchlist_stocks))
-    elif symbols_param and symbols_param != '':
-        # Einzelne Aktie
+    elif symbols_param:
         symbols = [symbols_param]
     else:
-        # Alle Aktien mit genügend Daten
         symbols = None
 
     try:
-        results = batch_ml_predictions(symbols, retrain)
+        results = run_batch_predictions(symbols, retrain)
 
         return JsonResponse({
             'status': 'success',

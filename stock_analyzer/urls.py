@@ -36,6 +36,7 @@ urlpatterns = [
     path('ml/predict/<str:symbol>/', views.generate_ml_prediction, name='generate_ml_prediction'),
     path('ml/evaluate/<str:symbol>/', views.evaluate_ml_model, name='evaluate_ml_model'),
     path('ml/dashboard/', views.ml_dashboard, name='ml_dashboard'),
-    path('ml/batch/', views.batch_ml_predictions, name='batch_ml_predictions'),
+    path('ml/batch/', views.batch_ml_predictions_view, name='batch_ml_predictions')
+
 
 ]
