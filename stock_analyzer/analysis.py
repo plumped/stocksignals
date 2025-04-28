@@ -28,8 +28,8 @@ class TechnicalAnalyzer:
                 if col in self.df.columns:
                     self.df[col] = self.df[col].astype(float)
 
-    def calculate_indicators(self):
-        """Berechnet alle technischen Indikatoren"""
+    def calculate_indicators(self, include_advanced=False):
+        """Berechnet alle technischen Indikatoren, optional auch die fortgeschrittenen"""
         if self.df.empty:
             return None
 
@@ -63,6 +63,10 @@ class TechnicalAnalyzer:
         self._calculate_roc()
 
         self._calculate_psar()
+
+        # Wenn fortgeschrittene Indikatoren gewünscht sind, berechne diese
+        if include_advanced:
+            self.calculate_advanced_indicators()
 
         return self.df
 
@@ -425,8 +429,14 @@ class TechnicalAnalyzer:
 
         return analysis_result
 
+    def calculate_advanced_indicators(self):
+        """Berechnet alle fortgeschrittenen Indikatoren"""
+        advanced_indicators = AdvancedIndicators(self.df)
+        self.df = advanced_indicators.calculate_all_indicators()
+        return self.df
 
-def _calculate_indicators_for_dataframe(self, df):
+
+def _calculate_indicators_for_dataframe(df):
     """Berechnet Indikatoren für ein bereitgestelltes DataFrame (für Backtesting)"""
     # Kopie erstellen, um das Originaldatenframe nicht zu verändern
     df_copy = df.copy()
@@ -891,89 +901,3 @@ class AdvancedIndicators:
         self.calculate_elliott_wave_points()
 
         return self.df
-
-
-# Erweitere die TechnicalAnalyzer-Klasse um die fortgeschrittenen Indikatoren
-def extend_technical_analyzer(TechnicalAnalyzer):
-    """
-    Erweitert die TechnicalAnalyzer-Klasse um die neuen fortgeschrittenen Indikatoren.
-    Diese Funktion sollte aufgerufen werden, nachdem die TechnicalAnalyzer-Klasse definiert wurde.
-    """
-
-    # Füge neue Methoden zur TechnicalAnalyzer-Klasse hinzu
-    def calculate_advanced_indicators(self):
-        """Berechnet alle fortgeschrittenen Indikatoren"""
-        advanced_indicators = AdvancedIndicators(self.df)
-        self.df = advanced_indicators.calculate_all_indicators()
-        return self.df
-
-    def calculate_heikin_ashi(self):
-        """Berechnet Heikin-Ashi-Kerzen"""
-        advanced_indicators = AdvancedIndicators(self.df)
-        self.df = advanced_indicators.calculate_heikin_ashi()
-        return self.df
-
-    def calculate_fibonacci_levels(self, window=100):
-        """Berechnet Fibonacci-Retracement-Levels"""
-        advanced_indicators = AdvancedIndicators(self.df)
-        self.df = advanced_indicators.calculate_fibonacci_levels(window)
-        return self.df
-
-    def detect_chart_patterns(self, window=20):
-        """Erkennt gängige Chartmuster"""
-        advanced_indicators = AdvancedIndicators(self.df)
-        self.df = advanced_indicators.detect_chart_patterns(window)
-        return self.df
-
-    def calculate_supertrend(self, period=10, multiplier=3.0):
-        """Berechnet den SuperTrend-Indikator"""
-        advanced_indicators = AdvancedIndicators(self.df)
-        self.df = advanced_indicators.calculate_supertrend(period, multiplier)
-        return self.df
-
-    def calculate_elliott_wave_points(self, window=100):
-        """Identifiziert potenzielle Elliott Wave Punkte"""
-        advanced_indicators = AdvancedIndicators(self.df)
-        self.df = advanced_indicators.calculate_elliott_wave_points(window)
-        return self.df
-
-    def calculate_vwap(self):
-        """Berechnet den Volume Weighted Average Price"""
-        advanced_indicators = AdvancedIndicators(self.df)
-        self.df = advanced_indicators.calculate_vwap()
-        return self.df
-
-    # Füge die neuen Methoden zur TechnicalAnalyzer-Klasse hinzu
-    TechnicalAnalyzer.calculate_advanced_indicators = calculate_advanced_indicators
-    TechnicalAnalyzer.calculate_heikin_ashi = calculate_heikin_ashi
-    TechnicalAnalyzer.calculate_fibonacci_levels = calculate_fibonacci_levels
-    TechnicalAnalyzer.detect_chart_patterns = detect_chart_patterns
-    TechnicalAnalyzer.calculate_supertrend = calculate_supertrend
-    TechnicalAnalyzer.calculate_elliott_wave_points = calculate_elliott_wave_points
-    TechnicalAnalyzer.calculate_vwap = calculate_vwap
-
-    # Überschreibe die calculate_indicators-Methode, um optional auch fortgeschrittene Indikatoren zu berechnen
-    original_calculate_indicators = TechnicalAnalyzer.calculate_indicators
-
-    def new_calculate_indicators(self, include_advanced=False):
-        """
-        Berechnet alle technischen Indikatoren, optional auch die fortgeschrittenen
-
-        Args:
-            include_advanced: Wenn True, werden auch fortgeschrittene Indikatoren berechnet
-        """
-        # Rufe zuerst die Original-Methode auf
-        original_calculate_indicators(self)
-
-        # Wenn fortgeschrittene Indikatoren gewünscht sind, berechne diese
-        if include_advanced:
-            self.calculate_advanced_indicators()
-
-        return self.df
-
-    # Überschreibe die originale Methode
-    TechnicalAnalyzer.calculate_indicators = new_calculate_indicators
-
-    return TechnicalAnalyzer
-
-TechnicalAnalyzer = extend_technical_analyzer(TechnicalAnalyzer)

@@ -2,7 +2,7 @@
 import pandas as pd
 from datetime import datetime, timedelta
 from .models import Stock, StockData
-from .analysis import TechnicalAnalyzer
+from .analysis import _calculate_indicators_for_dataframe  # Importiere die eigenständige Funktion
 
 
 class BacktestStrategy:
@@ -33,9 +33,8 @@ class BacktestStrategy:
         # DataFrame erstellen
         df = pd.DataFrame(list(data.values()))
 
-        # Technische Indikatoren berechnen
-        analyzer = TechnicalAnalyzer(self.stock.symbol)
-        df_with_indicators = analyzer._calculate_indicators_for_dataframe(df)
+        # Technische Indikatoren berechnen (verwende die eigenständige Funktion)
+        df_with_indicators = _calculate_indicators_for_dataframe(df)
 
         # Loop durch die Daten und Handelssignale simulieren
         position_open = False
