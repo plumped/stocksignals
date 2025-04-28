@@ -285,7 +285,7 @@ class MLPredictor:
             return None
 
     def predict(self):
-        """Make predictions with the trained models"""
+        """Make predictions with the trained models (verbessert)"""
         try:
             X, _, _ = self.prepare_data()
 
@@ -293,62 +293,53 @@ class MLPredictor:
                 logger.error(f"No data available for prediction for {self.stock_symbol}")
                 return None
 
-            # Get the latest data point for prediction
             latest_features = X[-1].reshape(1, -1)
 
-            # Make predictions
-            price_prediction = None
-            signal_prediction = None
+            predicted_return = 0.0
             confidence = 0.0
 
+            # Price Prediction
             if self.price_model is not None:
-                price_prediction = self.price_model.predict(latest_features)[0]
+                predicted_return = self.price_model.predict(latest_features)[0]
 
-                if hasattr(self.price_model, 'predict_proba'):
-                    # For models that provide prediction probabilities
-                    probas = self.price_model.predict_proba(latest_features)
-                    confidence = probas[0][np.argmax(probas[0])]
-                else:
-                    # For regression models without probabilities
-                    confidence = 0.7  # Default confidence
+            # Signal Prediction
+            if self.signal_model is not None and hasattr(self.signal_model, 'predict_proba'):
+                probas = self.signal_model.predict_proba(latest_features)
+                confidence = max(probas[0])
 
-            if self.signal_model is not None:
-                signal_prediction = self.signal_model.predict(latest_features)[0]
-
-                # Get probabilities from the classifier
-                if hasattr(self.signal_model, 'predict_proba'):
-                    probas = self.signal_model.predict_proba(latest_features)
-                    confidence = max(probas[0])
-
-            # Get current stock price
+            # Aktueller Kurs
             stock = Stock.objects.get(symbol=self.stock_symbol)
             current_price_obj = StockData.objects.filter(stock=stock).order_by('-date').first().close_price
-            # Explicitly convert Decimal to float
             current_price = float(current_price_obj)
 
-            # Calculate predicted price
-            predicted_price = current_price * (1 + price_prediction) if price_prediction is not None else None
+            # Vorhergesagter Kurs
+            predicted_price = current_price * (1 + predicted_return)
 
-            # Convert signal to recommendation
-            if signal_prediction == 1:
+            # NEUE Logik: Empfehlung basierend auf Mindest-Renditen
+            min_return_for_buy = 0.02  # Mindestens +2% erwartet
+            min_return_for_sell = -0.02  # Mindestens -2% erwartet
+
+            recommendation = 'HOLD'  # Default
+
+            if predicted_return >= min_return_for_buy:
                 recommendation = 'BUY'
-            elif signal_prediction == -1:
+            elif predicted_return <= min_return_for_sell:
                 recommendation = 'SELL'
-            else:
+
+            # Zusätzlich: Sicherheit bei Penny Stocks
+            if current_price < 1.0 and abs(predicted_return) < 0.05:
                 recommendation = 'HOLD'
 
-            # Format the prediction results
             result = {
                 'stock_symbol': self.stock_symbol,
                 'current_price': current_price,
-                'predicted_return': float(price_prediction) if price_prediction is not None else 0,
-                'predicted_price': float(predicted_price) if predicted_price is not None else 0,
+                'predicted_return': round(predicted_return * 100, 2),  # in Prozent
+                'predicted_price': round(predicted_price, 2),
                 'recommendation': recommendation,
-                'confidence': float(confidence),
+                'confidence': round(confidence, 2),
                 'prediction_days': self.prediction_days
             }
 
-            # Save prediction to database
             self._save_prediction(result)
 
             return result
