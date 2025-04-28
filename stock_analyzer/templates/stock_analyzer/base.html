@@ -50,7 +50,12 @@
                         </ul>
                     </li>
                     {% endif %}
-                    <li><a class="dropdown-item" href="{% url 'ml_dashboard' %}">ML-Dashboard</a></li>
+                    {% if user.is_authenticated %}
+                    <li class="nav-item">
+                        <a class="nav-link" href="{% url 'ml_dashboard' %}">ML-Dashboard</a>
+                    </li>
+                    {% endif %}
+
                 </ul>
                 <form class="d-flex" action="{% url 'search_stocks' %}" method="get" id="search-form">
                     <input class="form-control me-2" type="search" placeholder="Symbol oder Name" name="q" id="search-input">

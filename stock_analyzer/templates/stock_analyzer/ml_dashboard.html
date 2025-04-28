@@ -188,10 +188,10 @@
         new Chart(perfCtx, {
             type: 'bar',
             data: {
-                labels: {{ performance_data.symbols|safe }},
+                labels: {{ performance_data.symbols|default:"[]"|safe }},
                 datasets: [{
                     label: 'ML-Modell Genauigkeit (%)',
-                    data: {{ performance_data.accuracy|safe }},
+                    data: {{ performance_data.accuracy|default:"[]"|safe }},
                     backgroundColor: 'rgba(75, 192, 192, 0.5)',
                     borderColor: 'rgba(75, 192, 192, 1)',
                     borderWidth: 1
@@ -252,7 +252,6 @@
 
             mlResult.innerHTML = '<div class="alert alert-info"><div class="spinner-border spinner-border-sm" role="status"></div> ML-Vorhersagen werden generiert...</div>';
 
-            // AJAX-Anfrage senden
             const url = `/ml/batch/?symbols=${symbols}&retrain=${retrain}`;
             fetch(url)
                 .then(response => response.json())
@@ -278,7 +277,7 @@
                                     <td>${prediction.confidence.toFixed(2)}</td>
                                 </tr>`;
                             }
-                        });
+                        }
 
                         html += '</tbody></table></div>';
 

@@ -9,7 +9,7 @@ import joblib
 import os
 from datetime import datetime, timedelta
 import logging
-from .models import Stock, StockData, AnalysisResult, MLPrediction
+from .models import Stock, StockData, AnalysisResult, MLPrediction, MLModelMetrics
 
 logger = logging.getLogger(__name__)
 
@@ -65,32 +65,35 @@ class MLPredictor:
             # Convert to DataFrame
             df = pd.DataFrame(list(data.values()))
 
-            # Ensure numeric columns
+            # Convert Decimal fields to float before any calculations
             for col in ['open_price', 'high_price', 'low_price', 'close_price', 'volume']:
-                df[col] = pd.to_numeric(df[col])
+                df[col] = df[col].astype(float)
 
             # Calculate additional features
             df = self._calculate_features(df)
 
-            # Prepare features and targets for both models
-            features = df.dropna()
+            # Make a copy of the dataframe to avoid SettingWithCopyWarning
+            features = df.copy()
+
+            # Drop any rows with NaN values first
+            features = features.dropna()
+
+            if len(features) < 30:  # Need at least 30 data points for meaningful modeling
+                logger.error(f"Not enough data points for {self.stock_symbol} after feature calculation")
+                return None, None, None
 
             # For price prediction: target is the next n-day percentage change
-            features['future_return'] = features['close_price'].pct_change(self.prediction_days).shift(
+            features.loc[:, 'future_return'] = features['close_price'].pct_change(self.prediction_days).shift(
                 -self.prediction_days)
 
             # For signal prediction: create a categorical target (1=Buy, 0=Hold, -1=Sell) based on future returns
-            features['signal_target'] = 0
+            features.loc[:, 'signal_target'] = 0
             threshold = 0.02  # 2% movement threshold for signal
             features.loc[features['future_return'] > threshold, 'signal_target'] = 1
             features.loc[features['future_return'] < -threshold, 'signal_target'] = -1
 
             # Remove NaN values
             features = features.dropna()
-
-            if len(features) < 30:  # Need at least 30 data points for meaningful modeling
-                logger.error(f"Not enough data points for {self.stock_symbol} after feature calculation")
-                return None, None, None
 
             # Features for models (exclude target columns and non-feature columns)
             feature_columns = [col for col in features.columns if col not in
@@ -114,6 +117,11 @@ class MLPredictor:
         """Calculate technical indicators and other features for ML models"""
         # Copy dataframe to avoid modifying the original
         df_features = df.copy()
+
+        # Ensure all numeric columns are float type
+        for col in ['open_price', 'high_price', 'low_price', 'close_price', 'volume']:
+            if col in df_features.columns:
+                df_features[col] = pd.to_numeric(df_features[col], errors='coerce')
 
         # Calculate returns
         df_features['daily_return'] = df_features['close_price'].pct_change()
@@ -167,8 +175,14 @@ class MLPredictor:
         df_features['bb_upper'] = df_features['bb_middle'] + 2 * std
         df_features['bb_lower'] = df_features['bb_middle'] - 2 * std
         df_features['bb_width'] = (df_features['bb_upper'] - df_features['bb_lower']) / df_features['bb_middle']
-        df_features['bb_position'] = (df_features['close_price'] - df_features['bb_lower']) / (
-                    df_features['bb_upper'] - df_features['bb_lower'])
+
+        # Ensure bb_upper and bb_lower are not the same to avoid division by zero
+        df_features['bb_position'] = np.where(
+            (df_features['bb_upper'] - df_features['bb_lower']) > 0,
+            (df_features['close_price'] - df_features['bb_lower']) / (
+                        df_features['bb_upper'] - df_features['bb_lower']),
+            0.5  # Default value when bands are identical
+        )
 
         # Price momentum
         for window in [5, 10, 20]:
@@ -308,8 +322,9 @@ class MLPredictor:
 
             # Get current stock price
             stock = Stock.objects.get(symbol=self.stock_symbol)
-            current_price = StockData.objects.filter(stock=stock).order_by('-date').first().close_price
-            current_price = float(current_price)
+            current_price_obj = StockData.objects.filter(stock=stock).order_by('-date').first().close_price
+            # Explicitly convert Decimal to float
+            current_price = float(current_price_obj)
 
             # Calculate predicted price
             predicted_price = current_price * (1 + price_prediction) if price_prediction is not None else None
@@ -326,10 +341,10 @@ class MLPredictor:
             result = {
                 'stock_symbol': self.stock_symbol,
                 'current_price': current_price,
-                'predicted_return': price_prediction if price_prediction is not None else 0,
-                'predicted_price': predicted_price if predicted_price is not None else 0,
+                'predicted_return': float(price_prediction) if price_prediction is not None else 0,
+                'predicted_price': float(predicted_price) if predicted_price is not None else 0,
                 'recommendation': recommendation,
-                'confidence': confidence,
+                'confidence': float(confidence),
                 'prediction_days': self.prediction_days
             }
 
@@ -350,13 +365,13 @@ class MLPredictor:
             # Create or update the prediction
             MLPrediction.objects.update_or_create(
                 stock=stock,
+                date=datetime.now().date(),
                 defaults={
-                    'predicted_return': prediction['predicted_return'],
-                    'predicted_price': prediction['predicted_price'],
+                    'predicted_return': float(prediction['predicted_return']),
+                    'predicted_price': float(prediction['predicted_price']),
                     'recommendation': prediction['recommendation'],
-                    'confidence': prediction['confidence'],
-                    'prediction_days': self.prediction_days,
-                    'date': datetime.now().date()
+                    'confidence': float(prediction['confidence']),
+                    'prediction_days': int(self.prediction_days)
                 }
             )
 
@@ -364,6 +379,7 @@ class MLPredictor:
 
         except Exception as e:
             logger.error(f"Error saving prediction for {self.stock_symbol}: {str(e)}")
+            # Nur Logging, keine Exception werfen, um den Prozess nicht zu unterbrechen
 
     def evaluate_model_performance(self):
         """Evaluate the performance of the models on historical data"""
@@ -376,8 +392,8 @@ class MLPredictor:
             # Split data for evaluation (time-based)
             train_size = int(0.8 * len(X))
             X_train, X_test = X[:train_size], X[train_size:]
-            y_price_train, y_price_test = y_price[:train_size], y_price[train_size:]
-            y_signal_train, y_signal_test = y_signal[:train_size], y_signal[train_size:]
+            y_price_train, y_price_test = y_price[:train_size].to_numpy(), y_price[train_size:].to_numpy()
+            y_signal_train, y_signal_test = y_signal[:train_size].to_numpy(), y_signal[train_size:].to_numpy()
 
             performance = {}
 
@@ -409,6 +425,11 @@ class MLPredictor:
                     # Get feature names from original dataframe
                     stock = Stock.objects.get(symbol=self.stock_symbol)
                     df = pd.DataFrame(list(StockData.objects.filter(stock=stock).order_by('date').values()))
+
+                    # Ensure numeric conversion
+                    for col in ['open_price', 'high_price', 'low_price', 'close_price', 'volume']:
+                        df[col] = df[col].astype(float)
+
                     df = self._calculate_features(df)
                     feature_columns = [col for col in df.columns if col not in
                                        ['id', 'stock_id', 'date', 'future_return', 'signal_target']]
@@ -419,6 +440,24 @@ class MLPredictor:
                     performance['feature_importance'] = {k: v for k, v in sorted(
                         feature_importance.items(), key=lambda item: item[1], reverse=True
                     )}
+            try:
+                stock = Stock.objects.get(symbol=self.stock_symbol)
+
+                MLModelMetrics.objects.update_or_create(
+                    stock=stock,
+                    date=datetime.now().date(),
+                    model_version='v1',  # oder später dynamisch, wenn du Versionierung brauchst
+                    defaults={
+                        'accuracy': performance.get('signal_accuracy', 0),
+                        'rmse': performance.get('price_rmse', 0),
+                        'feature_importance': performance.get('feature_importance', {}),
+                        'confusion_matrix': performance.get('classification_report', {}),
+                        'directional_accuracy': performance.get('price_direction_accuracy', 0),
+                    }
+                )
+                logger.info(f"ML-Metriken erfolgreich gespeichert für {self.stock_symbol}")
+            except Exception as e:
+                logger.error(f"Fehler beim Speichern der ML-Metriken für {self.stock_symbol}: {str(e)}")
 
             return performance
 

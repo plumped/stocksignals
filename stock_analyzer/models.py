@@ -93,6 +93,26 @@ class MLPrediction(models.Model):
         return f"{self.stock.symbol} - {self.date} - {self.recommendation} ({self.confidence:.2f})"
 
 
+class MLModelMetrics(models.Model):
+    """Speichert Metriken für ML-Modelle"""
+    stock = models.ForeignKey(Stock, on_delete=models.CASCADE, related_name='ml_metrics')
+    date = models.DateField(auto_now_add=True)
+    accuracy = models.FloatField(help_text="Genauigkeit des Klassifikationsmodells (0-1)")
+    rmse = models.FloatField(help_text="RMSE des Regressionsmodells")
+    feature_importance = models.JSONField(null=True, blank=True, help_text="Feature Importance als JSON")
+    confusion_matrix = models.JSONField(null=True, blank=True, help_text="Confusion Matrix als JSON")
+    directional_accuracy = models.FloatField(null=True, blank=True,
+                                             help_text="Genauigkeit der Richtungsvorhersage (0-1)")
+    model_version = models.CharField(max_length=50, default="v1", help_text="Version des Modells")
+
+    class Meta:
+        unique_together = ('stock', 'date', 'model_version')
+        ordering = ['-date']
+
+    def __str__(self):
+        return f"{self.stock.symbol} ML-Metrik ({self.date})"
+
+
 class WatchList(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='watchlists')
     name = models.CharField(max_length=100)
