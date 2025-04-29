@@ -1162,11 +1162,6 @@ def ml_dashboard(request):
 
     return render(request, 'stock_analyzer/ml_dashboard.html', context)
 
-
-
-
-
-
 @login_required
 def batch_ml_predictions_view(request):
     """Django-View für Batch-ML-Vorhersagen"""
