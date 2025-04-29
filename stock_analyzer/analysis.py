@@ -183,17 +183,8 @@ class TechnicalAnalyzer:
         price_diff = self.df['close_price'].diff()
         volume = self.df['volume']
 
-        obv = pd.Series(0, index=self.df.index)
+        self.df['obv'] = (np.sign(price_diff) * volume).fillna(0).cumsum()
 
-        for i in range(1, len(self.df)):
-            if price_diff.iloc[i] > 0:
-                obv.iloc[i] = obv.iloc[i - 1] + volume.iloc[i]
-            elif price_diff.iloc[i] < 0:
-                obv.iloc[i] = obv.iloc[i - 1] - volume.iloc[i]
-            else:
-                obv.iloc[i] = obv.iloc[i - 1]
-
-        self.df['obv'] = obv
 
     def _calculate_atr(self, period=14):
         """Berechnet den Average True Range (ATR)"""
@@ -208,10 +199,29 @@ class TechnicalAnalyzer:
 
     def calculate_technical_score(self):
         """Berechnet einen präziseren technischen Score basierend auf dynamischen Kriterien"""
-        if self.df.empty or 'rsi' not in self.df.columns:
-            self.calculate_indicators()
+        required_cols = [
+            'rsi', 'macd', 'macd_signal', 'sma_20', 'sma_50', 'sma_200',
+            'bollinger_upper', 'bollinger_lower', 'stoch_k', 'stoch_d',
+            'senkou_span_a', 'senkou_span_b', 'adx', '+di', '-di'
+        ]
 
-        latest = self.df.iloc[-1]
+        if self.df.empty:
+            print(f"[WARN] DataFrame für {self.stock.symbol} ist leer – keine Score-Berechnung möglich.")
+            return None
+
+        # Indikatoren nachholen, falls nötig
+        self.calculate_indicators()
+
+        # Prüfe, ob alle Spalten vorhanden sind
+        if any(col not in self.df.columns or self.df[col].isna().all() for col in required_cols):
+            print(f"[WARN] Nicht alle Indikatoren verfügbar für {self.stock.symbol}. Abbruch.")
+            return None
+
+        latest = self.df.dropna(subset=required_cols).iloc[-1:]
+        if latest.empty:
+            print(f"[WARN] Kein gültiger Datensatz mit allen Indikatoren für {self.stock.symbol}.")
+            return None
+        latest = latest.squeeze()
         score = 50  # Neutraler Startwert
         signals = []
 
@@ -310,6 +320,14 @@ class TechnicalAnalyzer:
         # Score begrenzen
         score = max(0, min(100, score))
 
+        buy_signals = sum(1 for s in signals if s[1] == 'BUY')
+        sell_signals = sum(1 for s in signals if s[1] == 'SELL')
+        total_signals = buy_signals + sell_signals
+        if total_signals == 0:
+            confluence_score = 5  # neutraler Wert
+        else:
+            confluence_score = round((buy_signals / total_signals) * 10)
+
         # --- Neue Empfehlungen (5-Stufen) ---
         if score >= 90:
             recommendation = "STRONG BUY"
@@ -326,6 +344,7 @@ class TechnicalAnalyzer:
             'score': round(score, 2),
             'recommendation': recommendation,
             'signals': signals,
+            'confluence_score': confluence_score,
             'details': {
                 'rsi': latest['rsi'],
                 'macd': latest['macd'],
@@ -406,6 +425,9 @@ class TechnicalAnalyzer:
 
     def save_analysis_result(self):
         result = self.calculate_technical_score()
+        if result is None:
+            print(f"[ERROR] Kein technisches Ergebnis für {self.stock.symbol}, nichts gespeichert.")
+            return None
         latest_date = self.df['date'].iloc[-1]
 
         details = result.get('details', {})
@@ -423,10 +445,10 @@ class TechnicalAnalyzer:
                 'sma_50': details.get('sma_50'),
                 'sma_200': details.get('sma_200'),
                 'bollinger_upper': details.get('bollinger_upper'),
-                'bollinger_lower': details.get('bollinger_lower')
+                'bollinger_lower': details.get('bollinger_lower'),
+                'confluence_score': int((result['confluence_score'] + 10) / 20 * 100)  # Skaliert auf 0–100%
             }
         )
-
         return analysis_result
 
     def calculate_advanced_indicators(self):
@@ -638,13 +660,16 @@ class AdvancedIndicators:
         # Extrahiere Hochs und Tiefs
         order = int(window / 4)  # Ordnung für lokale Extrema
 
-        # Finde lokale Maxima
         ilocs_max = argrelextrema(self.df['high_price'].values, np.greater, order=order)[0]
-
-        # Finde lokale Minima
         ilocs_min = argrelextrema(self.df['low_price'].values, np.less, order=order)[0]
 
-        # Double Top Erkennung
+        self._detect_double_top(ilocs_max)
+        self._detect_double_bottom(ilocs_min)
+        self._detect_head_and_shoulders(ilocs_max)
+        self._detect_inverse_head_and_shoulders(ilocs_min)
+        self._detect_triangles(window)
+
+    def _detect_double_top(self, ilocs_max):
         for i in range(len(ilocs_max) - 1):
             # Zwei ähnliche Hochs mit einem Tief dazwischen
             if i + 1 < len(ilocs_max):
@@ -666,7 +691,7 @@ class AdvancedIndicators:
                         # Markiere das zweite Hoch als Double Top
                         self.df.loc[self.df.index[ilocs_max[i + 1]], 'pattern_double_top'] = 1
 
-        # Double Bottom Erkennung (analog zu Double Top)
+    def _detect_double_bottom(self, ilocs_min):
         for i in range(len(ilocs_min) - 1):
             if i + 1 < len(ilocs_min):
                 valley1 = self.df['low_price'].iloc[ilocs_min[i]]
@@ -682,7 +707,7 @@ class AdvancedIndicators:
                             peak > max(valley1, valley2) * 1.03):
                         self.df.loc[self.df.index[ilocs_min[i + 1]], 'pattern_double_bottom'] = 1
 
-        # Head and Shoulders Erkennung
+    def _detect_head_and_shoulders(self, ilocs_max):
         for i in range(len(ilocs_max) - 2):
             if i + 2 < len(ilocs_max):
                 left_shoulder = self.df['high_price'].iloc[ilocs_max[i]]
@@ -710,7 +735,7 @@ class AdvancedIndicators:
                             # Markiere das Muster am rechten Rand
                             self.df.loc[self.df.index[ilocs_max[i + 2]], 'pattern_head_shoulders'] = 1
 
-        # Inverse Head and Shoulders (analog zu Head and Shoulders)
+    def _detect_inverse_head_and_shoulders(self, ilocs_min):
         for i in range(len(ilocs_min) - 2):
             if i + 2 < len(ilocs_min):
                 left_shoulder = self.df['low_price'].iloc[ilocs_min[i]]
@@ -732,7 +757,7 @@ class AdvancedIndicators:
                         if abs(left_peak - right_peak) / left_peak < 0.03:
                             self.df.loc[self.df.index[ilocs_min[i + 2]], 'pattern_inv_head_shoulders'] = 1
 
-        # Erkennung von Dreiecksformationen
+    def _detect_triangles(self, window):
         window_size = min(window, len(self.df) // 3)
         for i in range(window_size, len(self.df)):
             segment = self.df.iloc[i - window_size:i]
@@ -825,48 +850,45 @@ class AdvancedIndicators:
     def calculate_elliott_wave_points(self, window=100):
         """
         Identifiziert potenzielle Elliott Wave Punkte im Kursverlauf.
-        Dies ist eine vereinfachte Version, die mögliche Wendepunkte markiert.
+        Verbesserte Version: Wendepunkte über gesamte Zeitreihe.
         """
-        # Lokale Maxima und Minima finden
-        order = int(window / 10)  # Ordnung für lokale Extrema
+        if len(self.df) < window:
+            window = len(self.df) // 2
 
-        # Finde lokale Maxima
-        max_idx = argrelextrema(self.df['high_price'].values, np.greater, order=order)[0]
+        if window < 10:
+            window = 10  # Minimal sinnvoller Wert
 
-        # Finde lokale Minima
-        min_idx = argrelextrema(self.df['low_price'].values, np.less, order=order)[0]
+        # Ordnung kleiner wählen für feinere Wendepunkte
+        order = max(1, window // 10)
 
-        # Initialisiere Spalte für Elliott Wave Punkte
+        # Lokale Hochs und Tiefs finden
+        local_max_idx = argrelextrema(self.df['high_price'].values, np.greater, order=order)[0]
+        local_min_idx = argrelextrema(self.df['low_price'].values, np.less, order=order)[0]
+
+        # Initialisieren
         self.df['elliott_wave_point'] = 0
 
-        # Markiere potenzielle Elliott Wave Punkte
-        for idx in max_idx:
-            self.df.loc[self.df.index[idx], 'elliott_wave_point'] = 1  # 1 für Hochpunkte
+        if len(local_max_idx) > 0:
+            self.df.loc[self.df.index[local_max_idx], 'elliott_wave_point'] = 1  # Hochpunkte
 
-        for idx in min_idx:
-            self.df.loc[self.df.index[idx], 'elliott_wave_point'] = -1  # -1 für Tiefpunkte
+        if len(local_min_idx) > 0:
+            self.df.loc[self.df.index[local_min_idx], 'elliott_wave_point'] = -1  # Tiefpunkte
 
-        # Identifiziere 5-Wellen-Muster (vereinfacht)
-        for i in range(len(self.df) - window, len(self.df)):
-            if i - window >= 0:
-                segment = self.df.iloc[i - window:i]
-                wave_points = segment[segment['elliott_wave_point'] != 0]
+        # Versuche, abwechselnde Sequenzen von Wendepunkten zu erkennen
+        recent_points = self.df[self.df['elliott_wave_point'] != 0].tail(10)
 
-                # Mindestens 5 Wendepunkte für ein Elliott-Wellen-Muster
-                if len(wave_points) >= 5:
-                    # Prüfe, ob die letzten 5 Wendepunkte ein abwechselndes Muster bilden
-                    last_5_points = wave_points['elliott_wave_point'].tail(5).values
+        if len(recent_points) >= 5:
+            sequence = recent_points['elliott_wave_point'].values[-5:]
 
-                    # Prüfe auf abwechselndes Muster (+1, -1, +1, -1, +1) oder (-1, +1, -1, +1, -1)
-                    alternating = True
-                    for j in range(1, 5):
-                        if last_5_points[j] == last_5_points[j - 1]:
-                            alternating = False
-                            break
+            alternating = True
+            for i in range(1, 5):
+                if sequence[i] == sequence[i - 1]:  # Kein Wechsel zwischen Hoch und Tief
+                    alternating = False
+                    break
 
-                    if alternating:
-                        # Der letzte Punkt im 5-Wellen-Muster
-                        self.df.loc[wave_points.index[-1], 'elliott_wave_pattern'] = last_5_points[-1]
+            if alternating:
+                # Markiere letztes Signal zusätzlich
+                self.df.loc[recent_points.index[-1], 'elliott_wave_pattern'] = sequence[-1]
 
         return self.df
 

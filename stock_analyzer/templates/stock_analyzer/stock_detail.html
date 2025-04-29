@@ -1,5 +1,7 @@
 <!-- stock_analyzer/templates/stock_analyzer/stock_detail.html -->
 {% extends 'stock_analyzer/base.html' %}
+{% load math_filters %}
+
 
 
 
@@ -56,6 +58,31 @@
                 {% endif %}
             </div>
         </div>
+        <div class="d-flex align-items-center mt-2">
+            <span class="me-2">Confluence:</span>
+            <div class="progress" style="width: 200px;">
+                {% if latest_analysis.confluence_score is not None %}
+                    {% with score=latest_analysis.confluence_score|floatformat:0 %}
+                        {% if score|add:'0' >= 8 %}
+                            <div class="progress-bar bg-success" style="width: {{ score|mul:10 }}%;">
+                                {{ score }}/10
+                            </div>
+                        {% elif score|add:'0' >= 4 %}
+                            <div class="progress-bar bg-warning" style="width: {{ score|mul:10 }}%;">
+                                {{ score }}/10
+                            </div>
+                        {% else %}
+                            <div class="progress-bar bg-danger" style="width: {{ score|mul:10 }}%;">
+                                {{ score }}/10
+                            </div>
+                        {% endif %}
+                    {% endwith %}
+                {% else %}
+                    <div class="progress-bar bg-secondary" style="width: 100%;">Keine Daten</div>
+                {% endif %}
+            </div>
+        </div>
+
         <div class="mt-2">
             {% if latest_analysis.recommendation == 'BUY' %}
                 <span class="badge bg-success fs-6">KAUFEN</span>

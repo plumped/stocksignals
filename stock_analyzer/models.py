@@ -66,6 +66,7 @@ class AnalysisResult(models.Model):
     sma_200 = models.DecimalField(max_digits=10, decimal_places=2, null=True)
     bollinger_upper = models.DecimalField(max_digits=10, decimal_places=2, null=True)
     bollinger_lower = models.DecimalField(max_digits=10, decimal_places=2, null=True)
+    confluence_score = models.FloatField(null=True, blank=True)
 
     class Meta:
         unique_together = ('stock', 'date')

@@ -537,6 +537,7 @@ class AdaptiveAnalyzer:
                 'recommendation': recommendation,
                 'signals': all_signals,
                 'details': ta_result['details'],
+                'confluence_score': ta_result.get('confluence_score'),
                 'ml_prediction': ml_prediction
             }
 
@@ -571,6 +572,7 @@ class AdaptiveAnalyzer:
                 defaults={
                     'technical_score': result['score'],
                     'recommendation': result['recommendation'],
+                    'confluence_score': result.get('confluence_score'),
                     'rsi_value': details.get('rsi'),
                     'macd_value': details.get('macd'),
                     'macd_signal': details.get('macd_signal'),

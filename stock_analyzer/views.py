@@ -367,14 +367,25 @@ def batch_analyze(request):
                 # Daten aktualisieren
                 StockDataService.update_stock_data(symbol)
 
-                # Analyse durchführen
-                analyzer = TechnicalAnalyzer(symbol)
-                analysis_result = analyzer.save_analysis_result()
+                # Aktie laden
+                stock = Stock.objects.get(symbol=symbol.upper())
+                has_ml_data = StockData.objects.filter(stock=stock).count() >= 200
+
+                # Analyse durchführen (technisch oder adaptiv)
+                if has_ml_data:
+                    analyzer = AdaptiveAnalyzer(symbol)
+                    result = analyzer.get_adaptive_score()
+                    analysis_result = analyzer.save_analysis_result()
+                else:
+                    analyzer = TechnicalAnalyzer(symbol)
+                    result = analyzer.calculate_technical_score()
+                    analysis_result = analyzer.save_analysis_result()
 
                 results[symbol] = {
                     'success': True,
                     'score': float(analysis_result.technical_score),
-                    'recommendation': analysis_result.recommendation
+                    'recommendation': analysis_result.recommendation,
+                    'confluence': result.get('confluence_score', None)
                 }
             except Exception as e:
                 results[symbol] = {
@@ -385,6 +396,7 @@ def batch_analyze(request):
         return JsonResponse({'results': results})
 
     return JsonResponse({'error': 'Ungültige Anfrage'}, status=400)
+
 
 
 @login_required
