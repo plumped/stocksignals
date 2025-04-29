@@ -1,9 +1,10 @@
 # stock_analyzer/ml_models.py
 import numpy as np
 import pandas as pd
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingRegressor
-from sklearn.model_selection import train_test_split, TimeSeriesSplit
+from sklearn.model_selection import train_test_split, TimeSeriesSplit, RandomizedSearchCV
 from sklearn.metrics import accuracy_score, mean_squared_error, classification_report
 import joblib
 import os
@@ -18,28 +19,20 @@ class MLPredictor:
     """Machine Learning model for stock price prediction and signal generation"""
 
     def __init__(self, stock_symbol, prediction_days=5, training_window=365):
-        """
-        Initialize the ML predictor
-
-        Args:
-            stock_symbol: Symbol of the stock to analyze
-            prediction_days: Number of days to predict ahead
-            training_window: Number of days of historical data to use for training
-        """
         self.stock_symbol = stock_symbol
         self.prediction_days = prediction_days
-        self.training_window = training_window
+
+        # 🚀 Training Window automatisch anpassen je nach Volatilität
+        self.training_window = self._adjust_training_window(training_window)
+
         self.models_dir = 'ml_models'
 
-        # Create models directory if it doesn't exist
         if not os.path.exists(self.models_dir):
             os.makedirs(self.models_dir)
 
-        # Model file paths
         self.price_model_path = os.path.join(self.models_dir, f'{stock_symbol}_price_model.pkl')
         self.signal_model_path = os.path.join(self.models_dir, f'{stock_symbol}_signal_model.pkl')
 
-        # Load or train models
         self.price_model = self._load_or_train_model('price')
         self.signal_model = self._load_or_train_model('signal')
 
@@ -112,6 +105,49 @@ class MLPredictor:
         except Exception as e:
             logger.error(f"Error preparing data for {self.stock_symbol}: {str(e)}")
             return None, None, None
+
+    def _adjust_training_window(self, base_window):
+        """Dynamically adjust training window based on stock volatility"""
+        try:
+            from .models import Stock, StockData
+
+            stock = Stock.objects.get(symbol=self.stock_symbol)
+            recent_data = StockData.objects.filter(stock=stock).order_by('-date')[:60]
+
+            if recent_data.count() < 30:
+                return base_window
+
+            df = pd.DataFrame(list(recent_data.values()))
+            df['close_price'] = df['close_price'].astype(float)
+            df['high_price'] = df['high_price'].astype(float)
+            df['low_price'] = df['low_price'].astype(float)
+
+            high_low = df['high_price'] - df['low_price']
+            high_close = abs(df['high_price'] - df['close_price'].shift())
+            low_close = abs(df['low_price'] - df['close_price'].shift())
+
+            ranges = pd.concat([high_low, high_close, low_close], axis=1)
+            true_range = ranges.max(axis=1)
+
+            atr = true_range.rolling(window=14).mean().iloc[-1]
+            last_close = df['close_price'].iloc[-1]
+            atr_pct = (atr / last_close) * 100 if last_close != 0 else 5
+
+            # 🚀 Anpassungslogik
+            if atr_pct < 2.0:
+                adjusted = base_window * 2
+            elif atr_pct < 4.0:
+                adjusted = int(base_window * 1.5)
+            else:
+                adjusted = base_window
+
+            logger.info(
+                f"Adjusted training window for {self.stock_symbol}: {base_window} → {adjusted} days (ATR {atr_pct:.2f}%)")
+            return adjusted
+
+        except Exception as e:
+            logger.error(f"Error adjusting training window for {self.stock_symbol}: {str(e)}")
+            return base_window
 
     def _calculate_features(self, df):
         """Calculate technical indicators and other features for ML models"""
@@ -219,7 +255,7 @@ class MLPredictor:
             return self._train_model(model_type)
 
     def _train_model(self, model_type):
-        """Train a new model and save it"""
+        """Train a new model with hyperparameter search and optional calibration, then save it."""
         X, y_price, y_signal = self.prepare_data()
 
         if X is None or len(X) < 30:
@@ -228,28 +264,35 @@ class MLPredictor:
 
         try:
             # Use time series split for validation
-            tscv = TimeSeriesSplit(n_splits=5)
+            n_splits = max(5, min(len(X) // 100, 10))  # Maximal 10 Splits
+            tscv = TimeSeriesSplit(n_splits=n_splits)
 
+            # Select target and path
             if model_type == 'price':
-                # Regression model for price prediction
-                model = GradientBoostingRegressor(
-                    n_estimators=100,
-                    learning_rate=0.1,
-                    max_depth=4,
-                    random_state=42
-                )
                 y = y_price
                 model_path = self.price_model_path
+
+                base_model = GradientBoostingRegressor(random_state=42)
+                param_grid = {
+                    'n_estimators': [100, 150, 200],
+                    'learning_rate': [0.05, 0.1, 0.2],
+                    'max_depth': [3, 4, 5],
+                    'subsample': [0.8, 1.0]
+                }
+                scoring = 'neg_mean_squared_error'
+
             else:
-                # Classification model for signal prediction
-                model = RandomForestClassifier(
-                    n_estimators=100,
-                    max_depth=6,
-                    min_samples_split=5,
-                    random_state=42
-                )
                 y = y_signal
                 model_path = self.signal_model_path
+
+                base_model = RandomForestClassifier(random_state=42)
+                param_grid = {
+                    'n_estimators': [100, 150, 200],
+                    'max_depth': [4, 6, 8, None],
+                    'min_samples_split': [2, 5, 10],
+                    'min_samples_leaf': [1, 2, 4]
+                }
+                scoring = 'accuracy'
 
             # Train with cross-validation
             best_score = float('-inf')
@@ -259,10 +302,26 @@ class MLPredictor:
                 X_train, X_test = X[train_idx], X[test_idx]
                 y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
 
-                model.fit(X_train, y_train)
+                # Hyperparameter Search
+                search = RandomizedSearchCV(
+                    base_model,
+                    param_distributions=param_grid,
+                    n_iter=10,
+                    cv=3,
+                    scoring=scoring,
+                    random_state=42,
+                    n_jobs=-1
+                )
+                search.fit(X_train, y_train)
+                model = search.best_estimator_
+
+                # Calibration for classifier
+                if model_type == 'signal':
+                    model = CalibratedClassifierCV(model, method='isotonic', cv=3)
+                    model.fit(X_train, y_train)
 
                 if model_type == 'price':
-                    score = -mean_squared_error(y_test, model.predict(X_test))  # Negative MSE as score
+                    score = -mean_squared_error(y_test, model.predict(X_test))  # Higher is better (negated)
                 else:
                     score = accuracy_score(y_test, model.predict(X_test))
 
@@ -270,11 +329,11 @@ class MLPredictor:
                     best_score = score
                     best_model = model
 
-            # Save the best model
             if best_model is not None:
                 joblib.dump(best_model, model_path)
                 logger.info(
-                    f"Trained and saved new {model_type} model for {self.stock_symbol} with score: {best_score}")
+                    f"Trained and saved new {model_type} model for {self.stock_symbol} with best score: {best_score:.4f}"
+                )
                 return best_model
             else:
                 logger.error(f"Failed to train {model_type} model for {self.stock_symbol}")
@@ -476,40 +535,54 @@ class AdaptiveAnalyzer:
         try:
             from .analysis import TechnicalAnalyzer
 
-            # Get traditional technical analysis
+            # === Technische Analyse ausführen ===
             ta = TechnicalAnalyzer(self.stock_symbol)
             ta_result = ta.calculate_technical_score()
             ta_score = ta_result['score']
             ta_recommendation = ta_result['recommendation']
 
-            # Get ML prediction
+            print(f"[DEBUG] TA Score: {ta_score:.2f} | Empfehlung: {ta_recommendation}")
+
+            # === ML-Vorhersage holen ===
             ml_prediction = self.ml_predictor.predict()
 
             if ml_prediction is None:
-                # If ML prediction failed, return only the traditional analysis
+                print("[DEBUG] ML Prediction fehlgeschlagen – verwende nur TA")
                 return ta_result
 
-            # Convert ML recommendation to score modifier
+            # === ML-Auswertung ===
+            confidence = ml_prediction['confidence']
+            predicted_return = ml_prediction['predicted_return']  # bereits in Prozent
             ml_score_modifier = 0
+
             if ml_prediction['recommendation'] == 'BUY':
-                ml_score_modifier = 10 * ml_prediction['confidence']
+                ml_score_modifier = +10 * confidence
             elif ml_prediction['recommendation'] == 'SELL':
-                ml_score_modifier = -10 * ml_prediction['confidence']
+                ml_score_modifier = -10 * confidence
 
-            # Calculate predicted return impact
-            return_modifier = ml_prediction['predicted_return'] * 100  # Convert to percentage points
+            # === Return modifier berechnen und begrenzen ===
+            return_modifier = predicted_return  # z. B. +3.5 oder -6.7
+            ml_modifier_total = ml_score_modifier + return_modifier
 
-            # Combine scores with adaptive weighting
-            # Higher confidence in ML predictions gives them more weight
-            ml_weight = min(0.3, ml_prediction['confidence'] * 0.4)  # Cap ML weight at 30%
+            # Begrenze die ML-Modifikation auf ±20 Punkte
+            ml_modifier_total = max(-20, min(20, ml_modifier_total))
+
+            # === Gewichtung ML/TA ===
+            ml_weight = min(0.3, confidence * 0.4)
             ta_weight = 1 - ml_weight
 
-            adaptive_score = (ta_weight * ta_score) + (ml_weight * (ta_score + ml_score_modifier + return_modifier))
+            print(f"[DEBUG] ML Empfehlung: {ml_prediction['recommendation']}, Confidence: {confidence:.2f}")
+            print(f"[DEBUG] ML Modifier: {ml_score_modifier:.2f} + {return_modifier:.2f} = {ml_modifier_total:.2f}")
+            print(f"[DEBUG] Weights → TA: {ta_weight:.2f}, ML: {ml_weight:.2f}")
 
-            # Ensure score is within bounds
-            adaptive_score = max(0, min(100, adaptive_score))
+            # === Adaptive Score berechnen ===
+            raw_adaptive_score = (ta_weight * ta_score) + (ml_weight * (ta_score + ml_modifier_total))
+            adaptive_score = max(0, min(100, raw_adaptive_score))
 
-            # Determine final recommendation based on the adaptive score
+            print(f"[DEBUG] Adaptive Score (roh): {raw_adaptive_score:.2f}")
+            print(f"[DEBUG] Adaptive Score (begrenzt): {adaptive_score:.2f}")
+
+            # === Empfehlung basierend auf adaptivem Score ===
             if adaptive_score >= 90:
                 recommendation = "STRONG BUY"
             elif adaptive_score >= 70:
@@ -521,18 +594,14 @@ class AdaptiveAnalyzer:
             else:
                 recommendation = "STRONG SELL"
 
-            # Add ML-specific signals to the result
+            # === Signale kombinieren ===
             ml_signals = [
                 ("ML Prediction", ml_prediction['recommendation'],
-                 f"ML predicts {ml_prediction['predicted_return']:.2%} return in {ml_prediction['prediction_days']} days",
-                 ml_score_modifier),
+                 f"ML prognostiziert {predicted_return:.2f}% in {ml_prediction['prediction_days']} Tagen")
             ]
-
-            # Combine signals
             all_signals = ta_result['signals'] + ml_signals
 
-            # Create the final result
-            result = {
+            return {
                 'score': round(adaptive_score, 2),
                 'recommendation': recommendation,
                 'signals': all_signals,
@@ -541,11 +610,10 @@ class AdaptiveAnalyzer:
                 'ml_prediction': ml_prediction
             }
 
-            return result
-
         except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
             logger.error(f"Error calculating adaptive score for {self.stock_symbol}: {str(e)}")
-            # Fall back to traditional analysis if there's an error
             from .analysis import TechnicalAnalyzer
             ta = TechnicalAnalyzer(self.stock_symbol)
             return ta.calculate_technical_score()
@@ -649,3 +717,4 @@ def batch_ml_predictions(symbols=None, force_retrain=False):
             }
 
     return results
+

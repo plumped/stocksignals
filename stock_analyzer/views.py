@@ -111,44 +111,74 @@ def generate_ml_prediction(request, symbol):
         })
 
 
-@login_required
 def analyze_stock(request, symbol):
-    """Führt eine technische Analyse für eine bestimmte Aktie durch"""
     try:
-        # Versuchen, die Aktie zu laden oder zu erstellen
+        print(f"Analysiere Symbol: {symbol}")
+
         success, message = StockDataService.update_stock_data(symbol)
+        print(f"Datenaktualisierung: {success}, {message}")
 
         if not success:
             return JsonResponse({'status': 'error', 'message': message})
 
-        # Jetzt sollte die Aktie in der Datenbank sein, also können wir sie analyzieren
-        try:
-            # Prüfen, ob genügend Daten für ML vorhanden sind
-            stock = Stock.objects.get(symbol=symbol.upper())
-            has_ml_data = StockData.objects.filter(stock=stock).count() >= 200
+        # Zusätzliche Debugging-Informationen
+        stock = Stock.objects.get(symbol=symbol.upper())
+        historical_data_count = StockData.objects.filter(stock=stock).count()
+        print(f"Anzahl historischer Datenpunkte: {historical_data_count}")
 
+        # Prüfen, ob genügend Daten für ML vorhanden sind
+        has_ml_data = historical_data_count >= 200
+        print(f"ML-Daten verfügbar: {has_ml_data}")
+
+        try:
             if has_ml_data:
-                # Adaptive Analyzer verwenden (kombiniert TA und ML)
                 analyzer = AdaptiveAnalyzer(symbol)
+                print("Verwende AdaptiveAnalyzer")
                 result = analyzer.get_adaptive_score()
                 analysis_result = analyzer.save_analysis_result()
             else:
-                # Nur traditionelle technische Analyse verwenden
                 analyzer = TechnicalAnalyzer(symbol)
+                print("Verwende TechnicalAnalyzer")
                 result = analyzer.calculate_technical_score()
+
+                # Fügen Sie zusätzliche Debugging-Ausgaben hinzu
+                if result is None:
+                    print("WARNUNG: calculate_technical_score() returned None")
+                    return JsonResponse({
+                        'status': 'error',
+                        'message': 'Technische Score-Berechnung fehlgeschlagen'
+                    })
+
                 analysis_result = analyzer.save_analysis_result()
+
+            print(f"Score: {analysis_result.technical_score}")
+            print(f"Recommendation: {analysis_result.recommendation}")
 
             return JsonResponse({
                 'status': 'success',
                 'score': float(analysis_result.technical_score),
                 'recommendation': analysis_result.recommendation,
-                'signals': result['signals'],
+                'signals': result.get('signals', []),
                 'has_ml_data': has_ml_data
             })
+
         except Exception as e:
-            return JsonResponse({'status': 'error', 'message': f"Fehler bei der Analyse: {str(e)}"})
+            print(f"Fehler bei der Analyse: {str(e)}")
+            import traceback
+            traceback.print_exc()  # Druckt den vollständigen Stacktrace
+            return JsonResponse({
+                'status': 'error',
+                'message': f"Fehler bei der Analyse: {str(e)}"
+            })
+
     except Exception as e:
-        return JsonResponse({'status': 'error', 'message': f"Fehler: {str(e)}"})
+        print(f"Unerwarteter Fehler: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({
+            'status': 'error',
+            'message': str(e)
+        })
 
 
 # stock_analyzer/views.py (Fortsetzung)

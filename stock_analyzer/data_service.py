@@ -15,6 +15,7 @@ class StockDataService:
                 symbol=symbol.upper(),
                 defaults={'name': symbol.upper()}  # Vorläufiger Name, wird später aktualisiert
             )
+            print(f"Stock {symbol}: {'neu erstellt' if created else 'existiert bereits'}")
 
             # Ticker-Objekt erstellen
             ticker = yf.Ticker(symbol)
@@ -31,7 +32,10 @@ class StockDataService:
 
             hist_data = ticker.history(start=start_date, end=end_date, interval="1d")
 
+            print(f"Historische Daten für {symbol}: {len(hist_data)} Datenpunkte")
+
             if hist_data.empty:
+                print(f"WARNUNG: Keine Daten für {symbol} gefunden.")
                 return False, f"Keine Daten für {symbol} gefunden."
 
             # Kursdaten in die Datenbank speichern
@@ -52,7 +56,11 @@ class StockDataService:
 
             return True, f"Daten für {symbol} erfolgreich aktualisiert."
 
+
         except Exception as e:
+
+            print(f"Fehler beim Aktualisieren von {symbol}: {str(e)}")
+
             return False, f"Fehler beim Abrufen der Daten für {symbol}: {str(e)}"
 
     @staticmethod

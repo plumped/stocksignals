@@ -12,10 +12,8 @@ class TechnicalAnalyzer:
     def __init__(self, stock_symbol, days=365):
         self.stock = Stock.objects.get(symbol=stock_symbol)
 
-        # Das neueste Datum (letzte historische Daten)
         last_date = StockData.objects.filter(stock=self.stock).order_by('-date').first().date
-
-        # Berechne das Startdatum
+        days = self._adjust_window_based_on_volatility(days)
         start_date = last_date - timedelta(days=days)
 
         # Historische Daten für den Zeitraum ab dem Startdatum laden
@@ -28,47 +26,74 @@ class TechnicalAnalyzer:
                 if col in self.df.columns:
                     self.df[col] = self.df[col].astype(float)
 
+    def _adjust_window_based_on_volatility(self, base_days):
+        try:
+            recent_data = StockData.objects.filter(stock=self.stock).order_by('-date')[:60]
+            if recent_data.count() < 30:
+                return base_days
+
+            df = pd.DataFrame(list(recent_data.values()))
+            df['close_price'] = df['close_price'].astype(float)
+            df['high_price'] = df['high_price'].astype(float)
+            df['low_price'] = df['low_price'].astype(float)
+
+            high_low = df['high_price'] - df['low_price']
+            high_close = abs(df['high_price'] - df['close_price'].shift())
+            low_close = abs(df['low_price'] - df['close_price'].shift())
+
+            ranges = pd.concat([high_low, high_close, low_close], axis=1)
+            true_range = ranges.max(axis=1)
+            atr = true_range.rolling(window=14).mean().iloc[-1]
+            last_close = df['close_price'].iloc[-1]
+            atr_pct = (atr / last_close) * 100 if last_close else 5
+
+            print(f"[VOLATILITY-DEBUG] ATR%: {atr_pct:.2f} → ", end="")
+
+            if atr_pct < 2.0:
+                print(f"niedrig → Fenster verdoppelt auf {base_days * 2}")
+                return base_days * 2
+            elif atr_pct < 4.0:
+                print(f"moderat → Fenster erweitert auf {int(base_days * 1.5)}")
+                return int(base_days * 1.5)
+            else:
+                print(f"hoch → Standardfenster {base_days} beibehalten")
+                return base_days
+
+        except Exception as e:
+            print(f"[WARN] Volatilitätsanpassung fehlgeschlagen: {e}")
+            return base_days
+
     def calculate_indicators(self, include_advanced=False):
-        """Berechnet alle technischen Indikatoren, optional auch die fortgeschrittenen"""
-        if self.df.empty:
-            return None
+        # Stelle sicher, dass Berechnungen in der richtigen Reihenfolge erfolgen
+        try:
+            # Grundlegende Berechnungen
+            self._calculate_rsi()
+            self._calculate_sma()
+            self._calculate_macd()
+            self._calculate_bollinger_bands()
+            self._calculate_stochastic()
+            self._calculate_adx()
+            self._calculate_ichimoku()
+            self._calculate_obv()
+            self._calculate_atr()
+            self._calculate_roc()
+            self._calculate_psar()
 
-        # RSI (Relative Strength Index)
-        self._calculate_rsi()
+            # Debug-Ausgabe aller berechneten Spalten
+            print("INDIKATOR-DEBUG: Berechnete Spalten:", list(self.df.columns))
 
-        # Gleitende Durchschnitte (Simple Moving Averages)
-        self._calculate_sma()
+            # Optional: Erweiterte Indikatoren
+            if include_advanced:
+                advanced_indicators = AdvancedIndicators(self.df)
+                self.df = advanced_indicators.calculate_all_indicators()
 
-        # MACD (Moving Average Convergence Divergence)
-        self._calculate_macd()
+            return self.df
 
-        # Bollinger Bänder
-        self._calculate_bollinger_bands()
-
-        # Stochastik Oszillator
-        self._calculate_stochastic()
-
-        # Average Directional Index (ADX)
-        self._calculate_adx()
-
-        # Ichimoku Cloud
-        self._calculate_ichimoku()
-
-        # OBV (On-Balance Volume)
-        self._calculate_obv()
-
-        # ATR (Average True Range)
-        self._calculate_atr()
-
-        self._calculate_roc()
-
-        self._calculate_psar()
-
-        # Wenn fortgeschrittene Indikatoren gewünscht sind, berechne diese
-        if include_advanced:
-            self.calculate_advanced_indicators()
-
-        return self.df
+        except Exception as e:
+            print(f"FEHLER bei Indikatorberechnung: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return self.df
 
     def _calculate_rsi(self, period=14):
         """Berechnet den RSI-Indikator"""
@@ -198,7 +223,22 @@ class TechnicalAnalyzer:
         self.df['atr'] = true_range.rolling(window=period).mean()
 
     def calculate_technical_score(self):
-        """Berechnet einen präziseren technischen Score basierend auf dynamischen Kriterien"""
+        self.calculate_indicators(include_advanced=True)
+
+        print("DEBUG: Methode calculate_technical_score gestartet")
+        print(f"DEBUG: Stock Symbol {self.stock.symbol}")
+        print("DEBUG: Verfügbare Spalten:", list(self.df.columns))
+        print(f"DEBUG: DataFrame Länge: {len(self.df)}")
+        print(f"DEBUG: Letzte Zeile:\n{self.df.iloc[-1]}")
+
+        indicator_cols = [
+            'rsi', 'macd', 'macd_signal', 'sma_20', 'sma_50', 'sma_200', 'close_price'
+        ]
+        print("DEBUG: Indikatorwerte:")
+        for col in indicator_cols:
+            val = self.df[col].iloc[-1] if col in self.df.columns else "NICHT GEFUNDEN"
+            print(f"{col}: {val}")
+
         required_cols = [
             'rsi', 'macd', 'macd_signal', 'sma_20', 'sma_50', 'sma_200',
             'bollinger_upper', 'bollinger_lower', 'stoch_k', 'stoch_d',
@@ -206,129 +246,142 @@ class TechnicalAnalyzer:
         ]
 
         if self.df.empty:
-            print(f"[WARN] DataFrame für {self.stock.symbol} ist leer – keine Score-Berechnung möglich.")
             return None
 
-        # Indikatoren nachholen, falls nötig
         self.calculate_indicators()
-
-        # Prüfe, ob alle Spalten vorhanden sind
-        if any(col not in self.df.columns or self.df[col].isna().all() for col in required_cols):
-            print(f"[WARN] Nicht alle Indikatoren verfügbar für {self.stock.symbol}. Abbruch.")
-            return None
 
         latest = self.df.dropna(subset=required_cols).iloc[-1:]
         if latest.empty:
-            print(f"[WARN] Kein gültiger Datensatz mit allen Indikatoren für {self.stock.symbol}.")
             return None
+
         latest = latest.squeeze()
-        score = 50  # Neutraler Startwert
+        score = 50
         signals = []
 
-        # --- Einzelne Indikatoren dynamisch bewerten ---
+        weights = {
+            'rsi': 1.5,
+            'macd': 1.3,
+            'sma': {20: 0.8, 50: 1.0, 200: 1.5},
+            'bollinger': 1.2,
+            'stochastic': 0.9,
+            'ichimoku': 1.1,
+            'adx': 1.0
+        }
 
-        # RSI dynamisch
-        if latest['rsi'] < 30:
-            bonus = (30 - latest['rsi']) * 0.5
+        # === RSI ===
+        rsi = latest['rsi']
+        if rsi < 30:
+            bonus = min((30 - rsi) * weights['rsi'], 15)
             score += bonus
-            signals.append(("RSI", "BUY", f"Überverkauft ({latest['rsi']:.2f}) → +{bonus:.1f}"))
-        elif latest['rsi'] > 70:
-            malus = (latest['rsi'] - 70) * 0.5
+            signals.append(("RSI", "BUY", f"Überverkauft ({rsi:.2f}) → +{bonus:.1f}"))
+        elif rsi > 70:
+            malus = min((rsi - 70) * weights['rsi'], 15)
             score -= malus
-            signals.append(("RSI", "SELL", f"Überkauft ({latest['rsi']:.2f}) → -{malus:.1f}"))
+            signals.append(("RSI", "SELL", f"Überkauft ({rsi:.2f}) → -{malus:.1f}"))
+        print(f"[DEBUG] Score nach RSI: {score:.2f}")
 
-        # MACD Signal
-        if latest['macd'] > latest['macd_signal']:
-            score += 7.5
-            signals.append(("MACD", "BUY", "MACD über Signal-Linie → +7.5"))
+        # === MACD ===
+        macd = latest['macd']
+        macd_signal = latest['macd_signal']
+        macd_diff = macd - macd_signal
+
+        if macd > macd_signal:
+            macd_boost = min(abs(macd_diff) * weights['macd'] * 10, 10)
+            score += macd_boost
+            signals.append(("MACD", "BUY", f"Bullish Momentum ({macd_diff:.2f}) → +{macd_boost:.1f}"))
         else:
-            score -= 7.5
-            signals.append(("MACD", "SELL", "MACD unter Signal-Linie → -7.5"))
+            macd_penalty = min(abs(macd_diff) * weights['macd'] * 10, 10)
+            score -= macd_penalty
+            signals.append(("MACD", "SELL", f"Bearish Momentum ({macd_diff:.2f}) → -{macd_penalty:.1f}"))
+        print(f"[DEBUG] Score nach MACD: {score:.2f}")
 
-        # SMA Levels
-        if latest['close_price'] > latest['sma_20']:
-            score += 5
-            signals.append(("SMA 20", "BUY", "Preis über SMA 20 → +5"))
-        else:
-            score -= 5
-            signals.append(("SMA 20", "SELL", "Preis unter SMA 20 → -5"))
-
-        if latest['close_price'] > latest['sma_50']:
-            score += 5
-            signals.append(("SMA 50", "BUY", "Preis über SMA 50 → +5"))
-        else:
-            score -= 5
-            signals.append(("SMA 50", "SELL", "Preis unter SMA 50 → -5"))
-
-        if latest['close_price'] > latest['sma_200']:
-            score += 10
-            signals.append(("SMA 200", "BUY", "Preis über SMA 200 → +10"))
-        else:
-            score -= 10
-            signals.append(("SMA 200", "SELL", "Preis unter SMA 200 → -10"))
-
-        # Bollinger Bänder
-        if latest['close_price'] > latest['bollinger_upper']:
-            score -= 7.5
-            signals.append(("Bollinger Bänder", "SELL", "Preis über oberem Band → -7.5"))
-        elif latest['close_price'] < latest['bollinger_lower']:
-            score += 7.5
-            signals.append(("Bollinger Bänder", "BUY", "Preis unter unterem Band → +7.5"))
-
-        # Stochastik Oszillator
-        if latest['stoch_k'] < 20 and latest['stoch_d'] < 20:
-            score += 5
-            signals.append(("Stochastik", "BUY", "Stochastik überverkauft → +5"))
-        elif latest['stoch_k'] > 80 and latest['stoch_d'] > 80:
-            score -= 5
-            signals.append(("Stochastik", "SELL", "Stochastik überkauft → -5"))
-
-        # Ichimoku Cloud
-        if latest['close_price'] > latest['senkou_span_a'] and latest['close_price'] > latest['senkou_span_b']:
-            score += 10
-            signals.append(("Ichimoku", "BUY", "Preis über Cloud → +10"))
-        elif latest['close_price'] < latest['senkou_span_a'] and latest['close_price'] < latest['senkou_span_b']:
-            score -= 10
-            signals.append(("Ichimoku", "SELL", "Preis unter Cloud → -10"))
-
-        # OBV Trendbestätigung
-        if 'obv' in self.df.columns:
-            price_change = self.df['close_price'].iloc[-5:].pct_change().sum()
-            obv_change = (self.df['obv'].iloc[-1] - self.df['obv'].iloc[-5]) / abs(self.df['obv'].iloc[-5])
-
-            if price_change > 0 and obv_change > 0:
-                score += 5
-                signals.append(("OBV", "BUY", "Volumen bestätigt Anstieg → +5"))
-            elif price_change < 0 and obv_change < 0:
-                score -= 5
-                signals.append(("OBV", "SELL", "Volumen bestätigt Rückgang → -5"))
-
-        # --- Bonus für Kombinationen ---
-        if latest['rsi'] < 30 and latest['macd'] > latest['macd_signal'] and latest['close_price'] > latest['sma_20']:
-            score += 10
-            signals.append(("Kombi-Signal", "BUY", "RSI + MACD + SMA positiv → +10"))
-
-        # --- Verstärkung durch Trendstärke (ADX) ---
-        if latest['adx'] > 25:
-            if latest['+di'] > latest['-di']:
-                score *= 1.1
-                signals.append(("ADX Boost", "BUY", "Starker Aufwärtstrend (Verstärkung Score)"))
+        # === SMA ===
+        close_price = latest['close_price']
+        for sma_p in [20, 50, 200]:
+            sma_val = latest[f'sma_{sma_p}']
+            weight = weights['sma'][sma_p]
+            if close_price > sma_val:
+                boost = 5 * weight
+                score += boost
+                signals.append((f"SMA {sma_p}", "BUY", f"Preis über SMA {sma_p} → +{boost:.1f}"))
             else:
-                score *= 0.9
-                signals.append(("ADX Dämpfung", "SELL", "Starker Abwärtstrend (Dämpfung Score)"))
+                penalty = 5 * weight
+                score -= penalty
+                signals.append((f"SMA {sma_p}", "SELL", f"Preis unter SMA {sma_p} → -{penalty:.1f}"))
+        print(f"[DEBUG] Score nach SMA: {score:.2f}")
 
-        # Score begrenzen
+        # === Bollinger Bands ===
+        upper = latest['bollinger_upper']
+        lower = latest['bollinger_lower']
+        width = upper - lower
+        pos = ((close_price - lower) / width) if width > 0 else 0.5
+
+        if pos <= 0.2:
+            boost = 7.5 * weights['bollinger']
+            score += boost
+            signals.append(("Bollinger", "BUY", f"Preis nahe unterem Band → +{boost:.1f}"))
+        elif pos >= 0.8:
+            penalty = 7.5 * weights['bollinger']
+            score -= penalty
+            signals.append(("Bollinger", "SELL", f"Preis nahe oberem Band → -{penalty:.1f}"))
+        print(f"[DEBUG] Score nach Bollinger: {score:.2f}")
+
+        # === Stochastik ===
+        k, d = latest['stoch_k'], latest['stoch_d']
+        if k < 20 and d < 20:
+            boost = 5 * weights['stochastic']
+            score += boost
+            signals.append(("Stochastik", "BUY", f"Überverkauft → +{boost:.1f}"))
+        elif k > 80 and d > 80:
+            penalty = 5 * weights['stochastic']
+            score -= penalty
+            signals.append(("Stochastik", "SELL", f"Überkauft → -{penalty:.1f}"))
+        print(f"[DEBUG] Score nach Stochastik: {score:.2f}")
+
+        # === Ichimoku ===
+        if close_price > latest['senkou_span_a'] and close_price > latest['senkou_span_b']:
+            boost = 10 * weights['ichimoku']
+            score += boost
+            signals.append(("Ichimoku", "BUY", f"Preis über Cloud → +{boost:.1f}"))
+        elif close_price < latest['senkou_span_a'] and close_price < latest['senkou_span_b']:
+            penalty = 10 * weights['ichimoku']
+            score -= penalty
+            signals.append(("Ichimoku", "SELL", f"Preis unter Cloud → -{penalty:.1f}"))
+        print(f"[DEBUG] Score nach Ichimoku: {score:.2f}")
+
+        # === ADX ===
+        adx = latest['adx']
+        plus_di = latest['+di']
+        minus_di = latest['-di']
+        print(f"[DEBUG] ADX: {adx:.2f}, +DI: {plus_di:.2f}, -DI: {minus_di:.2f}")
+
+        if adx > 25:
+            if plus_di > minus_di:
+                boost = score * 0.1
+                score *= 1.1
+                signals.append(("ADX", "BUY", f"Starker Aufwärtstrend → +{boost:.1f}"))
+            else:
+                penalty = score * 0.1
+                score *= 0.9
+                signals.append(("ADX", "SELL", f"Starker Abwärtstrend → -{penalty:.1f}"))
+        print(f"[DEBUG] Score nach ADX: {score:.2f}")
+
+        # Begrenzung
         score = max(0, min(100, score))
 
-        buy_signals = sum(1 for s in signals if s[1] == 'BUY')
-        sell_signals = sum(1 for s in signals if s[1] == 'SELL')
-        total_signals = buy_signals + sell_signals
-        if total_signals == 0:
-            confluence_score = 5  # neutraler Wert
-        else:
-            confluence_score = round((buy_signals / total_signals) * 10)
+        # Kombi-Signal
+        if rsi < 30 and macd > macd_signal and close_price > latest['sma_20']:
+            score += 10
+            signals.append(("Multi-Indikator", "BUY", "Stark bullisches Kombi-Signal → +10"))
+        print(f"[DEBUG] Score nach Kombi-Check: {score:.2f}")
 
-        # --- Neue Empfehlungen (5-Stufen) ---
+        # Confluence Score
+        buys = sum(1 for s in signals if s[1] == 'BUY')
+        sells = sum(1 for s in signals if s[1] == 'SELL')
+        total = buys + sells
+        confluence_score = round((buys / total) * 10) if total > 0 else 5
+
+        # Empfehlung
         if score >= 90:
             recommendation = "STRONG BUY"
         elif score >= 70:
@@ -340,25 +393,20 @@ class TechnicalAnalyzer:
         else:
             recommendation = "STRONG SELL"
 
+        # Ausgabe der Signale
+        print("=== TECHNISCHE SIGNALAUSWERTUNG ===")
+        for sig in signals:
+            print(f"{sig[0]} | {sig[1]} | {sig[2]}")
+        print(f"FINALER SCORE: {round(score, 2)} | Empfehlung: {recommendation}")
+
         return {
             'score': round(score, 2),
             'recommendation': recommendation,
             'signals': signals,
             'confluence_score': confluence_score,
             'details': {
-                'rsi': latest['rsi'],
-                'macd': latest['macd'],
-                'macd_signal': latest['macd_signal'],
-                'sma_20': latest['sma_20'],
-                'sma_50': latest['sma_50'],
-                'sma_200': latest['sma_200'],
-                'bollinger_upper': latest['bollinger_upper'],
-                'bollinger_lower': latest['bollinger_lower'],
-                'stoch_k': latest['stoch_k'],
-                'stoch_d': latest['stoch_d'],
-                'adx': latest['adx'],
-                '+di': latest['+di'],
-                '-di': latest['-di']
+                k: float(v) for k, v in latest.items()
+                if k in required_cols
             }
         }
 
