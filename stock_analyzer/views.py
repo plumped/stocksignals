@@ -17,7 +17,7 @@ from .analysis import TechnicalAnalyzer
 import csv
 from django.http import HttpResponse
 from django.contrib import messages
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import yfinance as yf
 
 
@@ -1569,6 +1569,13 @@ def portfolio_performance(request, portfolio_id):
     # Calculate portfolio value over time
     daily_values = calculate_portfolio_value_history(portfolio, start_date, end_date)
 
+    daily_values = [
+        {
+            'date': dv['date'].isoformat() if isinstance(dv['date'], (datetime, date)) else str(dv['date']),
+            'value': float(dv['value'])
+        }
+        for dv in daily_values
+    ]
     # Calculate performance metrics
     if daily_values:
         initial_value = daily_values[0]['value'] if daily_values else 0
@@ -1583,7 +1590,7 @@ def portfolio_performance(request, portfolio_id):
         # Calculate annualized return
         days_held = (end_date - start_date).days
         if days_held > 0 and initial_value > 0:
-            annualized_return = (((final_value / initial_value) ** (365 / days_held)) - 1) * 100
+            annualized_return = ((float(final_value) / float(initial_value)) ** (365 / days_held) - 1) * 100
         else:
             annualized_return = 0
     else:
@@ -1594,7 +1601,7 @@ def portfolio_performance(request, portfolio_id):
         annualized_return = 0
 
     # Prepare data for charts
-    dates = [item['date'].isoformat() for item in daily_values]
+    dates = [item['date'] for item in daily_values]
     values = [float(item['value']) for item in daily_values]
 
     context = {

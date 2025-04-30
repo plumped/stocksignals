@@ -161,6 +161,9 @@
 {% block extra_scripts %}
 {% if daily_values %}
 <script>
+// JavaScript to generate the monthly returns table
+    const dailyValues = {{ daily_values|safe }};
+
     document.addEventListener('DOMContentLoaded', function() {
         // Performance Chart
         const performanceCtx = document.getElementById('performanceChart').getContext('2d');
@@ -239,7 +242,8 @@
                 document.getElementById('end_date').value = endDate.toISOString().split('T')[0];
 
                 // Submit the form
-                document.querySelector('form').submit();
+                document.querySelector('form[action=""]').submit();
+
             });
         });
 
@@ -257,60 +261,40 @@
         // Function to generate monthly returns
         function generateMonthlyReturnsTable() {
             const tableBody = document.getElementById('monthlyReturnsBody');
+            const monthlyData = {};
 
-            // This is a simplified version - in reality you would calculate this from daily_values
-            // Group daily values by month and calculate returns
-            const monthlyData = [];
+            // Gruppiere nach YYYY-MM und bestimme Start/Ende
+            dailyValues.forEach(entry => {
+                const date = new Date(entry.date);
+                const key = `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}`;
+                const value = parseFloat(entry.value);
 
-            // Example data (this should be replaced with real calculations)
-            // In a real implementation, you would calculate this from the daily_values
-            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-            const currentYear = new Date().getFullYear();
-
-            for (let i = 0; i < months.length; i++) {
-                const startValue = Math.random() * 10000 + 30000;
-                const endValue = startValue * (1 + (Math.random() * 0.1 - 0.05));
-                const returnPct = ((endValue / startValue) - 1) * 100;
-
-                monthlyData.push({
-                    month: `${months[i]} ${currentYear}`,
-                    startValue,
-                    endValue,
-                    returnPct
-                });
-            }
-
-            // Clear existing rows
-            tableBody.innerHTML = '';
-
-            // Add rows to table
-            monthlyData.forEach(data => {
-                const row = document.createElement('tr');
-
-                const monthCell = document.createElement('td');
-                monthCell.textContent = data.month;
-                row.appendChild(monthCell);
-
-                const startValueCell = document.createElement('td');
-                startValueCell.textContent = data.startValue.toFixed(2) + ' €';
-                row.appendChild(startValueCell);
-
-                const endValueCell = document.createElement('td');
-                endValueCell.textContent = data.endValue.toFixed(2) + ' €';
-                row.appendChild(endValueCell);
-
-                const returnCell = document.createElement('td');
-                returnCell.textContent = data.returnPct.toFixed(2) + '%';
-                if (data.returnPct > 0) {
-                    returnCell.classList.add('text-success');
-                } else if (data.returnPct < 0) {
-                    returnCell.classList.add('text-danger');
+                if (!(key in monthlyData)) {
+                    monthlyData[key] = { start: value, end: value };
+                } else {
+                    monthlyData[key].end = value;  // überschreibt mit letztem Wert im Monat
                 }
-                row.appendChild(returnCell);
+            });
 
+            // HTML generieren
+            tableBody.innerHTML = '';
+            Object.keys(monthlyData).sort().forEach(month => {
+                const data = monthlyData[month];
+                const returnPct = ((data.end / data.start) - 1) * 100;
+
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${month}</td>
+                    <td>${data.start.toFixed(2)} €</td>
+                    <td>${data.end.toFixed(2)} €</td>
+                    <td class="${returnPct > 0 ? 'text-success' : (returnPct < 0 ? 'text-danger' : '')}">
+                        ${returnPct.toFixed(2)}%
+                    </td>
+                `;
                 tableBody.appendChild(row);
             });
         }
+
     });
 </script>
 {% endif %}

@@ -309,12 +309,47 @@ class Trade(models.Model):
             # Dividends don't change the position directly
             pass
 
+
+
+
         elif self.trade_type == 'SPLIT':
-            # Handle stock split
-            if self.price > 0:  # Use price field to store split ratio (e.g., 2 for 2:1 split)
-                position.shares = position.shares * self.price
-                position.average_price = position.average_price / self.price
-                # Cost basis remains the same
+            if self.price > 0:
+                split_ratio = self.price
+                # Berechne Netto-Anzahl vor dem Split
+                trades_before_split = Trade.objects.filter(
+                    portfolio=self.portfolio,
+                    stock=self.stock,
+                    date__lt=self.date
+
+                ).order_by('date')
+                net_shares = Decimal('0')
+                for trade in trades_before_split:
+                    if trade.trade_type == 'BUY':
+                        net_shares += trade.shares
+                    elif trade.trade_type == 'SELL':
+                        net_shares -= trade.shares
+
+                # Berechne unberührte Anteile (nach dem Split)
+                trades_after_split = Trade.objects.filter(
+                    portfolio=self.portfolio,
+                    stock=self.stock,
+                    date__gt=self.date
+                )
+
+                post_split_shares = Decimal('0')
+                for trade in trades_after_split:
+                    if trade.trade_type == 'BUY':
+                        post_split_shares += trade.shares
+                    elif trade.trade_type == 'SELL':
+                        post_split_shares -= trade.shares
+
+                if net_shares > 0:
+                    new_split_shares = net_shares * split_ratio
+                    position.shares = new_split_shares + post_split_shares
+                    position.average_price = position.average_price / split_ratio
+
+
+
 
         elif self.trade_type == 'TRANSFER_IN':
             # Similar to buy but may have different accounting
