@@ -36,7 +36,25 @@ urlpatterns = [
     path('ml/predict/<str:symbol>/', views.generate_ml_prediction, name='generate_ml_prediction'),
     path('ml/evaluate/<str:symbol>/', views.evaluate_ml_model, name='evaluate_ml_model'),
     path('ml/dashboard/', views.ml_dashboard, name='ml_dashboard'),
-    path('ml/batch/', views.batch_ml_predictions_view, name='batch_ml_predictions')
+    path('ml/batch/', views.batch_ml_predictions_view, name='batch_ml_predictions'),
 
+    # Portfolio URLs
+    path('portfolio/', views.portfolio_list, name='portfolio_list'),
+    path('portfolio/create/', views.portfolio_create, name='portfolio_create'),
+    path('portfolio/<int:portfolio_id>/', views.portfolio_detail, name='portfolio_detail'),
+    path('portfolio/<int:portfolio_id>/edit/', views.portfolio_edit, name='portfolio_edit'),
+    path('portfolio/<int:portfolio_id>/delete/', views.portfolio_delete, name='portfolio_delete'),
+
+    # Position URLs
+    path('portfolio/<int:portfolio_id>/positions/', views.position_list, name='position_list'),
+
+    # Trade URLs
+    path('portfolio/<int:portfolio_id>/trades/', views.trade_list, name='trade_list'),
+    path('portfolio/<int:portfolio_id>/trade/add/', views.trade_add, name='trade_add'),
+    path('trade/<int:trade_id>/edit/', views.trade_edit, name='trade_edit'),
+    path('trade/<int:trade_id>/delete/', views.trade_delete, name='trade_delete'),
+
+    # Portfolio Performance
+    path('portfolio/<int:portfolio_id>/performance/', views.portfolio_performance, name='portfolio_performance'),
 
 ]

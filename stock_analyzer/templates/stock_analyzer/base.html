@@ -16,76 +16,120 @@
 </head>
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-        <div class="container">
-            <a class="navbar-brand" href="{% url 'index' %}">Trading Analyzer</a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav me-auto">
-                    <li class="nav-item">
-                        <a class="nav-link" href="{% url 'index' %}">Dashboard</a>
-                    </li>
-                    {% if user.is_authenticated %}
-                    <li class="nav-item">
-                        <a class="nav-link" href="{% url 'my_watchlists' %}">Meine Watchlists</a>
-                    </li>
-                    {% endif %}
-                    <li class="nav-item dropdown">
-                        <a class="nav-link dropdown-toggle" href="#" id="marketDropdown" role="button" data-bs-toggle="dropdown">
-                            Marktanalyse
-                        </a>
-                        <ul class="dropdown-menu" aria-labelledby="marketDropdown">
-                            <li><a class="dropdown-item" href="{% url 'market_overview' %}">Marktübersicht</a></li>
-                            <li><a class="dropdown-item" href="{% url 'correlation_analysis' %}">Korrelationsanalyse</a></li>
-                        </ul>
-                    </li>
-                    {% if user.is_authenticated %}
-                    <li class="nav-item dropdown">
-                        <a class="nav-link dropdown-toggle" href="#" id="settingsDropdown" role="button" data-bs-toggle="dropdown">
-                            Einstellungen
-                        </a>
-                        <ul class="dropdown-menu" aria-labelledby="settingsDropdown">
-                            <li><a class="dropdown-item" href="{% url 'user_profile_settings' %}">Benutzerprofil</a></li>
-                        </ul>
-                    </li>
-                    {% endif %}
-                    {% if user.is_authenticated %}
-                    <li class="nav-item">
-                        <a class="nav-link" href="{% url 'ml_dashboard' %}">ML-Dashboard</a>
-                    </li>
-                    {% endif %}
+    <div class="container">
+        <a class="navbar-brand" href="{% url 'index' %}">Trading Analyzer</a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNav">
+            <ul class="navbar-nav me-auto">
+                <!-- Dashboard -->
+                <li class="nav-item">
+                    <a class="nav-link" href="{% url 'index' %}">
+                        <i class="bi bi-speedometer2"></i> Dashboard
+                    </a>
+                </li>
 
-                </ul>
-                <form class="d-flex" action="{% url 'search_stocks' %}" method="get" id="search-form">
-                    <input class="form-control me-2" type="search" placeholder="Symbol oder Name" name="q" id="search-input">
-                    <button class="btn btn-outline-light" type="submit">Suchen</button>
-                </form>
-                <ul class="navbar-nav ms-auto">
-                    {% if user.is_authenticated %}
-                    <li class="nav-item dropdown">
-                        <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-bs-toggle="dropdown">
-                            {{ user.username }}
-                        </a>
-                        <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="navbarDropdown">
-                            <li><a class="dropdown-item" href="{% url 'user_profile_settings' %}">Benutzerprofil</a></li>
-                            <li><a class="dropdown-item" href="{% url 'password_change' %}">Passwort ändern</a></li>
-                            <li><hr class="dropdown-divider"></li>
-                            <li><a class="dropdown-item" href="{% url 'logout' %}">Abmelden</a></li>
-                        </ul>
-                    </li>
-                    {% else %}
-                    <li class="nav-item">
-                        <a class="nav-link" href="{% url 'login' %}">Anmelden</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="{% url 'login' %}">Registrieren</a>
-                    </li>
-                    {% endif %}
-                </ul>
-            </div>
+                <!-- Portfolio -->
+                {% if user.is_authenticated %}
+                <li class="nav-item dropdown">
+                    <a class="nav-link dropdown-toggle" href="#" id="portfolioDropdown" role="button" data-bs-toggle="dropdown">
+                        <i class="bi bi-briefcase"></i> Portfolio
+                    </a>
+                    <ul class="dropdown-menu" aria-labelledby="portfolioDropdown">
+                        <li><a class="dropdown-item" href="{% url 'portfolio_list' %}">Meine Portfolios</a></li>
+                        <li><a class="dropdown-item" href="{% url 'portfolio_create' %}">Neues Portfolio</a></li>
+                        <li><hr class="dropdown-divider"></li>
+                        <li><a class="dropdown-item" href="#" id="quickTradeLink">Schnell-Trade</a></li>
+                    </ul>
+                </li>
+                {% endif %}
+
+                <!-- Watchlists -->
+                {% if user.is_authenticated %}
+                <li class="nav-item">
+                    <a class="nav-link" href="{% url 'my_watchlists' %}">
+                        <i class="bi bi-star"></i> Watchlists
+                    </a>
+                </li>
+                {% endif %}
+
+                <!-- Market Analysis -->
+                <li class="nav-item dropdown">
+                    <a class="nav-link dropdown-toggle" href="#" id="marketDropdown" role="button" data-bs-toggle="dropdown">
+                        <i class="bi bi-graph-up"></i> Marktanalyse
+                    </a>
+                    <ul class="dropdown-menu" aria-labelledby="marketDropdown">
+                        <li><a class="dropdown-item" href="{% url 'market_overview' %}">Marktübersicht</a></li>
+                        <li><a class="dropdown-item" href="{% url 'correlation_analysis' %}">Korrelationsanalyse</a></li>
+                        <li class="dropdown-divider"></li>
+                        <li><a class="dropdown-item" href="{% url 'ml_dashboard' %}">ML-Dashboard</a></li>
+                    </ul>
+                </li>
+
+                <!-- Tools and Settings -->
+                {% if user.is_authenticated %}
+                <li class="nav-item dropdown">
+                    <a class="nav-link dropdown-toggle" href="#" id="toolsDropdown" role="button" data-bs-toggle="dropdown">
+                        <i class="bi bi-tools"></i> Tools
+                    </a>
+                    <ul class="dropdown-menu" aria-labelledby="toolsDropdown">
+                        <li><a class="dropdown-item" href="#">Schnellanalyse</a></li>
+                        <li><a class="dropdown-item" href="#">Technische Indikatoren</a></li>
+                        <li><a class="dropdown-item" href="#">Einstellungen</a></li>
+                    </ul>
+                </li>
+                {% endif %}
+            </ul>
+
+            <!-- Search Form -->
+            <form class="d-flex" action="{% url 'search_stocks' %}" method="get" id="search-form">
+                <input class="form-control me-2" type="search" placeholder="Symbol oder Name" name="q" id="search-input">
+                <button class="btn btn-outline-light" type="submit">Suchen</button>
+            </form>
+
+            <!-- User Menu -->
+            <ul class="navbar-nav ms-auto">
+                {% if user.is_authenticated %}
+                <li class="nav-item dropdown">
+                    <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-bs-toggle="dropdown">
+                        <i class="bi bi-person-circle"></i> {{ user.username }}
+                    </a>
+                    <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="navbarDropdown">
+                        <li><a class="dropdown-item" href="{% url 'user_profile_settings' %}">
+                            <i class="bi bi-person"></i> Benutzerprofil
+                        </a></li>
+                        <li><a class="dropdown-item" href="{% url 'portfolio_list' %}">
+                            <i class="bi bi-briefcase"></i> Meine Portfolios
+                        </a></li>
+                        <li><a class="dropdown-item" href="{% url 'my_watchlists' %}">
+                            <i class="bi bi-star"></i> Meine Watchlists
+                        </a></li>
+                        <li><hr class="dropdown-divider"></li>
+                        <li><a class="dropdown-item" href="{% url 'password_change' %}">
+                            <i class="bi bi-key"></i> Passwort ändern
+                        </a></li>
+                        <li><a class="dropdown-item" href="{% url 'logout' %}">
+                            <i class="bi bi-box-arrow-right"></i> Abmelden
+                        </a></li>
+                    </ul>
+                </li>
+                {% else %}
+                <li class="nav-item">
+                    <a class="nav-link" href="{% url 'login' %}">
+                        <i class="bi bi-box-arrow-in-right"></i> Anmelden
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" href="{% url 'login' %}">
+                        <i class="bi bi-person-plus"></i> Registrieren
+                    </a>
+                </li>
+                {% endif %}
+            </ul>
         </div>
-    </nav>
+    </div>
+</nav>
 
     <div class="container mt-4">
         {% if messages %}

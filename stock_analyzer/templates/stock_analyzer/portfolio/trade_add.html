@@ -1,0 +1,216 @@
+<!-- stock_analyzer/templates/stock_analyzer/portfolio/trade_add.html -->
+{% extends 'stock_analyzer/base.html' %}
+
+{% block title %}Trade hinzufügen - {{ portfolio.name }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Trade hinzufügen</h2>
+    <a href="{% url 'portfolio_detail' portfolio.id %}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left"></i> Zurück zum Portfolio
+    </a>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h5 class="mb-0">Neuen Trade für {{ portfolio.name }} erstellen</h5>
+    </div>
+    <div class="card-body">
+        <form method="post">
+            {% csrf_token %}
+
+            <div class="row mb-3">
+                <div class="col-md-6">
+                    <label for="stock_symbol" class="form-label">Aktie</label>
+                    <div class="input-group">
+                        <input type="text" class="form-control" id="stock_symbol" name="stock_symbol"
+                               placeholder="Symbol eingeben (z.B. AAPL)" list="stock_list" required>
+                        <button class="btn btn-outline-secondary" type="button" id="lookup_button">
+                            <i class="bi bi-search"></i>
+                        </button>
+                    </div>
+                    <div id="symbol_feedback" class="form-text"></div>
+
+                    <datalist id="stock_list">
+                        {% for stock in stocks %}
+                            <option value="{{ stock.symbol }}">{{ stock.name }}</option>
+                        {% endfor %}
+                    </datalist>
+                </div>
+
+                <div class="col-md-6">
+                    <label for="trade_type" class="form-label">Trade-Typ</label>
+                    <select class="form-select" id="trade_type" name="trade_type" required>
+                        <option value="" selected disabled>Wähle einen Trade-Typ...</option>
+                        {% for code, name in trade_types %}
+                            <option value="{{ code }}">{{ name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+
+            <div class="row mb-3">
+                <div class="col-md-4">
+                    <label for="date" class="form-label">Datum</label>
+                    <input type="date" class="form-control" id="date" name="date"
+                           value="{{ today|date:'Y-m-d' }}" required>
+                </div>
+
+                <div class="col-md-4">
+                    <label for="shares" class="form-label">Anzahl Aktien</label>
+                    <input type="number" class="form-control" id="shares" name="shares"
+                           step="0.0001" min="0.0001" required>
+                </div>
+
+                <div class="col-md-4">
+                    <label for="price" class="form-label">Preis pro Aktie</label>
+                    <div class="input-group">
+                        <input type="number" class="form-control" id="price" name="price"
+                               step="0.01" min="0.01" required>
+                        <span class="input-group-text">€</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="row mb-3">
+                <div class="col-md-6">
+                    <label for="fees" class="form-label">Gebühren/Kosten</label>
+                    <div class="input-group">
+                        <input type="number" class="form-control" id="fees" name="fees"
+                               step="0.01" min="0" value="0">
+                        <span class="input-group-text">€</span>
+                    </div>
+                </div>
+
+                <div class="col-md-6">
+                    <label for="total" class="form-label">Gesamtwert</label>
+                    <div class="input-group">
+                        <input type="text" class="form-control" id="total" readonly>
+                        <span class="input-group-text">€</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mb-3">
+                <label for="notes" class="form-label">Notizen</label>
+                <textarea class="form-control" id="notes" name="notes" rows="3"></textarea>
+            </div>
+
+            <div class="d-grid">
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-save"></i> Trade speichern
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const symbolInput = document.getElementById('stock_symbol');
+        const lookupButton = document.getElementById('lookup_button');
+        const symbolFeedback = document.getElementById('symbol_feedback');
+        const tradeTypeSelect = document.getElementById('trade_type');
+        const sharesInput = document.getElementById('shares');
+        const priceInput = document.getElementById('price');
+        const feesInput = document.getElementById('fees');
+        const totalInput = document.getElementById('total');
+
+        // Calculate total value when inputs change
+        function calculateTotal() {
+            const shares = parseFloat(sharesInput.value) || 0;
+            const price = parseFloat(priceInput.value) || 0;
+            const fees = parseFloat(feesInput.value) || 0;
+
+            const total = (shares * price) + fees;
+            totalInput.value = total.toFixed(2);
+        }
+
+        // Attach event listeners for calculation
+        sharesInput.addEventListener('input', calculateTotal);
+        priceInput.addEventListener('input', calculateTotal);
+        feesInput.addEventListener('input', calculateTotal);
+
+        // Stock symbol lookup
+        lookupButton.addEventListener('click', function() {
+            const symbol = symbolInput.value.trim().toUpperCase();
+            if (symbol) {
+                symbolFeedback.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Suche Aktie...';
+
+                fetch(`/search/?q=${symbol}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.results && data.results.length > 0) {
+                            // Found the stock
+                            const stock = data.results[0];
+                            symbolInput.value = stock.symbol;
+                            symbolFeedback.innerHTML = `<span class="text-success">
+                                <i class="bi bi-check-circle"></i> Gefunden: ${stock.name}</span>`;
+
+                            // If stock has a current price, pre-fill it
+                            if (stock.current_price) {
+                                priceInput.value = stock.current_price;
+                                calculateTotal();
+                            }
+                        } else {
+                            symbolFeedback.innerHTML = `<span class="text-warning">
+                                <i class="bi bi-exclamation-triangle"></i> Symbol nicht gefunden.
+                                Bei Speichern wird versucht, neue Daten zu laden.</span>`;
+                        }
+                    })
+                    .catch(error => {
+                        symbolFeedback.innerHTML = `<span class="text-danger">
+                            <i class="bi bi-x-circle"></i> Fehler bei der Suche: ${error.message}</span>`;
+                    });
+            }
+        });
+
+        // Check symbol on input blur
+        symbolInput.addEventListener('blur', function() {
+            const symbol = symbolInput.value.trim();
+            if (symbol) {
+                lookupButton.click();
+            }
+        });
+
+        // Special handling for SPLIT trade type
+        tradeTypeSelect.addEventListener('change', function() {
+            const tradeType = this.value;
+
+            if (tradeType === 'SPLIT') {
+                // For splits, the price field represents the split ratio (e.g. 2 for 2:1 split)
+                document.querySelector('label[for="price"]').textContent = 'Split-Verhältnis';
+                document.querySelector('label[for="shares"]').textContent = 'Neue Aktien pro alte Aktie';
+            } else {
+                document.querySelector('label[for="price"]').textContent = 'Preis pro Aktie';
+                document.querySelector('label[for="shares"]').textContent = 'Anzahl Aktien';
+            }
+        });
+
+        // On form submit, validate
+        document.querySelector('form').addEventListener('submit', function(event) {
+            const tradeType = tradeTypeSelect.value;
+            const shares = parseFloat(sharesInput.value) || 0;
+            const price = parseFloat(priceInput.value) || 0;
+
+            if (shares <= 0) {
+                alert('Bitte gib eine gültige Anzahl an Aktien ein.');
+                event.preventDefault();
+                return;
+            }
+
+            if (price <= 0) {
+                if (tradeType === 'SPLIT') {
+                    alert('Bitte gib ein gültiges Split-Verhältnis ein.');
+                } else {
+                    alert('Bitte gib einen gültigen Preis ein.');
+                }
+                event.preventDefault();
+                return;
+            }
+        });
+    });
+</script>
+{% endblock %}

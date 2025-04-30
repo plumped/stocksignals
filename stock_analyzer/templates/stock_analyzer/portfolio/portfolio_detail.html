@@ -1,0 +1,315 @@
+<!-- stock_analyzer/templates/stock_analyzer/portfolio/portfolio_detail.html -->
+{% extends 'stock_analyzer/base.html' %}
+{% load stock_tags %}
+
+{% block title %}{{ portfolio.name }} - Portfolio Details{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>{{ portfolio.name }}</h2>
+    <div>
+        <a href="{% url 'trade_add' portfolio.id %}" class="btn btn-success me-2">
+            <i class="bi bi-plus-circle"></i> Trade hinzufügen
+        </a>
+        <a href="{% url 'portfolio_list' %}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left"></i> Zurück zur Liste
+        </a>
+    </div>
+</div>
+
+{% if portfolio.description %}
+    <div class="alert alert-info mb-4">
+        {{ portfolio.description }}
+    </div>
+{% endif %}
+
+<!-- Portfolio Summary -->
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card text-center h-100">
+            <div class="card-header">Gesamtwert</div>
+            <div class="card-body">
+                <h3 class="card-title">{{ portfolio.total_value|floatformat:2 }} €</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-center h-100">
+            <div class="card-header">Investiertes Kapital</div>
+            <div class="card-body">
+                <h3 class="card-title">{{ portfolio.total_cost|floatformat:2 }} €</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-center h-100">
+            <div class="card-header">Gewinn/Verlust</div>
+            <div class="card-body">
+                <h3 class="card-title {% if portfolio.total_gain_loss > 0 %}text-success{% elif portfolio.total_gain_loss < 0 %}text-danger{% endif %}">
+                    {{ portfolio.total_gain_loss|floatformat:2 }} €
+                </h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-center h-100">
+            <div class="card-header">Rendite</div>
+            <div class="card-body">
+                <h3 class="card-title {% if portfolio.percent_gain_loss > 0 %}text-success{% elif portfolio.percent_gain_loss < 0 %}text-danger{% endif %}">
+                    {{ portfolio.percent_gain_loss|floatformat:2 }}%
+                </h3>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Portfolio Navigation -->
+<ul class="nav nav-tabs mb-4">
+    <li class="nav-item">
+        <a class="nav-link active" href="{% url 'portfolio_detail' portfolio.id %}">Übersicht</a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link" href="{% url 'position_list' portfolio.id %}">Positionen</a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link" href="{% url 'trade_list' portfolio.id %}">Trades</a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link" href="{% url 'portfolio_performance' portfolio.id %}">Performance</a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link" href="{% url 'portfolio_edit' portfolio.id %}">
+            <i class="bi bi-gear"></i> Einstellungen
+        </a>
+    </li>
+</ul>
+
+<!-- Current Positions -->
+<div class="row">
+    <div class="col-md-8">
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Aktuelle Positionen</h5>
+                <a href="{% url 'position_list' portfolio.id %}" class="btn btn-sm btn-outline-primary">
+                    Alle anzeigen
+                </a>
+            </div>
+            <div class="card-body">
+                {% if positions %}
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Symbol</th>
+                                    <th>Name</th>
+                                    <th>Anzahl</th>
+                                    <th>Kaufpreis</th>
+                                    <th>Aktueller Wert</th>
+                                    <th>Gewinn/Verlust</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for position in positions %}
+                                    <tr>
+                                        <td><a href="{% url 'stock_detail' position.stock.symbol %}">{{ position.stock.symbol }}</a></td>
+                                        <td>{{ position.stock.name }}</td>
+                                        <td>{{ position.shares|floatformat:0 }}</td>
+                                        <td>{{ position.average_price|floatformat:2 }} €</td>
+                                        <td>{{ position.current_value|floatformat:2 }} €</td>
+                                        <td class="{% if position.percent_gain_loss > 0 %}text-success{% elif position.percent_gain_loss < 0 %}text-danger{% endif %}">
+                                            {{ position.gain_loss|floatformat:2 }} € ({{ position.percent_gain_loss|floatformat:2 }}%)
+                                        </td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <div class="text-center">
+                        <p>Keine Positionen vorhanden.</p>
+                        <a href="{% url 'trade_add' portfolio.id %}" class="btn btn-primary">
+                            <i class="bi bi-plus-circle"></i> Trade hinzufügen
+                        </a>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Recent Trades -->
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Letzte Trades</h5>
+                <a href="{% url 'trade_list' portfolio.id %}" class="btn btn-sm btn-outline-primary">
+                    Alle anzeigen
+                </a>
+            </div>
+            <div class="card-body">
+                {% if recent_trades %}
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Datum</th>
+                                    <th>Symbol</th>
+                                    <th>Typ</th>
+                                    <th>Anzahl</th>
+                                    <th>Preis</th>
+                                    <th>Wert</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for trade in recent_trades %}
+                                    <tr>
+                                        <td>{{ trade.date|date:"d.m.Y" }}</td>
+                                        <td><a href="{% url 'stock_detail' trade.stock.symbol %}">{{ trade.stock.symbol }}</a></td>
+                                        <td>
+                                            {% if trade.trade_type == 'BUY' %}
+                                                <span class="badge bg-success">Kauf</span>
+                                            {% elif trade.trade_type == 'SELL' %}
+                                                <span class="badge bg-danger">Verkauf</span>
+                                            {% elif trade.trade_type == 'DIVIDEND' %}
+                                                <span class="badge bg-info">Dividende</span>
+                                            {% elif trade.trade_type == 'SPLIT' %}
+                                                <span class="badge bg-warning">Split</span>
+                                            {% elif trade.trade_type == 'TRANSFER_IN' %}
+                                                <span class="badge bg-primary">Übertrag ein</span>
+                                            {% elif trade.trade_type == 'TRANSFER_OUT' %}
+                                                <span class="badge bg-secondary">Übertrag aus</span>
+                                            {% endif %}
+                                        </td>
+                                        <td>{{ trade.shares|floatformat:0 }}</td>
+                                        <td>{{ trade.price|floatformat:2 }} €</td>
+                                        <td>{{ trade.total_value|floatformat:2 }} €</td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <div class="text-center">
+                        <p>Keine Trades vorhanden.</p>
+                        <a href="{% url 'trade_add' portfolio.id %}" class="btn btn-primary">
+                            <i class="bi bi-plus-circle"></i> Trade hinzufügen
+                        </a>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-4">
+        <!-- Sector Allocation Chart -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0">Sektorverteilung</h5>
+            </div>
+            <div class="card-body">
+                {% if sector_allocation %}
+                    <canvas id="sectorAllocationChart" height="300"></canvas>
+                    <div class="mt-3">
+                        <table class="table table-sm">
+                            <thead>
+                                <tr>
+                                    <th>Sektor</th>
+                                    <th>Wert</th>
+                                    <th>Anteil</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for sector, value in sector_allocation.items %}
+                                    <tr>
+                                        <td>{{ sector }}</td>
+                                        <td>{{ value|floatformat:2 }} €</td>
+                                        <td>{{ sector_percentages|get_item:sector|floatformat:1 }}%</td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <div class="text-center py-4">
+                        <p>Keine Daten zur Sektorverteilung verfügbar.</p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Performance Overview -->
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Performance</h5>
+            </div>
+            <div class="card-body text-center">
+                <div class="mb-3">
+                    <h6>Gesamtrendite</h6>
+                    <h3 class="{% if portfolio.percent_gain_loss > 0 %}text-success{% elif portfolio.percent_gain_loss < 0 %}text-danger{% endif %}">
+                        {{ portfolio.percent_gain_loss|floatformat:2 }}%
+                    </h3>
+                </div>
+                <a href="{% url 'portfolio_performance' portfolio.id %}" class="btn btn-primary">
+                    Detaillierte Analyse
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+{% if sector_allocation %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Sector Allocation Chart
+        const sectorCtx = document.getElementById('sectorAllocationChart').getContext('2d');
+
+        const sectorLabels = [
+            {% for sector in sector_allocation.keys %}
+                "{{ sector }}",
+            {% endfor %}
+        ];
+
+        const sectorData = [
+            {% for value in sector_allocation.values %}
+                {{ value }},
+            {% endfor %}
+        ];
+
+        const backgroundColors = [
+            '#4285F4', '#EA4335', '#FBBC05', '#34A853',
+            '#FF6D01', '#46BDC6', '#7B0099', '#FF9900',
+            '#5C2D91', '#008272', '#D83B01', '#107C10'
+        ];
+
+        new Chart(sectorCtx, {
+            type: 'pie',
+            data: {
+                labels: sectorLabels,
+                datasets: [{
+                    data: sectorData,
+                    backgroundColor: backgroundColors.slice(0, sectorLabels.length)
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: {
+                        position: 'right',
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                const label = context.label || '';
+                                const value = context.parsed || 0;
+                                const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                                const percentage = Math.round((value / total) * 100);
+                                return `${label}: ${value.toFixed(2)} € (${percentage}%)`;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    });
+</script>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,46 @@
+<!-- stock_analyzer/templates/stock_analyzer/portfolio/portfolio_create.html -->
+{% extends 'stock_analyzer/base.html' %}
+
+{% block title %}Neues Portfolio erstellen{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Neues Portfolio erstellen</h2>
+    <a href="{% url 'portfolio_list' %}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left"></i> Zurück zur Liste
+    </a>
+</div>
+
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Portfolio Details</h5>
+            </div>
+            <div class="card-body">
+                <form method="post">
+                    {% csrf_token %}
+
+                    <div class="mb-3">
+                        <label for="name" class="form-label">Portfolio Name</label>
+                        <input type="text" class="form-control" id="name" name="name"
+                               placeholder="z.B. Mein Hauptportfolio" required>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="description" class="form-label">Beschreibung (optional)</label>
+                        <textarea class="form-control" id="description" name="description"
+                                  rows="3" placeholder="Beschreibe den Zweck dieses Portfolios..."></textarea>
+                    </div>
+
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-save"></i> Portfolio erstellen
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

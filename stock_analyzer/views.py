@@ -1,4 +1,6 @@
 # stock_analyzer/views.py
+from decimal import Decimal
+
 import pandas as pd
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth.decorators import login_required
@@ -8,7 +10,8 @@ from .backtesting import BacktestStrategy
 from .forms import UserProfileForm
 from .market_analysis import MarketAnalyzer, TraditionalAnalyzer
 from .ml_models import MLPredictor, AdaptiveAnalyzer
-from .models import Stock, StockData, AnalysisResult, WatchList, UserProfile, MLPrediction, MLModelMetrics
+from .models import Stock, StockData, AnalysisResult, WatchList, UserProfile, MLPrediction, MLModelMetrics, Portfolio, \
+    Trade, Position
 from .data_service import StockDataService
 from .analysis import TechnicalAnalyzer
 import csv
@@ -1193,3 +1196,554 @@ def batch_ml_predictions_view(request):
             'status': 'error',
             'message': f'Fehler bei der Batch-Verarbeitung: {str(e)}'
         })
+
+
+# Add these to stock_analyzer/views.py
+
+@login_required
+def portfolio_list(request):
+    """Display all portfolios for the current user"""
+    portfolios = Portfolio.objects.filter(user=request.user).order_by('-created_at')
+
+    # Calculate total portfolio value across all portfolios
+    total_portfolio_value = sum(portfolio.total_value for portfolio in portfolios)
+    total_portfolio_cost = sum(portfolio.total_cost for portfolio in portfolios)
+    total_gain_loss = sum(portfolio.total_gain_loss for portfolio in portfolios)
+
+    if total_portfolio_cost > 0:
+        percent_gain_loss = (total_gain_loss / total_portfolio_cost) * 100
+    else:
+        percent_gain_loss = 0
+
+    context = {
+        'portfolios': portfolios,
+        'total_portfolio_value': total_portfolio_value,
+        'total_portfolio_cost': total_portfolio_cost,
+        'total_gain_loss': total_gain_loss,
+        'percent_gain_loss': percent_gain_loss
+    }
+
+    return render(request, 'stock_analyzer/portfolio/portfolio_list.html', context)
+
+
+@login_required
+def portfolio_create(request):
+    """Create a new portfolio"""
+    if request.method == 'POST':
+        name = request.POST.get('name')
+        description = request.POST.get('description', '')
+
+        if name:
+            portfolio = Portfolio.objects.create(
+                user=request.user,
+                name=name,
+                description=description
+            )
+            messages.success(request, f'Portfolio "{name}" wurde erfolgreich erstellt.')
+            return redirect('portfolio_detail', portfolio_id=portfolio.id)
+        else:
+            messages.error(request, 'Ein Name für das Portfolio ist erforderlich.')
+
+    return render(request, 'stock_analyzer/portfolio/portfolio_create.html')
+
+
+@login_required
+def portfolio_detail(request, portfolio_id):
+    """View details of a specific portfolio"""
+    portfolio = get_object_or_404(Portfolio, id=portfolio_id, user=request.user)
+
+    # Update portfolio statistics
+    portfolio.update_statistics()
+
+    # Get positions with latest values
+    positions = portfolio.positions.select_related('stock').order_by('-current_value')
+
+    # Get recent trades
+    recent_trades = portfolio.trades.select_related('stock').order_by('-date', '-created_at')[:10]
+
+    # Calculate allocation by sector
+    sector_allocation = {}
+    for position in positions:
+        sector = position.stock.sector or 'Unknown'
+        if sector not in sector_allocation:
+            sector_allocation[sector] = 0
+        sector_allocation[sector] += float(position.current_value)
+
+    # Convert to percentages
+    if portfolio.total_value > 0:
+        sector_percentages = {sector: (value / float(portfolio.total_value)) * 100
+                              for sector, value in sector_allocation.items()}
+    else:
+        sector_percentages = {}
+
+    context = {
+        'portfolio': portfolio,
+        'positions': positions,
+        'recent_trades': recent_trades,
+        'sector_allocation': sector_allocation,
+        'sector_percentages': sector_percentages
+    }
+
+    return render(request, 'stock_analyzer/portfolio/portfolio_detail.html', context)
+
+
+@login_required
+def portfolio_edit(request, portfolio_id):
+    """Edit an existing portfolio"""
+    portfolio = get_object_or_404(Portfolio, id=portfolio_id, user=request.user)
+
+    if request.method == 'POST':
+        name = request.POST.get('name')
+        description = request.POST.get('description', '')
+
+        if name:
+            portfolio.name = name
+            portfolio.description = description
+            portfolio.save()
+            messages.success(request, f'Portfolio "{name}" wurde aktualisiert.')
+            return redirect('portfolio_detail', portfolio_id=portfolio.id)
+        else:
+            messages.error(request, 'Ein Name für das Portfolio ist erforderlich.')
+
+    context = {
+        'portfolio': portfolio
+    }
+
+    return render(request, 'stock_analyzer/portfolio/portfolio_edit.html', context)
+
+
+@login_required
+def portfolio_delete(request, portfolio_id):
+    """Delete a portfolio"""
+    portfolio = get_object_or_404(Portfolio, id=portfolio_id, user=request.user)
+
+    if request.method == 'POST':
+        name = portfolio.name
+        portfolio.delete()
+        messages.success(request, f'Portfolio "{name}" wurde gelöscht.')
+        return redirect('portfolio_list')
+
+    context = {
+        'portfolio': portfolio
+    }
+
+    return render(request, 'stock_analyzer/portfolio/portfolio_delete.html', context)
+
+
+@login_required
+def position_list(request, portfolio_id):
+    """View all positions in a portfolio"""
+    portfolio = get_object_or_404(Portfolio, id=portfolio_id, user=request.user)
+    positions = portfolio.positions.select_related('stock').order_by('-current_value')
+
+    # Update all positions with latest values
+    for position in positions:
+        position.update_values()
+
+    context = {
+        'portfolio': portfolio,
+        'positions': positions
+    }
+
+    return render(request, 'stock_analyzer/portfolio/position_list.html', context)
+
+
+@login_required
+def trade_list(request, portfolio_id):
+    """View all trades in a portfolio"""
+    portfolio = get_object_or_404(Portfolio, id=portfolio_id, user=request.user)
+    trades = portfolio.trades.select_related('stock').order_by('-date', '-created_at')
+
+    # Calculate totals
+    total_buy_value = sum(trade.total_value for trade in trades if trade.trade_type == 'BUY')
+    total_sell_value = sum(trade.total_value for trade in trades if trade.trade_type == 'SELL')
+    total_fees = sum(trade.fees for trade in trades)
+
+    context = {
+        'portfolio': portfolio,
+        'trades': trades,
+        'total_buy_value': total_buy_value,
+        'total_sell_value': total_sell_value,
+        'total_fees': total_fees
+    }
+
+    return render(request, 'stock_analyzer/portfolio/trade_list.html', context)
+
+
+@login_required
+def trade_add(request, portfolio_id):
+    """Add a new trade to a portfolio"""
+    portfolio = get_object_or_404(Portfolio, id=portfolio_id, user=request.user)
+
+    if request.method == 'POST':
+        stock_symbol = request.POST.get('stock_symbol', '').strip().upper()
+        trade_type = request.POST.get('trade_type')
+        date = request.POST.get('date')
+        shares = request.POST.get('shares')
+        price = request.POST.get('price')
+        fees = request.POST.get('fees', 0)
+        notes = request.POST.get('notes', '')
+
+        try:
+            # Validate data
+            if not all([stock_symbol, trade_type, date, shares, price]):
+                raise ValueError("Alle Pflichtfelder müssen ausgefüllt werden.")
+
+            # Parse date
+            trade_date = datetime.strptime(date, '%Y-%m-%d').date()
+
+            # Convert decimal values
+            shares_decimal = Decimal(shares.replace(',', '.'))
+            price_decimal = Decimal(price.replace(',', '.'))
+            fees_decimal = Decimal(str(fees).replace(',', '.'))
+
+            # Get or create stock
+            try:
+                stock = Stock.objects.get(symbol=stock_symbol)
+            except Stock.DoesNotExist:
+                # If stock doesn't exist, try to create it by fetching data
+                success, message = StockDataService.update_stock_data(stock_symbol)
+                if success:
+                    stock = Stock.objects.get(symbol=stock_symbol)
+                else:
+                    raise ValueError(f"Aktie nicht gefunden: {message}")
+
+            # Create the trade
+            trade = Trade.objects.create(
+                portfolio=portfolio,
+                stock=stock,
+                trade_type=trade_type,
+                date=trade_date,
+                shares=shares_decimal,
+                price=price_decimal,
+                fees=fees_decimal,
+                notes=notes,
+                total_value=(shares_decimal * price_decimal) + fees_decimal
+            )
+
+            messages.success(request, f'Trade wurde erfolgreich hinzugefügt.')
+            return redirect('portfolio_detail', portfolio_id=portfolio.id)
+
+        except ValueError as e:
+            messages.error(request, f'Fehler: {str(e)}')
+        except Exception as e:
+            messages.error(request, f'Ein Fehler ist aufgetreten: {str(e)}')
+
+    # Get all stocks for autocomplete
+    stocks = Stock.objects.all().order_by('symbol')
+
+    context = {
+        'portfolio': portfolio,
+        'stocks': stocks,
+        'trade_types': Trade.TRADE_TYPES
+    }
+
+    return render(request, 'stock_analyzer/portfolio/trade_add.html', context)
+
+
+@login_required
+def trade_edit(request, trade_id):
+    """Edit an existing trade"""
+    trade = get_object_or_404(Trade, id=trade_id, portfolio__user=request.user)
+    portfolio = trade.portfolio
+
+    if request.method == 'POST':
+        trade_type = request.POST.get('trade_type')
+        date = request.POST.get('date')
+        shares = request.POST.get('shares')
+        price = request.POST.get('price')
+        fees = request.POST.get('fees', 0)
+        notes = request.POST.get('notes', '')
+
+        try:
+            # Validate data
+            if not all([trade_type, date, shares, price]):
+                raise ValueError("Alle Pflichtfelder müssen ausgefüllt werden.")
+
+            # Parse date
+            trade_date = datetime.strptime(date, '%Y-%m-%d').date()
+
+            # Convert decimal values
+            shares_decimal = Decimal(shares.replace(',', '.'))
+            price_decimal = Decimal(price.replace(',', '.'))
+            fees_decimal = Decimal(str(fees).replace(',', '.'))
+
+            # Update the trade
+            trade.trade_type = trade_type
+            trade.date = trade_date
+            trade.shares = shares_decimal
+            trade.price = price_decimal
+            trade.fees = fees_decimal
+            trade.notes = notes
+            trade.save()  # This will trigger position update
+
+            messages.success(request, f'Trade wurde aktualisiert.')
+            return redirect('trade_list', portfolio_id=portfolio.id)
+
+        except ValueError as e:
+            messages.error(request, f'Fehler: {str(e)}')
+        except Exception as e:
+            messages.error(request, f'Ein Fehler ist aufgetreten: {str(e)}')
+
+    context = {
+        'trade': trade,
+        'portfolio': portfolio,
+        'trade_types': Trade.TRADE_TYPES
+    }
+
+    return render(request, 'stock_analyzer/portfolio/trade_edit.html', context)
+
+
+@login_required
+def trade_delete(request, trade_id):
+    """Delete a trade"""
+    trade = get_object_or_404(Trade, id=trade_id, portfolio__user=request.user)
+    portfolio = trade.portfolio
+
+    if request.method == 'POST':
+        # Store relevant information for position update
+        stock = trade.stock
+
+        # Delete the trade
+        trade.delete()
+
+        # Update the position and portfolio statistics
+        try:
+            position = Position.objects.get(portfolio=portfolio, stock=stock)
+            # Recalculate position from all remaining trades
+            remaining_trades = Trade.objects.filter(portfolio=portfolio, stock=stock).order_by('date')
+
+            # Reset position
+            position.shares = 0
+            position.cost_basis = 0
+            position.average_price = 0
+            position.save()
+
+            # Re-apply all trades
+            for t in remaining_trades:
+                t._update_position()
+
+            # Update the portfolio
+            portfolio.update_statistics()
+
+            messages.success(request, f'Trade wurde gelöscht und Positionen aktualisiert.')
+        except Position.DoesNotExist:
+            # If no position exists, just update portfolio
+            portfolio.update_statistics()
+            messages.success(request, f'Trade wurde gelöscht.')
+
+        return redirect('trade_list', portfolio_id=portfolio.id)
+
+    context = {
+        'trade': trade,
+        'portfolio': portfolio
+    }
+
+    return render(request, 'stock_analyzer/portfolio/trade_delete.html', context)
+
+
+@login_required
+def portfolio_performance(request, portfolio_id):
+    """View performance of a portfolio over time"""
+    portfolio = get_object_or_404(Portfolio, id=portfolio_id, user=request.user)
+
+    # Get all trades ordered by date
+    trades = portfolio.trades.select_related('stock').order_by('date')
+
+    # Get date range
+    start_date = request.GET.get('start_date')
+    end_date = request.GET.get('end_date')
+
+    if not start_date:
+        # Default to 1 year ago if no start date
+        start_date = (datetime.now().date() - timedelta(days=365)).isoformat()
+
+    if not end_date:
+        # Default to today if no end date
+        end_date = datetime.now().date().isoformat()
+
+    # Parse dates
+    start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+    end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+
+    # Calculate portfolio value over time
+    daily_values = calculate_portfolio_value_history(portfolio, start_date, end_date)
+
+    # Calculate performance metrics
+    if daily_values:
+        initial_value = daily_values[0]['value'] if daily_values else 0
+        final_value = daily_values[-1]['value'] if daily_values else 0
+
+        absolute_return = final_value - initial_value
+        if initial_value > 0:
+            percent_return = (absolute_return / initial_value) * 100
+        else:
+            percent_return = 0
+
+        # Calculate annualized return
+        days_held = (end_date - start_date).days
+        if days_held > 0 and initial_value > 0:
+            annualized_return = (((final_value / initial_value) ** (365 / days_held)) - 1) * 100
+        else:
+            annualized_return = 0
+    else:
+        initial_value = 0
+        final_value = 0
+        absolute_return = 0
+        percent_return = 0
+        annualized_return = 0
+
+    # Prepare data for charts
+    dates = [item['date'].isoformat() for item in daily_values]
+    values = [float(item['value']) for item in daily_values]
+
+    context = {
+        'portfolio': portfolio,
+        'start_date': start_date,
+        'end_date': end_date,
+        'daily_values': daily_values,
+        'initial_value': initial_value,
+        'final_value': final_value,
+        'absolute_return': absolute_return,
+        'percent_return': percent_return,
+        'annualized_return': annualized_return,
+        'chart_dates': dates,
+        'chart_values': values
+    }
+
+    return render(request, 'stock_analyzer/portfolio/portfolio_performance.html', context)
+
+
+def calculate_portfolio_value_history(portfolio, start_date, end_date):
+    """Calculate portfolio value for each day in the given date range"""
+    from decimal import Decimal
+
+    # Get all trades in the portfolio
+    trades = portfolio.trades.filter(date__lte=end_date).order_by('date')
+
+    if not trades.exists():
+        return []
+
+    # Initialize daily values array
+    daily_values = []
+
+    # Get all dates in range
+    current_date = max(start_date, trades.earliest('date').date)
+
+    # Dictionary to track positions
+    positions = {}  # {stock_id: {'shares': Decimal, 'cost_basis': Decimal}}
+
+    # Apply all trades before start date to get initial positions
+    for trade in trades.filter(date__lt=current_date):
+        stock_id = trade.stock.id
+
+        if stock_id not in positions:
+            positions[stock_id] = {'shares': Decimal('0'), 'cost_basis': Decimal('0'), 'stock': trade.stock}
+
+        position = positions[stock_id]
+
+        if trade.trade_type == 'BUY' or trade.trade_type == 'TRANSFER_IN':
+            position['shares'] += trade.shares
+            position['cost_basis'] += trade.total_value
+        elif trade.trade_type == 'SELL' or trade.trade_type == 'TRANSFER_OUT':
+            if position['shares'] > 0:
+                # Calculate cost basis reduction
+                cost_reduction = (trade.shares / position['shares']) * position['cost_basis']
+                position['cost_basis'] -= cost_reduction
+            position['shares'] -= trade.shares
+        elif trade.trade_type == 'SPLIT':
+            position['shares'] *= trade.price  # price field stores split ratio
+
+    # Remove positions with zero shares
+    positions = {k: v for k, v in positions.items() if v['shares'] > 0}
+
+    # Get all dates where stock prices are available
+    date_range = []
+    current_date_obj = current_date
+    while current_date_obj <= end_date:
+        date_range.append(current_date_obj)
+        current_date_obj += timedelta(days=1)
+
+    # Get historical stock data for all stocks in the positions
+    stock_ids = list(positions.keys())
+    stock_data = {}
+
+    if stock_ids:
+        # Get all historical data for these stocks in date range
+        historical_data = StockData.objects.filter(
+            stock_id__in=stock_ids,
+            date__range=[current_date, end_date]
+        ).select_related('stock')
+
+        # Organize by stock and date
+        for record in historical_data:
+            if record.stock_id not in stock_data:
+                stock_data[record.stock_id] = {}
+            stock_data[record.stock_id][record.date] = record
+
+    # Collect applicable trades by date for efficient lookup
+    trades_by_date = {}
+    for trade in trades.filter(date__range=[current_date, end_date]):
+        if trade.date not in trades_by_date:
+            trades_by_date[trade.date] = []
+        trades_by_date[trade.date].append(trade)
+
+    # Calculate portfolio value for each day
+    for date in date_range:
+        # Apply any trades that happened on this date
+        if date in trades_by_date:
+            for trade in trades_by_date[date]:
+                stock_id = trade.stock.id
+
+                if stock_id not in positions:
+                    positions[stock_id] = {'shares': Decimal('0'), 'cost_basis': Decimal('0'), 'stock': trade.stock}
+
+                position = positions[stock_id]
+
+                if trade.trade_type == 'BUY' or trade.trade_type == 'TRANSFER_IN':
+                    position['shares'] += trade.shares
+                    position['cost_basis'] += trade.total_value
+                elif trade.trade_type == 'SELL' or trade.trade_type == 'TRANSFER_OUT':
+                    if position['shares'] > 0:
+                        # Calculate cost basis reduction
+                        cost_reduction = (trade.shares / position['shares']) * position['cost_basis']
+                        position['cost_basis'] -= cost_reduction
+                    position['shares'] -= trade.shares
+                elif trade.trade_type == 'SPLIT':
+                    position['shares'] *= trade.price  # price field stores split ratio
+
+        # Remove positions with zero shares
+        positions = {k: v for k, v in positions.items() if v['shares'] > 0}
+
+        # Calculate portfolio value for this day
+        total_value = Decimal('0')
+
+        for stock_id, position in positions.items():
+            # Find the latest price data for this stock on or before this date
+            stock_price = None
+            price_date = date
+
+            # Look for price on this exact date
+            if stock_id in stock_data and date in stock_data[stock_id]:
+                stock_price = stock_data[stock_id][date].close_price
+            else:
+                # Find the most recent price before this date
+                price_date_obj = price_date
+                while price_date_obj >= current_date and stock_price is None:
+                    if stock_id in stock_data and price_date_obj in stock_data[stock_id]:
+                        stock_price = stock_data[stock_id][price_date_obj].close_price
+                        break
+                    price_date_obj -= timedelta(days=1)
+
+            # Calculate position value
+            if stock_price:
+                position_value = position['shares'] * stock_price
+                total_value += position_value
+
+        # Add to daily values
+        daily_values.append({
+            'date': date,
+            'value': total_value
+        })
+
+    return daily_values

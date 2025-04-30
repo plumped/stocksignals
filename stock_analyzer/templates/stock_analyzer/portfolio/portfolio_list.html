@@ -1,0 +1,94 @@
+<!-- stock_analyzer/templates/stock_analyzer/portfolio/portfolio_list.html -->
+{% extends 'stock_analyzer/base.html' %}
+
+{% block title %}Meine Portfolios{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Meine Portfolios</h2>
+    <a href="{% url 'portfolio_create' %}" class="btn btn-primary">
+        <i class="bi bi-plus-circle"></i> Neues Portfolio erstellen
+    </a>
+</div>
+
+{% if portfolios %}
+    <!-- Summary Card -->
+    <div class="card mb-4">
+        <div class="card-header bg-primary text-white">
+            Portfolio Zusammenfassung
+        </div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-3 text-center">
+                    <h5>Gesamtwert</h5>
+                    <h3>{{ total_portfolio_value|floatformat:2 }} €</h3>
+                </div>
+                <div class="col-md-3 text-center">
+                    <h5>Investiertes Kapital</h5>
+                    <h3>{{ total_portfolio_cost|floatformat:2 }} €</h3>
+                </div>
+                <div class="col-md-3 text-center">
+                    <h5>Gewinn/Verlust</h5>
+                    <h3 class="{% if total_gain_loss > 0 %}text-success{% elif total_gain_loss < 0 %}text-danger{% endif %}">
+                        {{ total_gain_loss|floatformat:2 }} €
+                    </h3>
+                </div>
+                <div class="col-md-3 text-center">
+                    <h5>Rendite</h5>
+                    <h3 class="{% if percent_gain_loss > 0 %}text-success{% elif percent_gain_loss < 0 %}text-danger{% endif %}">
+                        {{ percent_gain_loss|floatformat:2 }}%
+                    </h3>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Portfolio List -->
+    <div class="row">
+        {% for portfolio in portfolios %}
+            <div class="col-md-6 mb-4">
+                <div class="card h-100">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">{{ portfolio.name }}</h5>
+                    </div>
+                    <div class="card-body">
+                        {% if portfolio.description %}
+                            <p class="text-muted">{{ portfolio.description }}</p>
+                        {% endif %}
+
+                        <div class="row mb-3">
+                            <div class="col-6">
+                                <span class="d-block text-muted">Gesamtwert:</span>
+                                <span class="h5">{{ portfolio.total_value|floatformat:2 }} €</span>
+                            </div>
+                            <div class="col-6">
+                                <span class="d-block text-muted">Gewinn/Verlust:</span>
+                                <span class="h5 {% if portfolio.total_gain_loss > 0 %}text-success{% elif portfolio.total_gain_loss < 0 %}text-danger{% endif %}">
+                                    {{ portfolio.total_gain_loss|floatformat:2 }} € ({{ portfolio.percent_gain_loss|floatformat:2 }}%)
+                                </span>
+                            </div>
+                        </div>
+
+                        <div class="text-center mt-4">
+                            <a href="{% url 'portfolio_detail' portfolio.id %}" class="btn btn-primary">
+                                <i class="bi bi-eye"></i> Details anzeigen
+                            </a>
+                        </div>
+                    </div>
+                    <div class="card-footer text-muted">
+                        <small>Erstellt am: {{ portfolio.created_at|date:"d.m.Y" }}</small>
+                    </div>
+                </div>
+            </div>
+        {% endfor %}
+    </div>
+{% else %}
+    <div class="alert alert-info text-center">
+        <p>Du hast noch keine Portfolios erstellt.</p>
+        <p>Erstelle dein erstes Portfolio, um deine Aktien und Trades zu verwalten.</p>
+        <a href="{% url 'portfolio_create' %}" class="btn btn-primary mt-3">
+            <i class="bi bi-plus-circle"></i> Erstes Portfolio erstellen
+        </a>
+    </div>
+{% endif %}
+{% endblock %}

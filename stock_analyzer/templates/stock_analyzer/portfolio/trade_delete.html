@@ -1,0 +1,91 @@
+<!-- stock_analyzer/templates/stock_analyzer/portfolio/trade_delete.html -->
+{% extends 'stock_analyzer/base.html' %}
+
+{% block title %}Trade löschen - {{ portfolio.name }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Trade löschen</h2>
+    <a href="{% url 'trade_list' portfolio.id %}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left"></i> Zurück zur Trade Liste
+    </a>
+</div>
+
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header bg-danger text-white">
+                <h5 class="mb-0">Bestätigung erforderlich</h5>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-warning">
+                    <h4 class="alert-heading"><i class="bi bi-exclamation-triangle"></i> Warnung!</h4>
+                    <p>Bist du sicher, dass du diesen Trade löschen möchtest?</p>
+                    <p>Dies wird auch die zugehörige Position aktualisieren und die Gesamtwerte deines Portfolios neu berechnen.</p>
+                </div>
+
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h6 class="mb-0">Trade Details</h6>
+                    </div>
+                    <div class="card-body">
+                        <table class="table table-sm">
+                            <tr>
+                                <th>Aktie:</th>
+                                <td>{{ trade.stock.symbol }} - {{ trade.stock.name }}</td>
+                            </tr>
+                            <tr>
+                                <th>Typ:</th>
+                                <td>
+                                    {% if trade.trade_type == 'BUY' %}
+                                        <span class="badge bg-success">Kauf</span>
+                                    {% elif trade.trade_type == 'SELL' %}
+                                        <span class="badge bg-danger">Verkauf</span>
+                                    {% elif trade.trade_type == 'DIVIDEND' %}
+                                        <span class="badge bg-info">Dividende</span>
+                                    {% elif trade.trade_type == 'SPLIT' %}
+                                        <span class="badge bg-warning">Split</span>
+                                    {% elif trade.trade_type == 'TRANSFER_IN' %}
+                                        <span class="badge bg-primary">Übertrag ein</span>
+                                    {% elif trade.trade_type == 'TRANSFER_OUT' %}
+                                        <span class="badge bg-secondary">Übertrag aus</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            <tr>
+                                <th>Datum:</th>
+                                <td>{{ trade.date|date:"d.m.Y" }}</td>
+                            </tr>
+                            <tr>
+                                <th>Anzahl:</th>
+                                <td>{{ trade.shares }}</td>
+                            </tr>
+                            <tr>
+                                <th>Preis:</th>
+                                <td>{{ trade.price }} €</td>
+                            </tr>
+                            <tr>
+                                <th>Gesamtwert:</th>
+                                <td>{{ trade.total_value }} €</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <form method="post">
+                    {% csrf_token %}
+                    <div class="d-flex justify-content-between">
+                        <a href="{% url 'trade_list' portfolio.id %}" class="btn btn-secondary">
+                            <i class="bi bi-x-circle"></i> Abbrechen
+                        </a>
+
+                        <button type="submit" class="btn btn-danger">
+                            <i class="bi bi-trash"></i> Trade endgültig löschen
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

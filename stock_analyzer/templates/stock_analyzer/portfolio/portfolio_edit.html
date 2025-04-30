@@ -1,0 +1,52 @@
+<!-- stock_analyzer/templates/stock_analyzer/portfolio/portfolio_edit.html -->
+{% extends 'stock_analyzer/base.html' %}
+
+{% block title %}Portfolio bearbeiten - {{ portfolio.name }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Portfolio bearbeiten</h2>
+    <div>
+        <a href="{% url 'portfolio_detail' portfolio.id %}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left"></i> Zurück zum Portfolio
+        </a>
+    </div>
+</div>
+
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Portfolio Details</h5>
+            </div>
+            <div class="card-body">
+                <form method="post">
+                    {% csrf_token %}
+
+                    <div class="mb-3">
+                        <label for="name" class="form-label">Portfolio Name</label>
+                        <input type="text" class="form-control" id="name" name="name"
+                               value="{{ portfolio.name }}" required>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="description" class="form-label">Beschreibung (optional)</label>
+                        <textarea class="form-control" id="description" name="description"
+                                  rows="3">{{ portfolio.description }}</textarea>
+                    </div>
+
+                    <div class="d-flex justify-content-between">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-save"></i> Änderungen speichern
+                        </button>
+
+                        <a href="{% url 'portfolio_delete' portfolio.id %}" class="btn btn-outline-danger">
+                            <i class="bi bi-trash"></i> Portfolio löschen
+                        </a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,143 @@
+<!-- stock_analyzer/templates/stock_analyzer/portfolio/trade_edit.html -->
+{% extends 'stock_analyzer/base.html' %}
+
+{% block title %}Trade bearbeiten - {{ portfolio.name }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Trade bearbeiten</h2>
+    <a href="{% url 'trade_list' portfolio.id %}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left"></i> Zurück zur Trade Liste
+    </a>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h5 class="mb-0">Trade Details für {{ trade.stock.symbol }}</h5>
+    </div>
+    <div class="card-body">
+        <form method="post">
+            {% csrf_token %}
+
+            <div class="row mb-3">
+                <div class="col-md-6">
+                    <label for="stock_symbol" class="form-label">Aktie</label>
+                    <input type="text" class="form-control" value="{{ trade.stock.symbol }} - {{ trade.stock.name }}" readonly>
+                </div>
+
+                <div class="col-md-6">
+                    <label for="trade_type" class="form-label">Trade-Typ</label>
+                    <select class="form-select" id="trade_type" name="trade_type" required>
+                        {% for code, name in trade_types %}
+                            <option value="{{ code }}" {% if trade.trade_type == code %}selected{% endif %}>{{ name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+
+            <div class="row mb-3">
+                <div class="col-md-4">
+                    <label for="date" class="form-label">Datum</label>
+                    <input type="date" class="form-control" id="date" name="date"
+                           value="{{ trade.date|date:'Y-m-d' }}" required>
+                </div>
+
+                <div class="col-md-4">
+                    <label for="shares" class="form-label" id="shares_label">Anzahl Aktien</label>
+                    <input type="number" class="form-control" id="shares" name="shares"
+                           step="0.0001" min="0.0001" value="{{ trade.shares }}" required>
+                </div>
+
+                <div class="col-md-4">
+                    <label for="price" class="form-label" id="price_label">Preis pro Aktie</label>
+                    <div class="input-group">
+                        <input type="number" class="form-control" id="price" name="price"
+                               step="0.01" min="0.01" value="{{ trade.price }}" required>
+                        <span class="input-group-text">€</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="row mb-3">
+                <div class="col-md-6">
+                    <label for="fees" class="form-label">Gebühren/Kosten</label>
+                    <div class="input-group">
+                        <input type="number" class="form-control" id="fees" name="fees"
+                               step="0.01" min="0" value="{{ trade.fees }}">
+                        <span class="input-group-text">€</span>
+                    </div>
+                </div>
+
+                <div class="col-md-6">
+                    <label for="total" class="form-label">Gesamtwert</label>
+                    <div class="input-group">
+                        <input type="text" class="form-control" id="total" value="{{ trade.total_value }}" readonly>
+                        <span class="input-group-text">€</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mb-3">
+                <label for="notes" class="form-label">Notizen</label>
+                <textarea class="form-control" id="notes" name="notes" rows="3">{{ trade.notes }}</textarea>
+            </div>
+
+            <div class="d-flex justify-content-between">
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-save"></i> Änderungen speichern
+                </button>
+
+                <a href="{% url 'trade_delete' trade.id %}" class="btn btn-outline-danger">
+                    <i class="bi bi-trash"></i> Trade löschen
+                </a>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const tradeTypeSelect = document.getElementById('trade_type');
+        const sharesInput = document.getElementById('shares');
+        const priceInput = document.getElementById('price');
+        const feesInput = document.getElementById('fees');
+        const totalInput = document.getElementById('total');
+        const sharesLabel = document.getElementById('shares_label');
+        const priceLabel = document.getElementById('price_label');
+
+        // Calculate total value when inputs change
+        function calculateTotal() {
+            const shares = parseFloat(sharesInput.value) || 0;
+            const price = parseFloat(priceInput.value) || 0;
+            const fees = parseFloat(feesInput.value) || 0;
+
+            const total = (shares * price) + fees;
+            totalInput.value = total.toFixed(2);
+        }
+
+        // Attach event listeners for calculation
+        sharesInput.addEventListener('input', calculateTotal);
+        priceInput.addEventListener('input', calculateTotal);
+        feesInput.addEventListener('input', calculateTotal);
+
+        // Special handling for SPLIT trade type
+        tradeTypeSelect.addEventListener('change', function() {
+            const tradeType = this.value;
+
+            if (tradeType === 'SPLIT') {
+                // For splits, the price field represents the split ratio (e.g. 2 for 2:1 split)
+                priceLabel.textContent = 'Split-Verhältnis';
+                sharesLabel.textContent = 'Neue Aktien pro alte Aktie';
+            } else {
+                priceLabel.textContent = 'Preis pro Aktie';
+                sharesLabel.textContent = 'Anzahl Aktien';
+            }
+        });
+
+        // Trigger change event to set initial labels
+        tradeTypeSelect.dispatchEvent(new Event('change'));
+    });
+</script>
+{% endblock %}

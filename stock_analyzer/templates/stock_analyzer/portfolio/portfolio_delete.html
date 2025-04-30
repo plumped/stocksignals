@@ -1,0 +1,43 @@
+<!-- stock_analyzer/templates/stock_analyzer/portfolio/portfolio_delete.html -->
+{% extends 'stock_analyzer/base.html' %}
+
+{% block title %}Portfolio löschen - {{ portfolio.name }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Portfolio löschen</h2>
+    <a href="{% url 'portfolio_detail' portfolio.id %}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left"></i> Zurück zum Portfolio
+    </a>
+</div>
+
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header bg-danger text-white">
+                <h5 class="mb-0">Bestätigung erforderlich</h5>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-warning">
+                    <h4 class="alert-heading"><i class="bi bi-exclamation-triangle"></i> Warnung!</h4>
+                    <p>Bist du sicher, dass du das Portfolio <strong>{{ portfolio.name }}</strong> löschen möchtest?</p>
+                    <p>Diese Aktion wird alle zugehörigen Positionen und Trades unwiderruflich löschen und kann nicht rückgängig gemacht werden.</p>
+                </div>
+
+                <form method="post">
+                    {% csrf_token %}
+                    <div class="d-flex justify-content-between">
+                        <a href="{% url 'portfolio_detail' portfolio.id %}" class="btn btn-secondary">
+                            <i class="bi bi-x-circle"></i> Abbrechen
+                        </a>
+
+                        <button type="submit" class="btn btn-danger">
+                            <i class="bi bi-trash"></i> Portfolio endgültig löschen
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
