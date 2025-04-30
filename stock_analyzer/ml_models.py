@@ -4,7 +4,7 @@ import pandas as pd
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingRegressor
-from sklearn.model_selection import train_test_split, TimeSeriesSplit, RandomizedSearchCV
+from sklearn.model_selection import train_test_split, TimeSeriesSplit, RandomizedSearchCV, StratifiedKFold
 from sklearn.metrics import accuracy_score, mean_squared_error, classification_report
 import joblib
 import os
@@ -198,12 +198,41 @@ class MLPredictor:
         rs = ema_up / ema_down
         df_features['rsi'] = 100 - (100 / (1 + rs))
 
+        # Candlestick Features
+        df_features['candle_body'] = df_features['close_price'] - df_features['open_price']
+        df_features['upper_shadow'] = df_features['high_price'] - df_features[['close_price', 'open_price']].max(axis=1)
+        df_features['lower_shadow'] = df_features[['close_price', 'open_price']].min(axis=1) - df_features['low_price']
+
+        # Trend Direction
+        df_features['is_bullish'] = (df_features['close_price'] > df_features['open_price']).astype(int)
+
         # MACD
         df_features['ema_12'] = df_features['close_price'].ewm(span=12, adjust=False).mean()
         df_features['ema_26'] = df_features['close_price'].ewm(span=26, adjust=False).mean()
         df_features['macd'] = df_features['ema_12'] - df_features['ema_26']
         df_features['macd_signal'] = df_features['macd'].ewm(span=9, adjust=False).mean()
         df_features['macd_hist'] = df_features['macd'] - df_features['macd_signal']
+
+        # Lag-Features
+        for lag in [1, 2, 3]:
+            df_features[f'close_lag_{lag}'] = df_features['close_price'].shift(lag)
+            df_features[f'rsi_lag_{lag}'] = df_features['rsi'].shift(lag)
+            df_features[f'macd_lag_{lag}'] = df_features['macd'].shift(lag)
+
+        # Volatility Classification
+        df_features['volatility_category'] = pd.qcut(df_features['volatility_20'], q=3, labels=[0, 1, 2])
+
+        # Rolling Momentum
+        df_features['trend_strength_10'] = df_features['close_price'].diff(10)
+
+        # Signal Counter
+        df_features['bullish_signals'] = (
+                (df_features['macd'] > df_features['macd_signal']).astype(int) +
+                (df_features['rsi'] < 30).astype(int) +
+                (df_features['close_price'] > df_features['ma_20']).astype(int)
+        )
+
+
 
         # Bollinger Bands
         df_features['bb_middle'] = df_features['close_price'].rolling(window=20).mean()
@@ -227,6 +256,8 @@ class MLPredictor:
 
         # Check for any infinities or NaNs and replace with 0
         df_features = df_features.replace([np.inf, -np.inf], np.nan)
+
+        df_features = df_features.dropna()
 
         return df_features
 
@@ -262,16 +293,35 @@ class MLPredictor:
             logger.error(f"Insufficient data to train {model_type} model for {self.stock_symbol}")
             return None
 
+        # Zielvariable & CV-Strategie bestimmen
+        if model_type == 'signal':
+            y = y_signal
+            class_counts = y.value_counts()
+            min_class_samples = class_counts.min()
+
+            if min_class_samples < 3:
+                logger.warning(
+                    f"Abbruch: Zu wenige Klassendaten für '{self.stock_symbol}' – minimalste Klasse hat nur {min_class_samples} Beispiel(e)"
+                )
+                return None
+
+            if min_class_samples >= 20:
+                cv_strategy = StratifiedKFold(n_splits=3)
+                logger.info(f"[{self.stock_symbol}] StratifiedKFold aktiviert für Klassifikation")
+            else:
+                n_splits = min(3, min_class_samples)
+                cv_strategy = TimeSeriesSplit(n_splits=n_splits)
+                logger.info(f"[{self.stock_symbol}] TimeSeriesSplit verwendet (min_class_samples={min_class_samples})")
+
+        else:
+            y = y_price
+            n_splits = max(5, min(len(X) // 100, 10))
+            cv_strategy = TimeSeriesSplit(n_splits=n_splits)
+
         try:
-            # Use time series split for validation
-            n_splits = max(5, min(len(X) // 100, 10))  # Maximal 10 Splits
-            tscv = TimeSeriesSplit(n_splits=n_splits)
-
-            # Select target and path
+            # Modell & Parameter definieren
             if model_type == 'price':
-                y = y_price
                 model_path = self.price_model_path
-
                 base_model = GradientBoostingRegressor(random_state=42)
                 param_grid = {
                     'n_estimators': [100, 150, 200],
@@ -280,11 +330,8 @@ class MLPredictor:
                     'subsample': [0.8, 1.0]
                 }
                 scoring = 'neg_mean_squared_error'
-
             else:
-                y = y_signal
                 model_path = self.signal_model_path
-
                 base_model = RandomForestClassifier(random_state=42)
                 param_grid = {
                     'n_estimators': [100, 150, 200],
@@ -294,20 +341,21 @@ class MLPredictor:
                 }
                 scoring = 'accuracy'
 
-            # Train with cross-validation
             best_score = float('-inf')
             best_model = None
 
-            for train_idx, test_idx in tscv.split(X):
+            for train_idx, test_idx in cv_strategy.split(X, y if model_type == 'signal' else None):
                 X_train, X_test = X[train_idx], X[test_idx]
                 y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
 
-                # Hyperparameter Search
+                cv_folds = min(3, y_train.value_counts().min()) if model_type == 'signal' else 3
+
+                # Hyperparameter-Suche
                 search = RandomizedSearchCV(
                     base_model,
                     param_distributions=param_grid,
                     n_iter=10,
-                    cv=3,
+                    cv=cv_folds,
                     scoring=scoring,
                     random_state=42,
                     n_jobs=-1
@@ -315,13 +363,16 @@ class MLPredictor:
                 search.fit(X_train, y_train)
                 model = search.best_estimator_
 
-                # Calibration for classifier
-                if model_type == 'signal':
-                    model = CalibratedClassifierCV(model, method='isotonic', cv=3)
+                # Kalibrierung
+                if model_type == 'signal' and cv_folds >= 2:
+                    model = CalibratedClassifierCV(model, method='isotonic', cv=cv_folds)
                     model.fit(X_train, y_train)
+                elif model_type == 'signal':
+                    logger.warning(f"Kalibrierung für {self.stock_symbol} übersprungen – zu wenige Daten")
 
+                # Bewertung
                 if model_type == 'price':
-                    score = -mean_squared_error(y_test, model.predict(X_test))  # Higher is better (negated)
+                    score = -mean_squared_error(y_test, model.predict(X_test))
                 else:
                     score = accuracy_score(y_test, model.predict(X_test))
 
