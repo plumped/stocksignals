@@ -1,4 +1,6 @@
 # stock_analyzer/views.py
+import json
+import os
 from decimal import Decimal
 
 import pandas as pd
@@ -19,6 +21,8 @@ from django.http import HttpResponse
 from django.contrib import messages
 from datetime import datetime, timedelta, date
 import yfinance as yf
+from django.db.models import OuterRef, Subquery, Avg, Count, Max
+from .models import MLPrediction
 
 
 def index(request):
@@ -1069,101 +1073,89 @@ def evaluate_ml_model(request, symbol):
         })
 
 
+
+
 @login_required
 def ml_dashboard(request):
-    """Machine Learning Dashboard mit Übersicht über Vorhersagen und Modellleistung"""
-    from django.db.models import Avg, Count
-    from datetime import datetime
-    import os
-    import json
-    from .models import MLModelMetrics
 
-    # Anzahl der Aktien mit ML-Modellen (Datei auf Festplatte prüfen)
+    # Model count from filesystem
     models_dir = 'ml_models'
-    model_files = []
-    if os.path.exists(models_dir):
-        model_files = [f for f in os.listdir(models_dir) if f.endswith('.pkl')]
+    model_files = [f for f in os.listdir(models_dir) if f.endswith('.pkl')] if os.path.exists(models_dir) else []
+    model_count = len(model_files) // 2
 
-    model_count = len(model_files) // 2  # Jede Aktie hat zwei Modelle (price und signal)
-
-    # Aktuelle ML-Statistiken
+    # General statistics
     prediction_count = MLPrediction.objects.count()
-    avg_accuracy_obj = MLModelMetrics.objects.aggregate(avg_accuracy=Avg('accuracy'))
-    avg_accuracy = round((avg_accuracy_obj['avg_accuracy'] or 0) * 100, 1)  # Auf Prozent umrechnen und runden
+    avg_accuracy = round((MLModelMetrics.objects.aggregate(Avg('accuracy'))['accuracy__avg'] or 0) * 100, 1)
     last_update = MLPrediction.objects.order_by('-date').first()
     last_update_date = last_update.date if last_update else datetime.now().date()
+    latest_dates = MLPrediction.objects.values('stock').annotate(latest=Max('date'))
+    latest_predictions = MLPrediction.objects.filter(
+        stock=OuterRef('stock'),
+        date=Subquery(
+            latest_dates.filter(stock=OuterRef('stock')).values('latest')[:1]
+        )
+    )
+    ml_predictions = MLPrediction.objects.filter(id__in=Subquery(latest_predictions.values('id')))
 
     ml_stats = {
         'model_count': model_count,
         'prediction_count': prediction_count,
         'avg_accuracy': avg_accuracy,
-        'last_update': last_update_date
+        'last_update': last_update_date,
+        'ml_predictions': ml_predictions,
     }
 
-    # Top Kauf- und Verkaufsempfehlungen abrufen
-    top_buy_predictions = MLPrediction.objects.filter(
-        recommendation='BUY',
-        confidence__gte=0.6
+    # Get latest predictions per stock (subquery)
+    latest_pred_sub = MLPrediction.objects.filter(stock=OuterRef('stock')).order_by('-date')
+    latest_predictions = MLPrediction.objects.filter(pk=Subquery(latest_pred_sub.values('pk')[:1]))
+
+    # Separate into BUY and SELL top recommendations
+    top_buy_predictions = latest_predictions.filter(
+        recommendation='BUY', confidence__gte=0.6
     ).order_by('-predicted_return')[:10]
 
-    top_sell_predictions = MLPrediction.objects.filter(
-        recommendation='SELL',
-        confidence__gte=0.6
+    top_sell_predictions = latest_predictions.filter(
+        recommendation='SELL', confidence__gte=0.6
     ).order_by('predicted_return')[:10]
 
-    # ML-Performance abrufen
+    # ML model metrics
     metrics = MLModelMetrics.objects.order_by('-date')[:10]
+    symbols = [m.stock.symbol for m in metrics if m.accuracy is not None]
+    accuracies = [round(m.accuracy * 100, 2) for m in metrics if m.accuracy is not None]
 
-    symbols = []
-    accuracies = []
-
-    for metric in metrics:
-        if metric.accuracy is not None:
-            symbols.append(metric.stock.symbol)
-            accuracies.append(round(metric.accuracy * 100, 2))
-
-    # Traditionelle Performance - NEU
-    traditional_performance = TraditionalAnalyzer.evaluate_traditional_performance(symbols[0]) if symbols else {
-        'accuracy': 65,
-        'return': 70,
-        'speed': 85,
-        'adaptability': 50,
-        'robustness': 80
+    # Fallback if no metrics present
+    traditional = TraditionalAnalyzer.evaluate_traditional_performance(symbols[0]) if symbols else {
+        'accuracy': 65, 'return': 70, 'speed': 85, 'adaptability': 50, 'robustness': 80
     }
 
     performance_data = {
         'symbols': json.dumps(symbols),
         'accuracy': json.dumps(accuracies),
         'traditional': json.dumps([
-            float(traditional_performance['accuracy']),
-            float(traditional_performance['return']),
-            float(traditional_performance['speed']),
-            float(traditional_performance['adaptability']),
-            float(traditional_performance['robustness'])
+            traditional['accuracy'], traditional['return'], traditional['speed'],
+            traditional['adaptability'], traditional['robustness']
         ]),
-        'traditional_final': round((
-                float(traditional_performance['accuracy']) * 0.3 +
-                float(traditional_performance['return']) * 0.25 +
-                float(traditional_performance['speed']) * 0.2 +
-                float(traditional_performance['adaptability']) * 0.15 +
-                float(traditional_performance['robustness']) * 0.1
-        ), 1)
+        'traditional_final': round(
+            traditional['accuracy'] * 0.3 +
+            traditional['return'] * 0.25 +
+            traditional['speed'] * 0.2 +
+            traditional['adaptability'] * 0.15 +
+            traditional['robustness'] * 0.1, 1
+        )
     }
 
-    # Aktien mit genug Daten für ML abrufen
-    stocks_with_data = Stock.objects.annotate(
-        data_count=Count('historical_data')
-    ).filter(data_count__gte=200).order_by('symbol')
+    stocks_with_data = Stock.objects.annotate(data_count=Count('historical_data')) \
+        .filter(data_count__gte=200).order_by('symbol')
 
-    context = {
+    return render(request, 'stock_analyzer/ml_dashboard.html', {
         'ml_stats': ml_stats,
         'top_buy_predictions': top_buy_predictions,
         'top_sell_predictions': top_sell_predictions,
         'performance_data': performance_data,
-        'stocks_with_data': stocks_with_data
-    }
+        'stocks_with_data': stocks_with_data,
+        'latest_predictions': ml_predictions  # <--- DAS FEHLTE
+    })
 
-    return render(request, 'stock_analyzer/ml_dashboard.html', context)
 
 @login_required
 def batch_ml_predictions_view(request):

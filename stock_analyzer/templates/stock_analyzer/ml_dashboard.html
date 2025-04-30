@@ -150,6 +150,38 @@
                 </form>
 
                 <div id="ml-result" class="mt-4"></div>
+                {% if latest_predictions %}
+                    <hr class="my-4">
+                    <h5>Zuletzt gespeicherte Vorhersagen</h5>
+                    <div class="table-responsive">
+                      <table class="table table-sm table-striped">
+                        <thead>
+                          <tr>
+                            <th>Symbol</th>
+                            <th>Empfehlung</th>
+                            <th>Erwartete Rendite</th>
+                            <th>Zielkurs</th>
+                            <th>Konfidenz</th>
+                            <th>Datum</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {% for p in latest_predictions %}
+                          <tr>
+                            <td>{{ p.stock.symbol }}</td>
+                            <td>{{ p.recommendation }}</td>
+                            <td class="{% if p.predicted_return < 0 %}text-danger{% else %}text-success{% endif %}">
+                              {{ p.predicted_return|floatformat:2 }}%
+                            </td>
+                            <td>{{ p.predicted_price|floatformat:2 }}</td>
+                            <td>{{ p.confidence|floatformat:2 }}</td>
+                            <td>{{ p.date }}</td>
+                          </tr>
+                          {% endfor %}
+                        </tbody>
+                      </table>
+                    </div>
+                {% endif %}
             </div>
         </div>
     </div>

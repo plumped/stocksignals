@@ -216,6 +216,29 @@ class Position(models.Model):
 
         return self.current_value
 
+    @property
+    def raw_cost_basis(self):
+        from .models import Trade
+        trades = Trade.objects.filter(portfolio=self.portfolio, stock=self.stock, trade_type='BUY')
+        return sum(t.price * t.shares for t in trades)
+
+    @property
+    def gross_gain(self):
+        return self.current_value - self.raw_cost_basis
+
+    @property
+    def gross_return(self):
+        if self.raw_cost_basis > 0:
+            return (self.gross_gain / self.raw_cost_basis) * 100
+        return 0
+
+    @property
+    def total_fees(self):
+        from .models import Trade
+        trades = Trade.objects.filter(portfolio=self.portfolio, stock=self.stock, trade_type='BUY')
+        return sum(t.fees for t in trades)
+
+
 
 class Trade(models.Model):
     """Model for individual trades within a portfolio"""
@@ -247,17 +270,104 @@ class Trade(models.Model):
         return f"{self.trade_type} {self.shares} {self.stock.symbol} @ {self.price}"
 
     def save(self, *args, **kwargs):
-        # Calculate total value
+        is_update = self.pk is not None
+
+        if is_update:
+            original = Trade.objects.get(pk=self.pk)
+
+            changed = (
+                    original.shares != self.shares or
+                    original.price != self.price or
+                    original.fees != self.fees or
+                    original.trade_type != self.trade_type or
+                    original.stock != self.stock or
+                    original.portfolio != self.portfolio
+            )
+
+            if changed:
+                self._reverse_position_effect(original)
+
+        # Korrekt: Wert **immer** neu berechnen
         self.total_value = (self.shares * self.price) + self.fees
 
-        # Save the trade
+        # Speichern
         super().save(*args, **kwargs)
 
-        # Update position
-        self._update_position()
+        # Position **nicht einfach draufaddieren** – besser: alles neu berechnen
+        self._recalculate_position()
 
-        # Update portfolio statistics
+        # Portfolio aktualisieren
         self.portfolio.update_statistics()
+
+    def _recalculate_position(self):
+        """Berechnet Position neu aus allen zugehörigen Trades"""
+        from decimal import Decimal
+
+        trades = Trade.objects.filter(
+            portfolio=self.portfolio,
+            stock=self.stock
+        ).order_by('date')
+
+        position, _ = Position.objects.get_or_create(
+            portfolio=self.portfolio,
+            stock=self.stock,
+            defaults={'shares': 0, 'cost_basis': 0, 'average_price': 0}
+        )
+
+        shares = Decimal('0')
+        cost = Decimal('0')
+
+        for t in trades:
+            if t.trade_type == 'BUY' or t.trade_type == 'TRANSFER_IN':
+                shares += t.shares
+                cost += t.total_value
+            elif t.trade_type == 'SELL' or t.trade_type == 'TRANSFER_OUT':
+                if shares > 0:
+                    cost_reduction = (t.shares / shares) * cost
+                    cost -= cost_reduction
+                shares -= t.shares
+            elif t.trade_type == 'SPLIT':
+                shares *= t.price  # split ratio
+
+        if shares > 0:
+            avg_price = cost / shares
+        else:
+            avg_price = Decimal('0')
+            cost = Decimal('0')
+
+        position.shares = shares
+        position.cost_basis = cost
+        position.average_price = avg_price
+
+        position.update_values()
+        position.save()
+
+    def _reverse_position_effect(self, old_trade):
+        position = Position.objects.filter(
+            portfolio=old_trade.portfolio,
+            stock=old_trade.stock
+        ).first()
+
+        if not position:
+            return
+
+        if old_trade.trade_type == 'BUY':
+            position.shares -= old_trade.shares
+            position.cost_basis -= old_trade.total_value
+
+        elif old_trade.trade_type == 'SELL':
+            position.shares += old_trade.shares
+            position.cost_basis += old_trade.price * old_trade.shares
+
+        # Korrektur: Average Price aktualisieren
+        if position.shares > 0:
+            position.average_price = position.cost_basis / position.shares
+        else:
+            position.average_price = 0
+            position.cost_basis = 0
+
+        position.update_values()
+        position.save()
 
     def _update_position(self):
         """Update the associated position after a trade"""
@@ -346,7 +456,10 @@ class Trade(models.Model):
                 if net_shares > 0:
                     new_split_shares = net_shares * split_ratio
                     position.shares = new_split_shares + post_split_shares
-                    position.average_price = position.average_price / split_ratio
+                    if position.shares > 0:
+                        position.average_price = position.cost_basis / position.shares
+                    else:
+                        position.average_price = 0
 
 
 
