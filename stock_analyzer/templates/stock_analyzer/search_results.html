@@ -1,0 +1,128 @@
+<!-- stock_analyzer/templates/stock_analyzer/search_results.html -->
+{% extends 'stock_analyzer/base.html' %}
+
+{% block title %}Suchergebnisse: {{ query }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Suchergebnisse für "{{ query }}"</h2>
+    <a href="{% url 'index' %}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left"></i> Zurück zum Dashboard
+    </a>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <div class="row">
+            <div class="col-md-8">
+                <form action="{% url 'search_stocks' %}" method="get" class="d-flex">
+                    <input type="text" name="q" class="form-control me-2" value="{{ query }}" placeholder="Symbol oder Name">
+                    {% if action %}
+                    <input type="hidden" name="action" value="{{ action }}">
+                    {% endif %}
+                    <button type="submit" class="btn btn-primary">Suchen</button>
+                </form>
+            </div>
+            <div class="col-md-4 text-end">
+                {% if action == 'strategy_comparison' %}
+                <span class="badge bg-info">Modus: ML-Strategievergleich</span>
+                {% elif action == 'backtest' %}
+                <span class="badge bg-info">Modus: ML-Backtest</span>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    <div class="card-body">
+        {% if stocks %}
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Name</th>
+                        <th>Sektor</th>
+                        <th>Aktionen</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for stock in stocks %}
+                    <tr>
+                        <td><a href="{% url 'stock_detail' stock.symbol %}">{{ stock.symbol }}</a></td>
+                        <td>{{ stock.name }}</td>
+                        <td>{{ stock.sector|default:"-" }}</td>
+                        <td>
+                            <div class="btn-group">
+                                <a href="{% url 'stock_detail' stock.symbol %}" class="btn btn-sm btn-outline-primary">
+                                    <i class="bi bi-eye"></i> Details
+                                </a>
+
+                                <!-- Add ML Backtesting buttons -->
+                                {% if action == 'backtest' %}
+                                <a href="{% url 'ml_backtest' stock.symbol %}" class="btn btn-sm btn-info">
+                                    <i class="bi bi-robot"></i> ML Backtest
+                                </a>
+                                {% else %}
+                                <a href="{% url 'ml_backtest' stock.symbol %}" class="btn btn-sm btn-outline-info">
+                                    <i class="bi bi-robot"></i> ML Backtest
+                                </a>
+                                {% endif %}
+
+                                <!-- If we're in strategy comparison mode, highlight that button -->
+                                {% if action == 'strategy_comparison' %}
+                                <a href="{% url 'ml_strategy_comparison' stock.symbol %}" class="btn btn-sm btn-info">
+                                    <i class="bi bi-gear-wide-connected"></i> ML Strategie
+                                </a>
+                                {% else %}
+                                <a href="{% url 'ml_strategy_comparison' stock.symbol %}" class="btn btn-sm btn-outline-info">
+                                    <i class="bi bi-gear-wide-connected"></i> ML Strategie
+                                </a>
+                                {% endif %}
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="alert alert-info">
+            <p>Keine Aktien für "{{ query }}" gefunden.</p>
+            {% if action %}
+            <p>
+                <a href="{% url 'search_stocks' %}?q={{ query }}" class="alert-link">
+                    Normale Suche ohne Aktionsmodus ausprobieren
+                </a>
+            </p>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+{% if action %}
+<div class="card mt-4">
+    <div class="card-header">
+        {% if action == 'strategy_comparison' %}
+        <h4>ML-Strategievergleich</h4>
+        {% elif action == 'backtest' %}
+        <h4>ML-Backtest</h4>
+        {% endif %}
+    </div>
+    <div class="card-body">
+        {% if action == 'strategy_comparison' %}
+        <p>
+            Der ML-Strategievergleich ermöglicht es Ihnen, verschiedene ML-basierte Handelsstrategien für eine
+            bestimmte Aktie zu vergleichen, um die optimale Parametereinstellung zu finden.
+        </p>
+        {% elif action == 'backtest' %}
+        <p>
+            ML-Backtesting simuliert Handelsentscheidungen basierend auf den Machine Learning Vorhersagen für
+            historische Daten. Dies hilft dabei, die Performance und Genauigkeit der ML-Modelle zu bewerten.
+        </p>
+        {% endif %}
+
+        <p>Wählen Sie eine Aktie aus der obigen Liste, um fortzufahren.</p>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

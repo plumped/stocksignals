@@ -33,6 +33,19 @@
                     {% endif %}
                 </div>
             </div>
+
+            <!-- Add buttons for ML backtesting -->
+            <div class="text-center mt-3 mb-3">
+                <div class="btn-group" role="group">
+                    <a href="{% url 'ml_backtest' stock.symbol %}" class="btn btn-outline-info">
+                        <i class="bi bi-robot"></i> Strategie backtesten
+                    </a>
+                    <a href="{% url 'ml_strategy_comparison' stock.symbol %}" class="btn btn-outline-info">
+                        <i class="bi bi-gear-wide-connected"></i> Strategien vergleichen
+                    </a>
+                </div>
+            </div>
+
             <hr>
             <div class="alert alert-info small mb-0">
                 <i class="bi bi-info-circle"></i> Diese Vorhersage basiert auf Machine Learning und analysiert historische Muster. Sie sollte als zusätzliche Information und nicht als alleinige Entscheidungsgrundlage betrachtet werden.

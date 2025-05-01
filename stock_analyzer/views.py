@@ -22,7 +22,7 @@ from django.http import HttpResponse
 from django.contrib import messages
 from datetime import datetime, timedelta, date
 import yfinance as yf
-from django.db.models import OuterRef, Subquery, Avg, Count, Max
+from django.db.models import OuterRef, Subquery, Avg, Count, Max, Q
 from .models import MLPrediction
 
 
@@ -276,17 +276,26 @@ def remove_from_watchlist(request):
 def search_stocks(request):
     """Sucht nach Aktien basierend auf Symbol oder Name"""
     query = request.GET.get('q', '')
+    action = request.GET.get('action', '')  # New parameter for specifying action
 
     if query:
         # Zuerst in der Datenbank suchen
-        stocks = Stock.objects.filter(
-            symbol__icontains=query
-        ) | Stock.objects.filter(
-            name__icontains=query
-        )
+        stocks_queryset = Stock.objects.filter(
+            Q(symbol__icontains=query) | Q(name__icontains=query)
+        ).order_by('symbol')[:20]
+
+        # If there is exactly one match and an action is specified, redirect directly
+        if stocks_queryset.count() == 1 and action:
+            stock = stocks_queryset.first()
+            if action == 'backtest':
+                return redirect('ml_backtest', symbol=stock.symbol)
+            elif action == 'strategy_comparison':
+                return redirect('ml_strategy_comparison', symbol=stock.symbol)
+            else:
+                return redirect('stock_detail', symbol=stock.symbol)
 
         results = []
-        for stock in stocks:
+        for stock in stocks_queryset:
             # Letzte Analyse abrufen, falls vorhanden
             latest_analysis = AnalysisResult.objects.filter(stock=stock).order_by('-date').first()
 
@@ -327,7 +336,20 @@ def search_stocks(request):
 
         return JsonResponse({'results': results})
 
-    return JsonResponse({'results': []})
+    # Für den Fall, dass kein Query übergeben wurde oder ein Template gerendert werden soll
+    stocks_for_template = Stock.objects.none()
+    if query:
+        stocks_for_template = Stock.objects.filter(
+            Q(symbol__icontains=query) | Q(name__icontains=query)
+        ).order_by('symbol')[:20]
+
+    context = {
+        'query': query,
+        'stocks': stocks_for_template,
+        'action': action,  # Pass action to template
+    }
+
+    return render(request, 'stock_analyzer/search_results.html', context)
 
 
 def api_stock_data(request, symbol):
