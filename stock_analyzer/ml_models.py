@@ -7,6 +7,7 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingRegressor
 from sklearn.model_selection import train_test_split, TimeSeriesSplit, RandomizedSearchCV, StratifiedKFold
 from sklearn.metrics import accuracy_score, mean_squared_error, classification_report
+from sklearn.linear_model import LinearRegression
 import joblib
 import os
 from datetime import datetime, timedelta
@@ -229,6 +230,22 @@ class MLPredictor:
                 (df_features['close_price'] > df_features['ma_20']).astype(int)
         )
 
+        window = 30
+        df_features['spy_return_30d'] = df_features['spy_close'].pct_change().rolling(window).sum()
+        df_features['stock_return_30d'] = df_features['close_price'].pct_change().rolling(window).sum()
+        df_features['rolling_alpha'] = np.nan
+        df_features['rolling_beta'] = np.nan
+
+        from sklearn.linear_model import LinearRegression
+        for i in range(window, len(df_features)):
+            x = df_features['spy_return_30d'].iloc[i - window + 1:i + 1].values.reshape(-1, 1)
+            y = df_features['stock_return_30d'].iloc[i - window + 1:i + 1].values
+            if not np.any(np.isnan(x)) and not np.any(np.isnan(y)):
+                model = LinearRegression()
+                model.fit(x, y)
+                df_features.loc[df_features.index[i], 'rolling_alpha'] = model.intercept_
+                df_features.loc[df_features.index[i], 'rolling_beta'] = model.coef_[0]
+
         df_features['bb_middle'] = df_features['close_price'].rolling(window=20).mean()
         std = df_features['close_price'].rolling(window=20).std()
         df_features['bb_upper'] = df_features['bb_middle'] + 2 * std
@@ -246,13 +263,10 @@ class MLPredictor:
             df_features[f'momentum_{window}'] = df_features['close_price'] / df_features['close_price'].shift(
                 window) - 1
 
-        # --- NEW FEATURES ---
-
-        # Z-Score (20 Tage)
+        # --- Additional Features ---
         df_features['zscore_20'] = (df_features['close_price'] - df_features['ma_20']) / df_features[
             'close_price'].rolling(20).std()
 
-        # Trendwechsel Flags
         df_features['sma_20_50_cross'] = np.sign(df_features['ma_20'] - df_features['ma_50'])
         df_features['sma_cross_change'] = df_features['sma_20_50_cross'].diff().fillna(0)
         df_features['sma_bullish_cross'] = (df_features['sma_cross_change'] > 0).astype(int)
@@ -263,10 +277,26 @@ class MLPredictor:
         df_features['ema_bullish_cross'] = (df_features['ema_cross_change'] > 0).astype(int)
         df_features['ema_bearish_cross'] = (df_features['ema_cross_change'] < 0).astype(int)
 
-        # Relative Strength (SPY benötigt im DataFrame)
         if 'spy_close' in df_features.columns:
             df_features['spy_return_10d'] = df_features['spy_close'].pct_change(10)
             df_features['rel_strength_10d'] = df_features['close_price'].pct_change(10) - df_features['spy_return_10d']
+            df_features['corr_with_spy_20d'] = df_features['close_price'].rolling(20).corr(df_features['spy_close'])
+
+        # Candle Pattern Recognition
+        df_features['is_doji'] = (abs(df_features['candle_body']) < 0.1 * (
+                    df_features['high_price'] - df_features['low_price'])).astype(int)
+        df_features['is_bullish_engulfing'] = ((df_features['is_bullish'] == 1) & (
+                    df_features['candle_body'] > df_features['candle_body'].shift())).astype(int)
+
+        # Price Action Velocity
+        df_features['price_velocity_3'] = df_features['close_price'].diff(3) / 3
+
+        # Volatility Regime Switching
+        vol_thresh = df_features['volatility_20'].quantile(0.75)
+        df_features['high_volatility_flag'] = (df_features['volatility_20'] > vol_thresh).astype(int)
+
+        # Higher-Order Returns
+        df_features['return_acceleration'] = df_features['daily_return'].diff()
 
         df_features = df_features.replace([np.inf, -np.inf], np.nan)
         df_features = df_features.dropna()
