@@ -1,6 +1,7 @@
 # stock_analyzer/ml_models.py
 import numpy as np
 import pandas as pd
+from django.db.models import Count
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingRegressor
@@ -61,6 +62,19 @@ class MLPredictor:
             # Convert Decimal fields to float before any calculations
             for col in ['open_price', 'high_price', 'low_price', 'close_price', 'volume']:
                 df[col] = df[col].astype(float)
+
+            # SPY-Daten laden und mit df mergen
+            spy_stock = Stock.objects.get(symbol='SPY')
+            spy_data = StockData.objects.filter(
+                stock=spy_stock,
+                date__range=[start_date, end_date]
+            ).values('date', 'close_price')
+
+            spy_df = pd.DataFrame(list(spy_data)).rename(columns={'close_price': 'spy_close'})
+
+            if not spy_df.empty:
+                df = df.merge(spy_df, on='date', how='left')
+                df['spy_close'] = df['spy_close'].astype(float)
 
             # Calculate additional features
             df = self._calculate_features(df)
@@ -151,45 +165,35 @@ class MLPredictor:
 
     def _calculate_features(self, df):
         """Calculate technical indicators and other features for ML models"""
-        # Copy dataframe to avoid modifying the original
         df_features = df.copy()
 
-        # Ensure all numeric columns are float type
         for col in ['open_price', 'high_price', 'low_price', 'close_price', 'volume']:
             if col in df_features.columns:
                 df_features[col] = pd.to_numeric(df_features[col], errors='coerce')
 
-        # Calculate returns
         df_features['daily_return'] = df_features['close_price'].pct_change()
         df_features['weekly_return'] = df_features['close_price'].pct_change(5)
         df_features['monthly_return'] = df_features['close_price'].pct_change(20)
 
-        # Price ratios
         df_features['hl_ratio'] = df_features['high_price'] / df_features['low_price']
         df_features['co_ratio'] = df_features['close_price'] / df_features['open_price']
 
-        # Moving averages
         for window in [5, 10, 20, 50, 200]:
             df_features[f'ma_{window}'] = df_features['close_price'].rolling(window=window).mean()
-            # Distance from moving average (%)
             df_features[f'ma_{window}_dist'] = (df_features['close_price'] - df_features[f'ma_{window}']) / df_features[
                 f'ma_{window}']
 
-        # Moving average crossovers
         df_features['ma_5_10_cross'] = df_features['ma_5'] - df_features['ma_10']
         df_features['ma_10_50_cross'] = df_features['ma_10'] - df_features['ma_50']
         df_features['ma_50_200_cross'] = df_features['ma_50'] - df_features['ma_200']
 
-        # Volatility measures
         df_features['volatility_5'] = df_features['daily_return'].rolling(window=5).std()
         df_features['volatility_20'] = df_features['daily_return'].rolling(window=20).std()
 
-        # Volume features
         df_features['volume_ma_5'] = df_features['volume'].rolling(window=5).mean()
         df_features['volume_ma_20'] = df_features['volume'].rolling(window=20).mean()
         df_features['volume_ratio'] = df_features['volume'] / df_features['volume_ma_20']
 
-        # RSI
         delta = df_features['close_price'].diff()
         up = delta.clip(lower=0)
         down = -delta.clip(upper=0)
@@ -198,65 +202,73 @@ class MLPredictor:
         rs = ema_up / ema_down
         df_features['rsi'] = 100 - (100 / (1 + rs))
 
-        # Candlestick Features
         df_features['candle_body'] = df_features['close_price'] - df_features['open_price']
         df_features['upper_shadow'] = df_features['high_price'] - df_features[['close_price', 'open_price']].max(axis=1)
         df_features['lower_shadow'] = df_features[['close_price', 'open_price']].min(axis=1) - df_features['low_price']
 
-        # Trend Direction
         df_features['is_bullish'] = (df_features['close_price'] > df_features['open_price']).astype(int)
 
-        # MACD
         df_features['ema_12'] = df_features['close_price'].ewm(span=12, adjust=False).mean()
         df_features['ema_26'] = df_features['close_price'].ewm(span=26, adjust=False).mean()
         df_features['macd'] = df_features['ema_12'] - df_features['ema_26']
         df_features['macd_signal'] = df_features['macd'].ewm(span=9, adjust=False).mean()
         df_features['macd_hist'] = df_features['macd'] - df_features['macd_signal']
 
-        # Lag-Features
         for lag in [1, 2, 3]:
             df_features[f'close_lag_{lag}'] = df_features['close_price'].shift(lag)
             df_features[f'rsi_lag_{lag}'] = df_features['rsi'].shift(lag)
             df_features[f'macd_lag_{lag}'] = df_features['macd'].shift(lag)
 
-        # Volatility Classification
         df_features['volatility_category'] = pd.qcut(df_features['volatility_20'], q=3, labels=[0, 1, 2])
 
-        # Rolling Momentum
         df_features['trend_strength_10'] = df_features['close_price'].diff(10)
 
-        # Signal Counter
         df_features['bullish_signals'] = (
                 (df_features['macd'] > df_features['macd_signal']).astype(int) +
                 (df_features['rsi'] < 30).astype(int) +
                 (df_features['close_price'] > df_features['ma_20']).astype(int)
         )
 
-
-
-        # Bollinger Bands
         df_features['bb_middle'] = df_features['close_price'].rolling(window=20).mean()
         std = df_features['close_price'].rolling(window=20).std()
         df_features['bb_upper'] = df_features['bb_middle'] + 2 * std
         df_features['bb_lower'] = df_features['bb_middle'] - 2 * std
         df_features['bb_width'] = (df_features['bb_upper'] - df_features['bb_lower']) / df_features['bb_middle']
 
-        # Ensure bb_upper and bb_lower are not the same to avoid division by zero
         df_features['bb_position'] = np.where(
             (df_features['bb_upper'] - df_features['bb_lower']) > 0,
             (df_features['close_price'] - df_features['bb_lower']) / (
                         df_features['bb_upper'] - df_features['bb_lower']),
-            0.5  # Default value when bands are identical
+            0.5
         )
 
-        # Price momentum
         for window in [5, 10, 20]:
             df_features[f'momentum_{window}'] = df_features['close_price'] / df_features['close_price'].shift(
                 window) - 1
 
-        # Check for any infinities or NaNs and replace with 0
-        df_features = df_features.replace([np.inf, -np.inf], np.nan)
+        # --- NEW FEATURES ---
 
+        # Z-Score (20 Tage)
+        df_features['zscore_20'] = (df_features['close_price'] - df_features['ma_20']) / df_features[
+            'close_price'].rolling(20).std()
+
+        # Trendwechsel Flags
+        df_features['sma_20_50_cross'] = np.sign(df_features['ma_20'] - df_features['ma_50'])
+        df_features['sma_cross_change'] = df_features['sma_20_50_cross'].diff().fillna(0)
+        df_features['sma_bullish_cross'] = (df_features['sma_cross_change'] > 0).astype(int)
+        df_features['sma_bearish_cross'] = (df_features['sma_cross_change'] < 0).astype(int)
+
+        df_features['ema_12_26_cross'] = np.sign(df_features['ema_12'] - df_features['ema_26'])
+        df_features['ema_cross_change'] = df_features['ema_12_26_cross'].diff().fillna(0)
+        df_features['ema_bullish_cross'] = (df_features['ema_cross_change'] > 0).astype(int)
+        df_features['ema_bearish_cross'] = (df_features['ema_cross_change'] < 0).astype(int)
+
+        # Relative Strength (SPY benötigt im DataFrame)
+        if 'spy_close' in df_features.columns:
+            df_features['spy_return_10d'] = df_features['spy_close'].pct_change(10)
+            df_features['rel_strength_10d'] = df_features['close_price'].pct_change(10) - df_features['spy_return_10d']
+
+        df_features = df_features.replace([np.inf, -np.inf], np.nan)
         df_features = df_features.dropna()
 
         return df_features
@@ -717,20 +729,19 @@ class AdaptiveAnalyzer:
 
 def batch_ml_predictions(symbols=None, force_retrain=False):
     """Run ML predictions for multiple stocks"""
-    from .models import Stock, StockData
-    from django.db.models import Count
-    from .ml_models import MLPredictor
 
     if symbols is None:
         stocks_with_data = StockData.objects.values('stock') \
             .annotate(data_count=Count('id')) \
             .filter(data_count__gte=200)
         stock_ids = [item['stock'] for item in stocks_with_data]
-        symbols = Stock.objects.filter(id__in=stock_ids).values_list('symbol', flat=True)
+        symbols = Stock.objects.filter(id__in=stock_ids).exclude(symbol='SPY').values_list('symbol', flat=True)
 
     results = {}
 
     for symbol in symbols:
+        if symbol == 'SPY':
+            continue
         try:
             predictor = MLPredictor(symbol)
 
