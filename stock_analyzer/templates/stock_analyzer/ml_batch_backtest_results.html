@@ -1,0 +1,297 @@
+<!-- stock_analyzer/templates/stock_analyzer/ml_batch_backtest_results.html -->
+{% extends 'stock_analyzer/base.html' %}
+
+{% block title %}ML Batch Backtest Ergebnisse{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>ML Batch Backtest Ergebnisse</h2>
+    <div class="d-flex">
+        <a href="{% url 'ml_batch_backtest' %}" class="btn btn-outline-primary me-2">
+            <i class="bi bi-arrow-repeat"></i> Neuer Batch Backtest
+        </a>
+        <a href="{% url 'ml_dashboard' %}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left"></i> Zurück zum ML Dashboard
+        </a>
+    </div>
+</div>
+
+<!-- Summary Cards -->
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card text-center h-100">
+            <div class="card-header">
+                Zeitraum
+            </div>
+            <div class="card-body">
+                <h5>{{ start_date|date:"d.m.Y" }}</h5>
+                <h5>bis</h5>
+                <h5>{{ end_date|date:"d.m.Y" }}</h5>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-center h-100">
+            <div class="card-header">
+                Getestete Aktien
+            </div>
+            <div class="card-body">
+                <h3>{{ symbols_tested }}</h3>
+                <p>{{ successful_tests }} erfolgreich getestet</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-center h-100">
+            <div class="card-header">
+                Durchschn. Rendite
+            </div>
+            <div class="card-body">
+                {% with avg_return=results.values|map:"return_pct"|average %}
+                <h3 class="{% if avg_return > 0 %}text-success{% elif avg_return < 0 %}text-danger{% endif %}">
+                    {{ avg_return|floatformat:2 }}%
+                </h3>
+                {% endwith %}
+                <p>über alle erfolgreichen Tests</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-center h-100">
+            <div class="card-header">
+                Kapital pro Aktie
+            </div>
+            <div class="card-body">
+                <h3>{{ initial_capital|floatformat:0 }} €</h3>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Results Table -->
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5>Vergleich nach Aktie</h5>
+        <div class="input-group" style="max-width: 300px;">
+            <span class="input-group-text"><i class="bi bi-search"></i></span>
+            <input type="text" class="form-control" id="stockFilter" placeholder="Aktie suchen...">
+        </div>
+    </div>
+    <div class="card-body">
+        {% if results %}
+            <div class="table-responsive">
+                <table class="table table-striped table-hover" id="resultsTable">
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Rendite</th>
+                            <th>vs. Buy & Hold</th>
+                            <th>Anzahl Trades</th>
+                            <th>Gewinnrate</th>
+                            <th>Sharpe Ratio</th>
+                            <th>Aktionen</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for symbol, result in results.items %}
+                            {% if result.success %}
+                                <tr>
+                                    <td>
+                                        <strong>{{ symbol }}</strong>
+                                    </td>
+                                    <td class="{% if result.return_pct > 0 %}text-success{% elif result.return_pct < 0 %}text-danger{% endif %}">
+                                        {{ result.return_pct|floatformat:2 }}%
+                                    </td>
+                                    <td class="{% if result.vs_buy_hold > 0 %}text-success{% elif result.vs_buy_hold < 0 %}text-danger{% endif %}">
+                                        {{ result.vs_buy_hold|floatformat:2 }}%
+                                    </td>
+                                    <td>{{ result.num_trades }}</td>
+                                    <td>{{ result.win_rate|floatformat:1 }}%</td>
+                                    <td>{{ result.sharpe_ratio|floatformat:2 }}</td>
+                                    <td>
+                                        <a href="{% url 'ml_backtest' symbol %}" class="btn btn-sm btn-outline-primary">
+                                            Detail
+                                        </a>
+                                        <a href="{% url 'ml_strategy_comparison' symbol %}" class="btn btn-sm btn-outline-info">
+                                            Optimieren
+                                        </a>
+                                    </td>
+                                </tr>
+                            {% endif %}
+                        {% endfor %}
+
+                        <!-- Failed Tests -->
+                        {% for symbol, result in results.items %}
+                            {% if not result.success %}
+                                <tr class="table-secondary">
+                                    <td>
+                                        <strong>{{ symbol }}</strong>
+                                        <span class="badge bg-secondary">Fehlgeschlagen</span>
+                                    </td>
+                                    <td colspan="5">
+                                        {{ result.message }}
+                                    </td>
+                                    <td>
+                                        <a href="{% url 'stock_detail' symbol %}" class="btn btn-sm btn-outline-secondary">
+                                            Aktie prüfen
+                                        </a>
+                                    </td>
+                                </tr>
+                            {% endif %}
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% else %}
+            <div class="alert alert-warning">
+                <p>Keine Ergebnisse verfügbar. Bitte starten Sie einen neuen Batch Backtest.</p>
+            </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Performance Chart -->
+<div class="card mt-4">
+    <div class="card-header">
+        <h5>Performance-Vergleich der Top-Performer</h5>
+    </div>
+    <div class="card-body">
+        <canvas id="performanceChart" height="300"></canvas>
+    </div>
+</div>
+
+<!-- Analysis and Recommendations -->
+<div class="card mt-4">
+    <div class="card-header">
+        <h5>Analyse & Empfehlungen</h5>
+    </div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-6">
+                <h6 class="mb-3">Top-Performer</h6>
+                <p>Die höchsten Renditen wurden erzielt mit:</p>
+                <ul>
+                    {% for symbol, result in results.items %}
+                        {% if result.success and result.return_pct > 10 %}
+                            <li>
+                                <strong>{{ symbol }}:</strong> {{ result.return_pct|floatformat:2 }}%
+                                {% if result.vs_buy_hold > 0 %}
+                                    <span class="badge bg-success">+{{ result.vs_buy_hold|floatformat:2 }}% vs. Buy & Hold</span>
+                                {% endif %}
+                            </li>
+                        {% endif %}
+                    {% endfor %}
+                </ul>
+
+                <h6 class="mb-3 mt-4">Höchste Gewinnraten</h6>
+                <ul>
+                    {% for symbol, result in results.items %}
+                        {% if result.success and result.win_rate > 60 %}
+                            <li><strong>{{ symbol }}:</strong> {{ result.win_rate|floatformat:1 }}% Gewinnrate</li>
+                        {% endif %}
+                    {% endfor %}
+                </ul>
+            </div>
+            <div class="col-md-6">
+                <h6 class="mb-3">Empfehlungen</h6>
+                <ul>
+                    <li>Führen Sie für die Top-Performer einen <strong>Strategievergleich</strong> durch, um die optimalen Parameter zu finden.</li>
+                    <li>Überprüfen Sie, ob die erfolgreichen Aktien <strong>Korrelationen</strong> aufweisen oder aus bestimmten Sektoren stammen.</li>
+                    <li>Für eine tiefere Analyse, betrachten Sie die <strong>einzelnen Trades</strong> in der Detailansicht.</li>
+                    <li>Testen Sie die besten Kandidaten mit <strong>Out-of-Sample Daten</strong> für eine robuste Validierung.</li>
+                </ul>
+
+                <h6 class="mb-3 mt-4">Nächste Schritte</h6>
+                <p>Basierend auf den Ergebnissen könnten folgende Aktien für eine Aufnahme in Ihre ML-Handelsstrategie interessant sein:</p>
+                <ul>
+                    {% for symbol, result in results.items %}
+                        {% if result.success and result.return_pct > 15 and result.sharpe_ratio > 1 %}
+                            <li><strong>{{ symbol }}</strong>: Hohe Rendite und gutes Risiko-Rendite-Verhältnis</li>
+                        {% endif %}
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Stock filter functionality
+        const stockFilter = document.getElementById('stockFilter');
+        const resultsTable = document.getElementById('resultsTable');
+        const tableRows = resultsTable.getElementsByTagName('tbody')[0].rows;
+
+        stockFilter.addEventListener('keyup', function() {
+            const filterText = this.value.toLowerCase();
+
+            for (let i = 0; i < tableRows.length; i++) {
+                const symbol = tableRows[i].cells[0].textContent.toLowerCase();
+
+                if (symbol.includes(filterText)) {
+                    tableRows[i].style.display = '';
+                } else {
+                    tableRows[i].style.display = 'none';
+                }
+            }
+        });
+
+        // Performance Chart for top performers
+        const ctx = document.getElementById('performanceChart').getContext('2d');
+
+        // Get top 5 performers
+        const topPerformers = [
+            {% for symbol, result in results.items %}
+                {% if result.success %}
+                    {
+                        symbol: '{{ symbol }}',
+                        returns: {{ result.return_pct|floatformat:2 }},
+                        vsHold: {{ result.vs_buy_hold|floatformat:2 }},
+                        sharpe: {{ result.sharpe_ratio|floatformat:2 }}
+                    },
+                {% endif %}
+            {% endfor %}
+        ].sort((a, b) => b.returns - a.returns).slice(0, 5);
+
+        new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: topPerformers.map(p => p.symbol),
+                datasets: [
+                    {
+                        label: 'Gesamtrendite (%)',
+                        data: topPerformers.map(p => p.returns),
+                        backgroundColor: 'rgba(75, 192, 192, 0.7)',
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        borderWidth: 1
+                    },
+                    {
+                        label: 'vs. Buy & Hold (%)',
+                        data: topPerformers.map(p => p.vsHold),
+                        backgroundColor: 'rgba(54, 162, 235, 0.7)',
+                        borderColor: 'rgba(54, 162, 235, 1)',
+                        borderWidth: 1
+                    },
+                    {
+                        label: 'Sharpe Ratio',
+                        data: topPerformers.map(p => p.sharpe),
+                        backgroundColor: 'rgba(255, 206, 86, 0.7)',
+                        borderColor: 'rgba(255, 206, 86, 1)',
+                        borderWidth: 1
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: {
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+    });
+</script>
+{% endblock %}

@@ -11,6 +11,7 @@ from django.http import JsonResponse
 from .backtesting import BacktestStrategy
 from .forms import UserProfileForm
 from .market_analysis import MarketAnalyzer, TraditionalAnalyzer
+from .ml_backtesting import MLBacktester, compare_ml_models
 from .ml_models import MLPredictor, AdaptiveAnalyzer
 from .models import Stock, StockData, AnalysisResult, WatchList, UserProfile, MLPrediction, MLModelMetrics, Portfolio, \
     Trade, Position
@@ -1746,3 +1747,291 @@ def calculate_portfolio_value_history(portfolio, start_date, end_date):
         })
 
     return daily_values
+
+
+@login_required
+def ml_backtest(request, symbol):
+    """Run ML backtesting for a specific stock"""
+    stock = get_object_or_404(Stock, symbol=symbol.upper())
+
+    # Default date range: Last year
+    end_date = datetime.now().date()
+    start_date = end_date - timedelta(days=365)
+
+    if request.method == 'POST':
+        # Get parameters from form
+        start_date_str = request.POST.get('start_date')
+        end_date_str = request.POST.get('end_date')
+        initial_capital = float(request.POST.get('initial_capital', 10000))
+        confidence_threshold = float(request.POST.get('confidence_threshold', 0.65))
+        stop_loss = float(request.POST.get('stop_loss', 0.05))
+        take_profit = float(request.POST.get('take_profit', 0.10))
+
+        # Parse dates
+        if start_date_str and end_date_str:
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+
+        # Run backtest
+        backtester = MLBacktester(
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date,
+            initial_capital=initial_capital,
+            confidence_threshold=confidence_threshold,
+            stop_loss_pct=stop_loss,
+            take_profit_pct=take_profit
+        )
+
+        results = backtester.run_backtest()
+
+        # Generate performance charts
+        charts = backtester.generate_performance_charts()
+
+        context = {
+            'stock': stock,
+            'start_date': start_date,
+            'end_date': end_date,
+            'initial_capital': initial_capital,
+            'confidence_threshold': confidence_threshold,
+            'stop_loss': stop_loss,
+            'take_profit': take_profit,
+            'results': results,
+            'charts': charts
+        }
+
+        return render(request, 'stock_analyzer/ml_backtest_results.html', context)
+
+    # Initial form display
+    context = {
+        'stock': stock,
+        'start_date': start_date,
+        'end_date': end_date,
+        'initial_capital': 10000,
+        'confidence_threshold': 0.65,
+        'stop_loss': 0.05,
+        'take_profit': 0.10
+    }
+
+    return render(request, 'stock_analyzer/ml_backtest_form.html', context)
+
+
+@login_required
+def ml_strategy_comparison(request, symbol):
+    """Compare different ML trading strategies for a specific stock"""
+    stock = get_object_or_404(Stock, symbol=symbol.upper())
+
+    # Default date range: Last 2 years
+    end_date = datetime.now().date()
+    start_date = end_date - timedelta(days=730)
+
+    if request.method == 'POST':
+        # Get parameters from form
+        start_date_str = request.POST.get('start_date')
+        end_date_str = request.POST.get('end_date')
+        initial_capital = float(request.POST.get('initial_capital', 10000))
+
+        # Parse dates
+        if start_date_str and end_date_str:
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+
+        # Run strategy comparison
+        comparison_results = compare_ml_models(
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date,
+            initial_capital=initial_capital
+        )
+
+        context = {
+            'stock': stock,
+            'start_date': start_date,
+            'end_date': end_date,
+            'initial_capital': initial_capital,
+            'comparison_results': comparison_results
+        }
+
+        return render(request, 'stock_analyzer/ml_strategy_comparison_results.html', context)
+
+    # Initial form display
+    context = {
+        'stock': stock,
+        'start_date': start_date,
+        'end_date': end_date,
+        'initial_capital': 10000
+    }
+
+    return render(request, 'stock_analyzer/ml_strategy_comparison_form.html', context)
+
+
+@login_required
+def ml_batch_backtest(request):
+    """Run ML backtesting for multiple stocks (from watchlist or portfolio)"""
+    # Get user's watchlists
+    watchlists = None
+    if request.user.is_authenticated:
+        watchlists = WatchList.objects.filter(user=request.user)
+
+    # Get user's portfolios
+    portfolios = None
+    if request.user.is_authenticated:
+        portfolios = Portfolio.objects.filter(user=request.user)
+
+    if request.method == 'POST':
+        # Get parameters from form
+        backtest_type = request.POST.get('backtest_type')
+        watchlist_id = request.POST.get('watchlist_id')
+        portfolio_id = request.POST.get('portfolio_id')
+        start_date_str = request.POST.get('start_date')
+        end_date_str = request.POST.get('end_date')
+        initial_capital = float(request.POST.get('initial_capital', 10000))
+
+        # Parse dates
+        end_date = datetime.now().date()
+        start_date = end_date - timedelta(days=365)
+        if start_date_str and end_date_str:
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+
+        # Get list of symbols to test
+        symbols = []
+        if backtest_type == 'watchlist' and watchlist_id:
+            watchlist = get_object_or_404(WatchList, id=watchlist_id, user=request.user)
+            stocks = watchlist.stocks.all()
+            symbols = [stock.symbol for stock in stocks]
+        elif backtest_type == 'portfolio' and portfolio_id:
+            portfolio = get_object_or_404(Portfolio, id=portfolio_id, user=request.user)
+            positions = portfolio.positions.all()
+            symbols = [position.stock.symbol for position in positions]
+
+        # Run backtests
+        results = {}
+        for symbol in symbols:
+            try:
+                backtester = MLBacktester(
+                    symbol=symbol,
+                    start_date=start_date,
+                    end_date=end_date,
+                    initial_capital=initial_capital
+                )
+                backtest_result = backtester.run_backtest()
+
+                if backtest_result['success']:
+                    # Store simplified results
+                    results[symbol] = {
+                        'return_pct': backtest_result['metrics']['percent_return'],
+                        'num_trades': backtest_result['metrics']['num_trades'],
+                        'win_rate': backtest_result['metrics']['win_rate'],
+                        'sharpe_ratio': backtest_result['metrics']['sharpe_ratio'],
+                        'vs_buy_hold': backtest_result['metrics']['percent_return'] - backtest_result['metrics'][
+                            'buy_hold_return'],
+                        'success': True
+                    }
+                else:
+                    results[symbol] = {
+                        'success': False,
+                        'message': backtest_result.get('message', 'Unknown error')
+                    }
+            except Exception as e:
+                results[symbol] = {
+                    'success': False,
+                    'message': str(e)
+                }
+
+        # Sort results by return percentage
+        sorted_results = {k: v for k, v in sorted(
+            results.items(),
+            key=lambda item: item[1]['return_pct'] if item[1]['success'] and 'return_pct' in item[1] else float('-inf'),
+            reverse=True
+        )}
+
+        context = {
+            'watchlists': watchlists,
+            'portfolios': portfolios,
+            'start_date': start_date,
+            'end_date': end_date,
+            'initial_capital': initial_capital,
+            'results': sorted_results,
+            'symbols_tested': len(symbols),
+            'successful_tests': sum(1 for result in results.values() if result['success'])
+        }
+
+        return render(request, 'stock_analyzer/ml_batch_backtest_results.html', context)
+
+    # Initial form display
+    context = {
+        'watchlists': watchlists,
+        'portfolios': portfolios,
+        'start_date': datetime.now().date() - timedelta(days=365),
+        'end_date': datetime.now().date(),
+        'initial_capital': 10000
+    }
+
+    return render(request, 'stock_analyzer/ml_batch_backtest_form.html', context)
+
+
+def api_ml_backtest(request, symbol):
+    """API endpoint for ML backtesting (for AJAX requests)"""
+    try:
+        # Parse parameters from query string
+        start_date_str = request.GET.get('start_date')
+        end_date_str = request.GET.get('end_date')
+        initial_capital = float(request.GET.get('initial_capital', 10000))
+        confidence_threshold = float(request.GET.get('confidence_threshold', 0.65))
+        stop_loss = float(request.GET.get('stop_loss', 0.05))
+        take_profit = float(request.GET.get('take_profit', 0.10))
+
+        # Parse dates
+        end_date = datetime.now().date()
+        start_date = end_date - timedelta(days=365)
+        if start_date_str and end_date_str:
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+
+        # Run backtest
+        backtester = MLBacktester(
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date,
+            initial_capital=initial_capital,
+            confidence_threshold=confidence_threshold,
+            stop_loss_pct=stop_loss,
+            take_profit_pct=take_profit
+        )
+
+        results = backtester.run_backtest()
+
+        # Only return essential data for API
+        if results['success']:
+            api_response = {
+                'status': 'success',
+                'symbol': symbol,
+                'metrics': {
+                    'initial_capital': results['metrics']['initial_capital'],
+                    'final_capital': results['metrics']['final_capital'],
+                    'total_return': results['metrics']['total_return'],
+                    'percent_return': results['metrics']['percent_return'],
+                    'buy_hold_return': results['metrics']['buy_hold_return'],
+                    'num_trades': results['metrics']['num_trades'],
+                    'win_rate': results['metrics']['win_rate'],
+                    'sharpe_ratio': results['metrics']['sharpe_ratio'],
+                    'max_drawdown': results['metrics']['max_drawdown']
+                },
+                'num_trades': len(results['trades'])
+            }
+        else:
+            api_response = {
+                'status': 'error',
+                'symbol': symbol,
+                'message': results.get('message', 'Unknown error')
+            }
+
+        return JsonResponse(api_response)
+
+    except Exception as e:
+        return JsonResponse({
+            'status': 'error',
+            'symbol': symbol,
+            'message': str(e)
+        })

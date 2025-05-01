@@ -1,0 +1,269 @@
+<!-- stock_analyzer/templates/stock_analyzer/ml_strategy_comparison_results.html -->
+{% extends 'stock_analyzer/base.html' %}
+
+{% block title %}ML Strategievergleich Ergebnisse - {{ stock.symbol }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>ML Strategievergleich: {{ stock.symbol }} - {{ stock.name }}</h2>
+    <div class="d-flex">
+        <a href="{% url 'ml_strategy_comparison' stock.symbol %}" class="btn btn-outline-primary me-2">
+            <i class="bi bi-arrow-repeat"></i> Neuer Vergleich
+        </a>
+        <a href="{% url 'stock_detail' stock.symbol %}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left"></i> Zurück zur Aktie
+        </a>
+    </div>
+</div>
+
+{% if comparison_results %}
+    <!-- Summary Cards -->
+    <div class="row mb-4">
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header bg-primary text-white">
+                    <h5 class="mb-0">Beste Strategie</h5>
+                </div>
+                <div class="card-body">
+                    <h3 class="mb-3">{{ comparison_results.best_strategy }}</h3>
+
+                    <div class="row">
+                        <div class="col-md-6">
+                            <p><strong>Rendite:</strong> {{ comparison_results.results|get_item:comparison_results.best_strategy|get_item:"metrics"|get_item:"percent_return"|floatformat:2 }}%</p>
+                            <p><strong>Sharpe Ratio:</strong> {{ comparison_results.results|get_item:comparison_results.best_strategy|get_item:"metrics"|get_item:"sharpe_ratio"|floatformat:2 }}</p>
+                        </div>
+                        <div class="col-md-6">
+                            <p><strong>Trades:</strong> {{ comparison_results.results|get_item:comparison_results.best_strategy|get_item:"num_trades" }}</p>
+                            <p><strong>Gewinnrate:</strong> {{ comparison_results.results|get_item:comparison_results.best_strategy|get_item:"metrics"|get_item:"win_rate"|floatformat:1 }}%</p>
+                        </div>
+                    </div>
+
+                    <div class="alert alert-info mt-3">
+                        <h6><i class="bi bi-lightbulb"></i> Warum diese Strategie?</h6>
+                        <p>Diese Strategie bietet das beste Verhältnis zwischen Rendite und Risiko (Sharpe Ratio). Sie optimiert die Balance zwischen Handelsfrequenz und Genauigkeit.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">Parametereinstellungen der besten Strategie</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6>Konfiguration</h6>
+                            <p><strong>Konfidenzschwelle:</strong> {{ comparison_results.results|get_item:comparison_results.best_strategy|get_item:"config"|get_item:"confidence_threshold" }}</p>
+                            <p><strong>Stop Loss:</strong> {{ comparison_results.results|get_item:comparison_results.best_strategy|get_item:"config"|get_item:"stop_loss_pct"|mul:100 }}%</p>
+                            <p><strong>Take Profit:</strong> {{ comparison_results.results|get_item:comparison_results.best_strategy|get_item:"config"|get_item:"take_profit_pct"|mul:100 }}%</p>
+                        </div>
+                        <div class="col-md-6">
+                            <h6>Performance</h6>
+                            <p><strong>Gesamtrendite:</strong> {{ comparison_results.results|get_item:comparison_results.best_strategy|get_item:"metrics"|get_item:"percent_return"|floatformat:2 }}%</p>
+                            <p><strong>vs. Buy & Hold:</strong> {{ comparison_results.results|get_item:comparison_results.best_strategy|get_item:"metrics"|get_item:"percent_return"|sub:comparison_results.results|get_item:comparison_results.best_strategy|get_item:"metrics"|get_item:"buy_hold_return"|floatformat:2 }}%</p>
+                            <p><strong>Max Drawdown:</strong> {{ comparison_results.results|get_item:comparison_results.best_strategy|get_item:"metrics"|get_item:"max_drawdown"|floatformat:2 }}%</p>
+                        </div>
+                    </div>
+
+                    <div class="mt-3">
+                        <a href="{% url 'ml_backtest' stock.symbol %}?confidence_threshold={{ comparison_results.results|get_item:comparison_results.best_strategy|get_item:"config"|get_item:"confidence_threshold" }}&stop_loss={{ comparison_results.results|get_item:comparison_results.best_strategy|get_item:"config"|get_item:"stop_loss_pct" }}&take_profit={{ comparison_results.results|get_item:comparison_results.best_strategy|get_item:"config"|get_item:"take_profit_pct" }}" class="btn btn-primary">
+                            <i class="bi bi-check2-square"></i> Mit dieser Strategie detailliert testen
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Comparison Table -->
+    <div class="card">
+        <div class="card-header">
+            <h5 class="mb-0">Strategievergleich</h5>
+        </div>
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-striped table-hover">
+                    <thead>
+                        <tr>
+                            <th>Strategie</th>
+                            <th>Rendite</th>
+                            <th>vs. Buy & Hold</th>
+                            <th>Sharpe Ratio</th>
+                            <th>Max Drawdown</th>
+                            <th>Trades</th>
+                            <th>Gewinnrate</th>
+                            <th>Aktion</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for strategy_name, result in comparison_results.results.items %}
+                            <tr {% if strategy_name == comparison_results.best_strategy %}class="table-success"{% endif %}>
+                                <td>
+                                    <strong>{{ strategy_name }}</strong>
+                                    {% if strategy_name == comparison_results.best_strategy %}
+                                        <span class="badge bg-success ms-2">Beste</span>
+                                    {% endif %}
+                                </td>
+                                <td class="{% if result.metrics.percent_return > 0 %}text-success{% elif result.metrics.percent_return < 0 %}text-danger{% endif %}">
+                                    {{ result.metrics.percent_return|floatformat:2 }}%
+                                </td>
+                                <td class="{% if result.metrics.percent_return > result.metrics.buy_hold_return %}text-success{% elif result.metrics.percent_return < result.metrics.buy_hold_return %}text-danger{% endif %}">
+                                    {{ result.metrics.percent_return|sub:result.metrics.buy_hold_return|floatformat:2 }}%
+                                </td>
+                                <td>{{ result.metrics.sharpe_ratio|floatformat:2 }}</td>
+                                <td>{{ result.metrics.max_drawdown|floatformat:2 }}%</td>
+                                <td>{{ result.metrics.num_trades }}</td>
+                                <td>{{ result.metrics.win_rate|floatformat:1 }}%</td>
+                                <td>
+                                    <a href="{% url 'ml_backtest' stock.symbol %}?confidence_threshold={{ result.config.confidence_threshold }}&stop_loss={{ result.config.stop_loss_pct }}&take_profit={{ result.config.take_profit_pct }}" class="btn btn-sm btn-outline-primary">
+                                        Details
+                                    </a>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Strategy Comparison Chart -->
+    <div class="card mt-4">
+        <div class="card-header">
+            <h5 class="mb-0">Strategievergleich Visualisierung</h5>
+        </div>
+        <div class="card-body">
+            <canvas id="strategyComparisonChart" height="300"></canvas>
+        </div>
+    </div>
+
+    <!-- Explanation Card -->
+    <div class="card mt-4">
+        <div class="card-header">
+            <h5 class="mb-0">Interpretation der Ergebnisse</h5>
+        </div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-6">
+                    <h6>Was bedeuten die Kennzahlen?</h6>
+                    <ul>
+                        <li><strong>Rendite:</strong> Gesamtrendite der Strategie über den Testzeitraum.</li>
+                        <li><strong>vs. Buy & Hold:</strong> Mehrrendite im Vergleich zum einfachen Halten der Aktie.</li>
+                        <li><strong>Sharpe Ratio:</strong> Rendite im Verhältnis zum Risiko. Höhere Werte sind besser.</li>
+                        <li><strong>Max Drawdown:</strong> Größter vorübergehender Verlust vom Höchststand. Kleinere Werte sind besser.</li>
+                        <li><strong>Trades:</strong> Anzahl der durchgeführten Transaktionen.</li>
+                        <li><strong>Gewinnrate:</strong> Prozentsatz der profitablen Trades.</li>
+                    </ul>
+                </div>
+                <div class="col-md-6">
+                    <h6>Empfehlungen zur Strategieauswahl</h6>
+                    <ul>
+                        <li>Die <strong>beste Strategie</strong> wurde basierend auf dem Sharpe Ratio ausgewählt, das Rendite und Risiko ausbalanciert.</li>
+                        <li>Für <strong>risikoaverse Anleger</strong> ist eine Strategie mit niedrigerem Drawdown eventuell besser geeignet, auch wenn die Rendite niedriger ist.</li>
+                        <li>Für <strong>langfristige Anleger</strong> ist oft die Strategie mit der höchsten Gesamtrendite interessant.</li>
+                        <li>Beachten Sie die <strong>Handelsfrequenz</strong> (Anzahl der Trades) - mehr Trades bedeuten höhere Transaktionskosten.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+{% else %}
+    <!-- Error Message -->
+    <div class="alert alert-danger">
+        <h4 class="alert-heading">Strategievergleich fehlgeschlagen!</h4>
+        <p>Es konnten keine Strategieergebnisse ermittelt werden.</p>
+        <hr>
+        <p class="mb-0">
+            Mögliche Gründe:
+            <ul>
+                <li>Nicht genügend historische Daten für {{ stock.symbol }}</li>
+                <li>Das ML-Modell ist nicht trainiert oder verfügbar</li>
+                <li>Fehler in der Backtest-Berechnung</li>
+            </ul>
+        </p>
+        <p>Versuche einen kürzeren Zeitraum oder eine andere Aktie.</p>
+    </div>
+{% endif %}
+{% endblock %}
+
+{% block extra_scripts %}
+{% if comparison_results %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Prepare data for chart
+        const strategyNames = [];
+        const returns = [];
+        const sharpeRatios = [];
+        const maxDrawdowns = [];
+        const winRates = [];
+
+        {% for strategy_name, result in comparison_results.results.items %}
+            strategyNames.push('{{ strategy_name }}');
+            returns.push({{ result.metrics.percent_return|floatformat:2 }});
+            sharpeRatios.push({{ result.metrics.sharpe_ratio|floatformat:2 }});
+            maxDrawdowns.push({{ result.metrics.max_drawdown|floatformat:2 }});
+            winRates.push({{ result.metrics.win_rate|floatformat:1 }});
+        {% endfor %}
+
+        // Create chart
+        const ctx = document.getElementById('strategyComparisonChart').getContext('2d');
+        new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: strategyNames,
+                datasets: [
+                    {
+                        label: 'Rendite (%)',
+                        data: returns,
+                        backgroundColor: 'rgba(75, 192, 192, 0.7)',
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        borderWidth: 1,
+                        yAxisID: 'y'
+                    },
+                    {
+                        label: 'Sharpe Ratio',
+                        data: sharpeRatios,
+                        backgroundColor: 'rgba(54, 162, 235, 0.7)',
+                        borderColor: 'rgba(54, 162, 235, 1)',
+                        borderWidth: 1,
+                        yAxisID: 'y1'
+                    },
+                    {
+                        label: 'Max Drawdown (%)',
+                        data: maxDrawdowns,
+                        backgroundColor: 'rgba(255, 99, 132, 0.7)',
+                        borderColor: 'rgba(255, 99, 132, 1)',
+                        borderWidth: 1,
+                        yAxisID: 'y'
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: {
+                        position: 'left',
+                        title: {
+                            display: true,
+                            text: 'Prozent (%)'
+                        }
+                    },
+                    y1: {
+                        position: 'right',
+                        grid: {
+                            drawOnChartArea: false
+                        },
+                        title: {
+                            display: true,
+                            text: 'Sharpe Ratio'
+                        }
+                    }
+                }
+            }
+        });
+    });
+</script>
+{% endif %}
+{% endblock %}

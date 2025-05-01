@@ -1,0 +1,145 @@
+<!-- stock_analyzer/templates/stock_analyzer/ml_backtest_form.html -->
+{% extends 'stock_analyzer/base.html' %}
+
+{% block title %}ML Backtest für {{ stock.symbol }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>ML Backtest für {{ stock.symbol }} - {{ stock.name }}</h2>
+    <div class="d-flex">
+        <a href="{% url 'ml_strategy_comparison' stock.symbol %}" class="btn btn-outline-info me-2">
+            <i class="bi bi-bar-chart"></i> Strategievergleich
+        </a>
+        <a href="{% url 'stock_detail' stock.symbol %}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left"></i> Zurück
+        </a>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h5 class="card-title">ML Backtest-Parameter</h5>
+    </div>
+    <div class="card-body">
+        <div class="alert alert-info">
+            <h5><i class="bi bi-info-circle"></i> Was ist ML Backtesting?</h5>
+            <p>Der ML Backtest simuliert Handelsentscheidungen basierend auf den Machine Learning Vorhersagen für historische Daten.
+            Dies hilft dabei, die Performance und Genauigkeit der ML-Modelle zu bewerten und optimale Handelsstrategien zu finden.</p>
+            <p>Hinweis: Für ein aussagekräftiges Ergebnis benötigt die Aktie genügend historische Daten und ein trainiertes ML-Modell.</p>
+        </div>
+
+        <form method="post">
+            {% csrf_token %}
+            <div class="row g-3">
+                <!-- Zeitraum -->
+                <div class="col-md-6">
+                    <label for="start_date" class="form-label">Startdatum</label>
+                    <input type="date" class="form-control" id="start_date" name="start_date"
+                           value="{{ start_date|date:'Y-m-d' }}" required>
+                </div>
+                <div class="col-md-6">
+                    <label for="end_date" class="form-label">Enddatum</label>
+                    <input type="date" class="form-control" id="end_date" name="end_date"
+                           value="{{ end_date|date:'Y-m-d' }}" required>
+                </div>
+
+                <!-- Kapital -->
+                <div class="col-md-4">
+                    <label for="initial_capital" class="form-label">Startkapital</label>
+                    <div class="input-group">
+                        <span class="input-group-text">€</span>
+                        <input type="number" class="form-control" id="initial_capital" name="initial_capital"
+                               value="{{ initial_capital }}" min="1000" step="1000" required>
+                    </div>
+                </div>
+
+                <!-- ML Parameter -->
+                <div class="col-md-8">
+                    <label for="confidence_threshold" class="form-label">Konfidenzschwelle</label>
+                    <div class="input-group">
+                        <input type="range" class="form-range" id="confidence_threshold_range"
+                               min="0.5" max="0.9" step="0.05" value="{{ confidence_threshold }}">
+                        <input type="number" class="form-control" id="confidence_threshold" name="confidence_threshold"
+                               value="{{ confidence_threshold }}" min="0.5" max="0.9" step="0.05" required style="max-width: 100px;">
+                    </div>
+                    <div class="form-text">Minimale Konfidenz für Handelssignale (0.5-0.9)</div>
+                </div>
+
+                <!-- Risk Management -->
+                <div class="col-md-6">
+                    <label for="stop_loss" class="form-label">Stop Loss</label>
+                    <div class="input-group">
+                        <input type="number" class="form-control" id="stop_loss" name="stop_loss"
+                               value="{{ stop_loss }}" min="0.01" max="0.2" step="0.01" required>
+                        <span class="input-group-text">%</span>
+                    </div>
+                    <div class="form-text">Prozentsatz für automatischen Verlustbegrenzung (z.B. 0.05 für 5%)</div>
+                </div>
+
+                <div class="col-md-6">
+                    <label for="take_profit" class="form-label">Take Profit</label>
+                    <div class="input-group">
+                        <input type="number" class="form-control" id="take_profit" name="take_profit"
+                               value="{{ take_profit }}" min="0.01" max="0.5" step="0.01" required>
+                        <span class="input-group-text">%</span>
+                    </div>
+                    <div class="form-text">Prozentsatz für automatische Gewinnmitnahme (z.B. 0.1 für 10%)</div>
+                </div>
+
+                <!-- Submit Button -->
+                <div class="col-12 mt-4">
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-play-fill"></i> Backtest starten
+                    </button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Explanation Card -->
+<div class="card mt-4">
+    <div class="card-header">
+        <h5 class="card-title">Über ML Backtesting</h5>
+    </div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-6">
+                <h6 class="mb-3">Was wird getestet?</h6>
+                <p>Der Backtest simuliert folgende Strategie:</p>
+                <ul>
+                    <li><strong>Kaufsignal:</strong> Wenn das ML-Modell eine positive Preisentwicklung mit ausreichender Konfidenz vorhersagt.</li>
+                    <li><strong>Verkaufssignal:</strong> Wenn das ML-Modell eine negative Preisentwicklung vorhersagt oder Stop-Loss/Take-Profit erreicht wird.</li>
+                    <li>Das System verwaltet automatisch Kapital, Positionen und Risikomanagement.</li>
+                </ul>
+            </div>
+            <div class="col-md-6">
+                <h6 class="mb-3">Parameter-Empfehlungen</h6>
+                <ul>
+                    <li><strong>Konfidenzschwelle:</strong> 0.65-0.75 für eine ausgewogene Balance zwischen Handelssignalen und Genauigkeit.</li>
+                    <li><strong>Stop Loss:</strong> 0.03-0.07 (3-7%) für konservative, 0.08-0.15 (8-15%) für aggressive Strategien.</li>
+                    <li><strong>Take Profit:</strong> 0.05-0.15 (5-15%) für konservative, 0.15-0.25 (15-25%) für aggressive Strategien.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Sync the range input with the number input for confidence threshold
+        const rangeInput = document.getElementById('confidence_threshold_range');
+        const numberInput = document.getElementById('confidence_threshold');
+
+        rangeInput.addEventListener('input', function() {
+            numberInput.value = this.value;
+        });
+
+        numberInput.addEventListener('input', function() {
+            rangeInput.value = this.value;
+        });
+    });
+</script>
+{% endblock %}

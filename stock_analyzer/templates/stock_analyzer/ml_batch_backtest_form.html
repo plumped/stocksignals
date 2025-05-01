@@ -1,0 +1,162 @@
+<!-- stock_analyzer/templates/stock_analyzer/ml_batch_backtest_form.html -->
+{% extends 'stock_analyzer/base.html' %}
+
+{% block title %}ML Batch Backtest{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>ML Batch Backtest</h2>
+    <div class="d-flex">
+        <a href="{% url 'ml_dashboard' %}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left"></i> Zurück zum ML Dashboard
+        </a>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h5 class="card-title">Batch Backtest-Parameter</h5>
+    </div>
+    <div class="card-body">
+        <div class="alert alert-info">
+            <h5><i class="bi bi-info-circle"></i> Was ist Batch Backtesting?</h5>
+            <p>Mit dem Batch Backtest können Sie mehrere Aktien gleichzeitig testen, um die Leistung des ML-Modells
+            für verschiedene Wertpapiere zu vergleichen. Dieser Test verwendet die Standardstrategie für alle ausgewählten Aktien.</p>
+            <p><strong>Hinweis:</strong> Die Berechnung kann je nach Anzahl der Aktien mehrere Minuten dauern.</p>
+        </div>
+
+        <form method="post">
+            {% csrf_token %}
+            <div class="row g-3">
+                <!-- Auswahl der Aktien -->
+                <div class="col-12">
+                    <label class="form-label">Aktien auswählen aus:</label>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="backtest_type" id="watchlist_type" value="watchlist" checked>
+                        <label class="form-check-label" for="watchlist_type">
+                            Watchlist
+                        </label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="backtest_type" id="portfolio_type" value="portfolio">
+                        <label class="form-check-label" for="portfolio_type">
+                            Portfolio
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Watchlist Auswahl -->
+                <div class="col-md-6" id="watchlist_selection">
+                    <label for="watchlist_id" class="form-label">Watchlist</label>
+                    <select class="form-select" id="watchlist_id" name="watchlist_id">
+                        {% for watchlist in watchlists %}
+                            <option value="{{ watchlist.id }}">{{ watchlist.name }} ({{ watchlist.stocks.count }} Aktien)</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <!-- Portfolio Auswahl -->
+                <div class="col-md-6" id="portfolio_selection" style="display: none;">
+                    <label for="portfolio_id" class="form-label">Portfolio</label>
+                    <select class="form-select" id="portfolio_id" name="portfolio_id">
+                        {% for portfolio in portfolios %}
+                            <option value="{{ portfolio.id }}">{{ portfolio.name }} ({{ portfolio.positions.count }} Positionen)</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <!-- Zeitraum -->
+                <div class="col-md-6">
+                    <label for="start_date" class="form-label">Startdatum</label>
+                    <input type="date" class="form-control" id="start_date" name="start_date"
+                           value="{{ start_date|date:'Y-m-d' }}" required>
+                </div>
+                <div class="col-md-6">
+                    <label for="end_date" class="form-label">Enddatum</label>
+                    <input type="date" class="form-control" id="end_date" name="end_date"
+                           value="{{ end_date|date:'Y-m-d' }}" required>
+                </div>
+
+                <!-- Kapital -->
+                <div class="col-md-6">
+                    <label for="initial_capital" class="form-label">Startkapital pro Aktie</label>
+                    <div class="input-group">
+                        <span class="input-group-text">€</span>
+                        <input type="number" class="form-control" id="initial_capital" name="initial_capital"
+                               value="{{ initial_capital }}" min="1000" step="1000" required>
+                    </div>
+                </div>
+
+                <!-- Submit Button -->
+                <div class="col-12 mt-4">
+                    <button type="submit" class="btn btn-primary" id="submit_button">
+                        <i class="bi bi-play-fill"></i> Batch Backtest starten
+                    </button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Explanation Card -->
+<div class="card mt-4">
+    <div class="card-header">
+        <h5 class="card-title">ML Batch Backtest Verwendung</h5>
+    </div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-6">
+                <h6 class="mb-3">Vorteile des Batch Backtests</h6>
+                <ul>
+                    <li><strong>Vergleich:</strong> Identifizieren Sie Aktien, für die das ML-Modell besonders gut funktioniert.</li>
+                    <li><strong>Diversifikation:</strong> Entdecken Sie Aktien mit geringer Korrelation für ein diversifiziertes Portfolio.</li>
+                    <li><strong>Zeitersparnis:</strong> Testen Sie mehrere Aktien in einem Durchgang statt einzeln.</li>
+                    <li><strong>Konsistenz:</strong> Vergleichen Sie die Leistung über verschiedene Sektoren und Marktkapitalisierungen.</li>
+                </ul>
+            </div>
+            <div class="col-md-6">
+                <h6 class="mb-3">Best Practices</h6>
+                <ul>
+                    <li><strong>Aktienauswahl:</strong> Testen Sie Aktien aus verschiedenen Sektoren für ein umfassendes Bild.</li>
+                    <li><strong>Zeitraum:</strong> Wählen Sie einen Zeitraum, der verschiedene Marktphasen enthält.</li>
+                    <li><strong>Detailanalyse:</strong> Verwenden Sie die Detailansicht für vielversprechende Aktien.</li>
+                    <li><strong>Validierung:</strong> Führen Sie Strategievergleiche für Top-Performer durch, um optimale Parameter zu finden.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const watchlistType = document.getElementById('watchlist_type');
+        const portfolioType = document.getElementById('portfolio_type');
+        const watchlistSelection = document.getElementById('watchlist_selection');
+        const portfolioSelection = document.getElementById('portfolio_selection');
+        const submitButton = document.getElementById('submit_button');
+
+        // Toggle between watchlist and portfolio selection
+        watchlistType.addEventListener('change', function() {
+            if (this.checked) {
+                watchlistSelection.style.display = 'block';
+                portfolioSelection.style.display = 'none';
+            }
+        });
+
+        portfolioType.addEventListener('change', function() {
+            if (this.checked) {
+                watchlistSelection.style.display = 'none';
+                portfolioSelection.style.display = 'block';
+            }
+        });
+
+        // Add loading state to submit button when form is submitted
+        document.querySelector('form').addEventListener('submit', function() {
+            submitButton.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Berechnung läuft...';
+            submitButton.disabled = true;
+        });
+    });
+</script>
+{% endblock %}

@@ -1,0 +1,146 @@
+<!-- stock_analyzer/templates/stock_analyzer/ml_strategy_comparison_form.html -->
+{% extends 'stock_analyzer/base.html' %}
+
+{% block title %}ML Strategievergleich - {{ stock.symbol }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>ML Strategievergleich: {{ stock.symbol }} - {{ stock.name }}</h2>
+    <div class="d-flex">
+        <a href="{% url 'ml_backtest' stock.symbol %}" class="btn btn-outline-primary me-2">
+            <i class="bi bi-check2-square"></i> Standard Backtest
+        </a>
+        <a href="{% url 'stock_detail' stock.symbol %}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left"></i> Zurück
+        </a>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h5 class="card-title">Strategievergleich-Parameter</h5>
+    </div>
+    <div class="card-body">
+        <div class="alert alert-info">
+            <h5><i class="bi bi-info-circle"></i> Was ist ein Strategievergleich?</h5>
+            <p>Der Strategievergleich testet verschiedene Handelsansätze mit dem ML-Modell, um die optimale Strategie zu finden.
+            Es werden mehrere Konfidenzschwellen und Risikomanagement-Parameter verglichen, um die profitabelste und stabilste Kombination zu identifizieren.</p>
+            <p><strong>Hinweis:</strong> Diese Berechnung kann je nach Datenmenge einige Zeit in Anspruch nehmen.</p>
+        </div>
+
+        <form method="post">
+            {% csrf_token %}
+            <div class="row g-3">
+                <!-- Zeitraum -->
+                <div class="col-md-6">
+                    <label for="start_date" class="form-label">Startdatum</label>
+                    <input type="date" class="form-control" id="start_date" name="start_date"
+                           value="{{ start_date|date:'Y-m-d' }}" required>
+                </div>
+                <div class="col-md-6">
+                    <label for="end_date" class="form-label">Enddatum</label>
+                    <input type="date" class="form-control" id="end_date" name="end_date"
+                           value="{{ end_date|date:'Y-m-d' }}" required>
+                </div>
+
+                <!-- Kapital -->
+                <div class="col-md-6">
+                    <label for="initial_capital" class="form-label">Startkapital</label>
+                    <div class="input-group">
+                        <span class="input-group-text">€</span>
+                        <input type="number" class="form-control" id="initial_capital" name="initial_capital"
+                               value="{{ initial_capital }}" min="1000" step="1000" required>
+                    </div>
+                </div>
+
+                <!-- Zu testende Strategien -->
+                <div class="col-12 mt-4">
+                    <h6>Zu testende Strategien</h6>
+                    <div class="form-text mb-3">Folgende Strategien werden verglichen:</div>
+
+                    <div class="table-responsive">
+                        <table class="table table-striped table-bordered">
+                            <thead>
+                                <tr>
+                                    <th>Strategie</th>
+                                    <th>Konfidenzschwelle</th>
+                                    <th>Stop Loss</th>
+                                    <th>Take Profit</th>
+                                    <th>Beschreibung</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>Konservativ</td>
+                                    <td>0.70</td>
+                                    <td>3%</td>
+                                    <td>7%</td>
+                                    <td>Sicherheitsorientiert mit weniger Trades</td>
+                                </tr>
+                                <tr>
+                                    <td>Ausgewogen</td>
+                                    <td>0.60</td>
+                                    <td>5%</td>
+                                    <td>10%</td>
+                                    <td>Balancierter Ansatz zwischen Risiko und Rendite</td>
+                                </tr>
+                                <tr>
+                                    <td>Aggressiv</td>
+                                    <td>0.50</td>
+                                    <td>10%</td>
+                                    <td>20%</td>
+                                    <td>Renditeorientiert mit höherem Risiko</td>
+                                </tr>
+                                <tr>
+                                    <td>Hochkonfidenz</td>
+                                    <td>0.75</td>
+                                    <td>5%</td>
+                                    <td>10%</td>
+                                    <td>Nur sehr sichere Signale</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Submit Button -->
+                <div class="col-12 mt-4">
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-graph-up"></i> Strategievergleich starten
+                    </button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Explanation Card -->
+<div class="card mt-4">
+    <div class="card-header">
+        <h5 class="card-title">Wahl der optimalen Strategie</h5>
+    </div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-6">
+                <h6 class="mb-3">Wie wird die beste Strategie ermittelt?</h6>
+                <p>Der Vergleich bewertet jede Strategie anhand mehrerer Faktoren:</p>
+                <ul>
+                    <li><strong>Gesamtrendite:</strong> Die prozentuale Rendite über den gesamten Zeitraum.</li>
+                    <li><strong>Sharpe Ratio:</strong> Rendite im Verhältnis zum Risiko (höher = besser).</li>
+                    <li><strong>Maximaler Drawdown:</strong> Größter temporärer Verlust (kleiner = besser).</li>
+                    <li><strong>Gewinnrate:</strong> Prozentsatz profitabler Trades.</li>
+                </ul>
+            </div>
+            <div class="col-md-6">
+                <h6 class="mb-3">Für wen sind welche Strategien geeignet?</h6>
+                <ul>
+                    <li><strong>Konservative Strategie:</strong> Für risikoaverse Anleger, die Kapitalerhalt priorisieren.</li>
+                    <li><strong>Ausgewogene Strategie:</strong> Für die meisten Anleger geeignet, guter Kompromiss.</li>
+                    <li><strong>Aggressive Strategie:</strong> Für risikotolerante Anleger, die Rendite über Sicherheit stellen.</li>
+                    <li><strong>Hochkonfidenz:</strong> Für Anleger, die nur bei sehr deutlichen Signalen handeln möchten.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

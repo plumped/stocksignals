@@ -222,6 +222,64 @@
     </div>
 </div>
 
+<div class="row mb-4">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header bg-info text-white">
+                <h5 class="mb-0">ML Backtesting Tools</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-4">
+                        <div class="card h-100">
+                            <div class="card-body text-center">
+                                <i class="bi bi-robot mb-3" style="font-size: 2rem;"></i>
+                                <h5 class="card-title">Einzelne Aktie testen</h5>
+                                <p class="card-text">Führen Sie einen detaillierten ML Backtest für eine einzelne Aktie durch.</p>
+                                <small class="text-muted">Wählen Sie eine Aktie aus der Liste oder suchen Sie nach einem Symbol</small>
+                            </div>
+                            <div class="card-footer">
+                                <form class="d-flex" action="{% url 'search_stocks' %}" method="get">
+                                    <input class="form-control me-2" type="search" placeholder="Symbol eingeben..." name="q">
+                                    <button class="btn btn-primary" type="submit">Suchen</button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="col-md-4">
+                        <div class="card h-100">
+                            <div class="card-body text-center">
+                                <i class="bi bi-gear-wide-connected mb-3" style="font-size: 2rem;"></i>
+                                <h5 class="card-title">Strategien vergleichen</h5>
+                                <p class="card-text">Vergleichen Sie verschiedene ML Handelsstrategien für eine bestimmte Aktie.</p>
+                                <small class="text-muted">Identifizieren Sie die optimalen Parameter für Ihre ML-Strategie</small>
+                            </div>
+                            <div class="card-footer text-center">
+                                <a href="{% url 'search_stocks' %}?action=strategy_comparison" class="btn btn-primary">Aktie auswählen</a>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="col-md-4">
+                        <div class="card h-100">
+                            <div class="card-body text-center">
+                                <i class="bi bi-collection mb-3" style="font-size: 2rem;"></i>
+                                <h5 class="card-title">Batch Backtest</h5>
+                                <p class="card-text">Testen Sie mehrere Aktien auf einmal für umfassende Analysen.</p>
+                                <small class="text-muted">Verwenden Sie Ihre Watchlists oder Portfolios für einen schnellen Vergleich</small>
+                            </div>
+                            <div class="card-footer text-center">
+                                <a href="{% url 'ml_batch_backtest' %}" class="btn btn-primary">Batch Backtest starten</a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 
 {% endblock %}
 

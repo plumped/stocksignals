@@ -125,6 +125,14 @@
                     <i class="bi bi-graph-up"></i> Jetzt analysieren
                 </button>
 
+                <a href="{% url 'ml_backtest' stock.symbol %}" class="btn btn-outline-info mb-3 w-100">
+                    <i class="bi bi-robot"></i> ML Backtest
+                </a>
+
+                <a href="{% url 'ml_strategy_comparison' stock.symbol %}" class="btn btn-outline-info mb-3 w-100">
+                    <i class="bi bi-gear-wide-connected"></i> ML Strategievergleich
+                </a>
+
                 {% if user.is_authenticated %}
                     {% if in_watchlist %}
                     <button id="remove-watchlist" class="btn btn-outline-danger mb-3 w-100">

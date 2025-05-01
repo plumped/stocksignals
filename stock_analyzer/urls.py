@@ -54,6 +54,11 @@ urlpatterns = [
     path('trade/<int:trade_id>/edit/', views.trade_edit, name='trade_edit'),
     path('trade/<int:trade_id>/delete/', views.trade_delete, name='trade_delete'),
 
+    path('ml/backtest/<str:symbol>/', views.ml_backtest, name='ml_backtest'),
+    path('ml/strategy-comparison/<str:symbol>/', views.ml_strategy_comparison, name='ml_strategy_comparison'),
+    path('ml/batch-backtest/', views.ml_batch_backtest, name='ml_batch_backtest'),
+    path('api/ml/backtest/<str:symbol>/', views.api_ml_backtest, name='api_ml_backtest'),
+
     # Portfolio Performance
     path('portfolio/<int:portfolio_id>/performance/', views.portfolio_performance, name='portfolio_performance'),
 
