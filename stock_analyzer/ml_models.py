@@ -200,11 +200,13 @@ class MLPredictor:
         df_features['hl_ratio'] = df_features['high_price'] / df_features['low_price']
         df_features['co_ratio'] = df_features['close_price'] / df_features['open_price']
         df_features['candle_body'] = df_features['close_price'] - df_features['open_price']
-        df_features['upper_shadow'] = df_features['high_price'] - df_features[['close_price', 'open_price']].max(axis=1)
-        df_features['lower_shadow'] = df_features[['close_price', 'open_price']].min(axis=1) - df_features['low_price']
+        df_features['upper_shadow'] = df_features['high_price'] - np.maximum(df_features['close_price'],
+                                                                             df_features['open_price'])
+        df_features['lower_shadow'] = np.minimum(df_features['close_price'], df_features['open_price']) - df_features[
+            'low_price']
         df_features['is_bullish'] = (df_features['close_price'] > df_features['open_price']).astype(int)
         df_features['is_doji'] = (abs(df_features['candle_body']) < 0.1 * (
-                    df_features['high_price'] - df_features['low_price'])).astype(int)
+                df_features['high_price'] - df_features['low_price'])).astype(int)
 
         # Kurzfristige Renditen - maximal 1-Tages-Lag
         df_features['daily_return'] = df_features['close_price'].pct_change()
@@ -526,7 +528,6 @@ class MLPredictor:
                     df_features[col] = df_features[col].fillna(df_features[col].mean())
 
         # Fallback: Wenn nach all diesen Berechnungen immer noch alle Zeilen NaN-Werte enthalten
-        # Fallback: Wenn nach all diesen Berechnungen immer noch alle Zeilen NaN-Werte enthalten
         original_len = len(df_features)
         df_no_nan = df_features.dropna()
 
@@ -539,7 +540,6 @@ class MLPredictor:
                 min_features.append('daily_return')
 
             # Auch nützliche Features hinzufügen, die berechnet wurden
-            # FIX: Use explicit boolean indexing with isin()
             available_useful = []
             for f in useful_features:
                 if f in df_features.columns:
@@ -550,20 +550,31 @@ class MLPredictor:
             min_features.extend(available_useful)
 
             # Reduziertes DataFrame erstellen
-            df_minimal = df_features[min_features].copy()
+            available_min_features = [col for col in min_features if col in df_features.columns]
+            if not available_min_features:
+                # If no features are available, at least keep the price columns
+                available_min_features = [col for col in ['open_price', 'high_price', 'low_price', 'close_price']
+                                          if col in df_features.columns]
+
+            df_minimal = df_features[available_min_features].copy()
 
             # Verbleibende NaN-Werte auffüllen
             for col in df_minimal.columns:
+                # Check if column contains any NaN values before attempting to fill
                 if df_minimal[col].isna().any():
-                    mean_value = df_minimal[col].mean()
-                    print(f"[DEBUG] mean_value type for {col}: {type(mean_value)} | value: {mean_value}")
-                    # FIX: Use pd.notna() instead of np.isscalar
-                    if pd.notna(mean_value):
-                        df_minimal[col] = df_minimal[col].fillna(mean_value)
+                    # Calculate mean safely
+                    non_nan_values = df_minimal[col].dropna()
+                    if len(non_nan_values) > 0:
+                        mean_value = non_nan_values.mean()
+                        # Use proper check for scalar value
+                        if not pd.isna(mean_value):
+                            df_minimal[col] = df_minimal[col].fillna(mean_value)
+                        else:
+                            df_minimal[col] = df_minimal[col].fillna(0)
                     else:
                         df_minimal[col] = df_minimal[col].fillna(0)
 
-            print(f"DEBUG: Minimal-Feature-Set verwendet: {min_features}")
+            print(f"DEBUG: Minimal-Feature-Set verwendet: {list(df_minimal.columns)}")
             return df_minimal
 
         # Normale Rückgabe: Entferne NaN-Zeilen
