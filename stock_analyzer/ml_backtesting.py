@@ -87,6 +87,8 @@ class MLBacktester:
             self.price_model = joblib.load(price_model_path)
             self.signal_model = joblib.load(signal_model_path)
 
+        print(f"ML-Modelle geladen: {self.model_exists}")
+
     def validate_data(self):
         """
         Validate that there's sufficient data for backtesting.
@@ -216,7 +218,35 @@ class MLBacktester:
             dict: Prediction results or None if prediction fails
         """
         try:
-            # Retrieve the latest price
+            from .ml_models import MLPredictor
+
+            # Instantiate the predictor
+            predictor = MLPredictor(stock_symbol=self.symbol, prediction_days=self.prediction_days)
+
+            # Prepare data
+            X, _, _ = predictor.prepare_data()
+
+            if X is None or X.shape[0] == 0:
+                logger.warning(f"No valid feature data available for prediction on {test_date}")
+                return None
+
+            latest_features = X[-1].reshape(1, -1)
+
+            predicted_return = 0.0
+            confidence = 0.0
+
+            if predictor.price_model is not None:
+                predicted_return = predictor.price_model.predict(latest_features)[0]
+
+            if predictor.signal_model is not None and hasattr(predictor.signal_model, 'predict_proba'):
+                probas = predictor.signal_model.predict_proba(latest_features)
+                confidence = max(probas[0])
+                signal_class = predictor.signal_model.predict(latest_features)[0]
+                recommendation = {1: 'BUY', 0: 'HOLD', -1: 'SELL'}.get(signal_class, 'HOLD')
+            else:
+                recommendation = 'HOLD'
+
+            # Aktueller Preis
             current_price_obj = StockData.objects.filter(
                 stock=self.stock,
                 date__lte=test_date
@@ -226,13 +256,20 @@ class MLBacktester:
                 return None
 
             current_price = float(current_price_obj.close_price)
+            predicted_price = current_price * (1 + predicted_return)
 
-            # Since we're getting a feature mismatch error, let's use the mock prediction
-            # instead of trying to use the pre-trained model directly
-            return self._generate_mock_prediction(test_date, current_price)
+            return {
+                'stock_symbol': self.symbol,
+                'current_price': current_price,
+                'predicted_return': round(predicted_return * 100, 2),
+                'predicted_price': round(predicted_price, 2),
+                'recommendation': recommendation,
+                'confidence': round(confidence, 2),
+                'prediction_days': self.prediction_days
+            }
 
         except Exception as e:
-            logger.error(f"Error generating ML prediction for {self.symbol} on {test_date}: {str(e)}")
+            logger.error(f"Error generating real ML prediction for {self.symbol} on {test_date}: {str(e)}")
             return None
 
     def _generate_mock_prediction(self, test_date, current_price):
@@ -293,6 +330,7 @@ class MLBacktester:
 
             # Calculate predicted price
             predicted_price = current_price * (1 + predicted_return)
+            print(f"MOCK {test_date}: {prediction=} {predicted_return=} {confidence=}")
 
             return {
                 'stock_symbol': self.symbol,
@@ -319,6 +357,8 @@ class MLBacktester:
         price = signal['price']
         prediction = signal['prediction']
         confidence = signal['confidence']
+
+        print(f"{date}: {prediction} @ {confidence:.2f}")
 
         # Only execute trades with sufficient confidence
         if confidence < self.confidence_threshold:

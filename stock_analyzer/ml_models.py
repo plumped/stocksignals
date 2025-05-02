@@ -372,7 +372,7 @@ class MLPredictor:
                 scoring = 'neg_mean_squared_error'
             else:
                 model_path = self.signal_model_path
-                base_model = RandomForestClassifier(random_state=42)
+                base_model = RandomForestClassifier(random_state=42, class_weight='balanced')
                 param_grid = {
                     'n_estimators': [100, 150, 200],
                     'max_depth': [4, 6, 8, None],
@@ -489,6 +489,8 @@ class MLPredictor:
                 'confidence': round(confidence, 2),
                 'prediction_days': self.prediction_days
             }
+            print(
+                f"[MLPredictor] {self.stock_symbol}: pred_return={predicted_return:.4f}, confidence={confidence:.2f}, recommendation={recommendation}")
 
             self._save_prediction(result)
 
