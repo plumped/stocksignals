@@ -17,11 +17,30 @@ from .models import Stock, StockData, MLPrediction, MLModelMetrics
 
 logger = logging.getLogger(__name__)
 
+# stock_analyzer/ml_backtesting.py
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+import matplotlib.pyplot as plt
+import io
+import base64
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, mean_squared_error, \
+    mean_absolute_error
+import logging
+from decimal import Decimal
+import os
+import joblib
+import tempfile
+
+from .models import Stock, StockData, MLPrediction, MLModelMetrics
+
+logger = logging.getLogger(__name__)
+
 
 class MLBacktester:
     """
     Backtesting system for ML models that simulates trading decisions
-    based on ML predictions over historical data.
+    based on ML predictions over historical data with correct walk-forward validation.
     """
 
     def __init__(self, symbol, start_date=None, end_date=None, initial_capital=10000,
@@ -76,18 +95,15 @@ class MLBacktester:
         self._data_validated = False
         self._has_sufficient_data = False
 
-        # Pre-load the ML model if it exists
-        self.model_exists = False
-        model_dir = 'ml_models'
-        price_model_path = os.path.join(model_dir, f'{symbol}_price_model.pkl')
-        signal_model_path = os.path.join(model_dir, f'{symbol}_signal_model.pkl')
+        # Model cache for walk-forward testing
+        self.model_cache = {}
 
-        if os.path.exists(price_model_path) and os.path.exists(signal_model_path):
-            self.model_exists = True
-            self.price_model = joblib.load(price_model_path)
-            self.signal_model = joblib.load(signal_model_path)
+        # Model directory
+        self.model_dir = 'ml_models'
+        if not os.path.exists(self.model_dir):
+            os.makedirs(self.model_dir)
 
-        print(f"ML-Modelle geladen: {self.model_exists}")
+        print(f"ML-Backtester für {symbol} initialisiert: {start_date} bis {end_date}")
 
     def validate_data(self):
         """
@@ -106,16 +122,20 @@ class MLBacktester:
             return False
 
         # Check if the stock has enough historical data for ML modeling
-        all_price_data = StockData.objects.filter(stock=self.stock).count()
-        if all_price_data < 200:
+        # We need enough data BEFORE the start date for training
+        train_cutoff = self.start_date - timedelta(days=180)  # 6 months for training
+        training_data = StockData.objects.filter(
+            stock=self.stock,
+            date__lt=self.start_date,
+            date__gte=train_cutoff
+        ).count()
+
+        if training_data < 120:  # At least ~6 months of training data
             logger.warning(
-                f"Insufficient historical data for {self.symbol}. Need at least 200 data points for ML modeling.")
+                f"Insufficient training data for {self.symbol}. Need at least 120 data points before start date."
+            )
             self._has_sufficient_data = False
             return False
-
-        # Check if the stock has ML model data or can we create it
-        if not self.model_exists:
-            logger.warning(f"No ML model found for {self.symbol}. Will use mock predictions.")
 
         # All validations passed
         self._data_validated = True
@@ -125,6 +145,9 @@ class MLBacktester:
     def run_backtest(self):
         """
         Execute the backtest over the specified time period.
+
+        Uses walk-forward validation: Each time a new month begins,
+        the model is retrained with all data available up to that point.
 
         Returns:
             dict: Results of the backtest including trades, performance metrics
@@ -149,29 +172,41 @@ class MLBacktester:
         for col in ['open_price', 'high_price', 'low_price', 'close_price']:
             df[col] = df[col].astype(float)
 
-        # Create a sliding window to simulate real-time predictions
+        # Create test days
         test_days = df['date'].tolist()
+
+        # Last model training date
+        last_model_date = None
 
         # For each trading day in our backtest period
         for i, test_date in enumerate(test_days):
-            if i % 10 == 0:  # Log progress every 10 days
-                logger.info(f"Processing day {i + 1} of {len(test_days)}")
+            # Model training: Perform model training on the first day of the month or at the beginning
+            current_month = test_date.month
+            current_year = test_date.year
 
-            # Get current price
-            current_row = df[df['date'] == test_date]
+            # Check if a new model should be trained
+            need_new_model = False
 
-            # Skip if no data for this date
-            if current_row.empty:
+            # First model or new month
+            if last_model_date is None or (test_date.month != last_model_date.month):
+                need_new_model = True
+
+            if need_new_model:
+                # Training data: All data up to the previous day
+                prev_day = test_date - timedelta(days=1)
+                self._train_model_for_date(prev_day)
+                last_model_date = test_date
+
+            # Find current row
+            df_until_today = df[df['date'] <= test_date]
+
+            if df_until_today.empty:
                 continue
 
-            current_price = float(current_row['close_price'].iloc[0])
+            current_price = float(df_until_today.iloc[-1]['close_price'])
 
             # Generate prediction for this day
-            # Use either the pre-loaded model or create a mock prediction
-            if self.model_exists:
-                prediction = self._generate_prediction_from_model(test_date)
-            else:
-                prediction = self._generate_mock_prediction(test_date, current_price)
+            prediction = self._generate_prediction_for_date(test_date)
 
             if prediction:
                 # Store the prediction signal
@@ -190,6 +225,10 @@ class MLBacktester:
             # Record daily portfolio value
             self._update_portfolio_value(test_date, current_price)
 
+            # Log progress
+            if i % 20 == 0:  # Log every 20 days
+                logger.info(f"Processing day {i + 1} of {len(test_days)}: {test_date}")
+
         # Calculate performance metrics
         self._calculate_performance_metrics(df)
 
@@ -207,9 +246,172 @@ class MLBacktester:
         # Format and return results
         return self._format_results()
 
-    def _generate_prediction_from_model(self, test_date):
+    def _train_model_for_date(self, cutoff_date):
         """
-        Generate predictions using the actual ML model.
+        Trains a new model with data up to cutoff_date.
+        Stores the model in the cache for later use.
+
+        Args:
+            cutoff_date: Date up to which data is used for training
+        """
+        try:
+            # Create model ID (year-month)
+            model_key = f"{cutoff_date.year}-{cutoff_date.month:02d}"
+
+            # Check if a model for this period already exists
+            if model_key in self.model_cache:
+                logger.info(f"Using existing cached model for {model_key}")
+                return
+
+            logger.info(f"Training new model for {self.symbol} up to {cutoff_date} (Key: {model_key})")
+
+            # Get historical data for training
+            min_training_date = cutoff_date - timedelta(days=365 * 2)  # 2 years of training data
+            training_data = StockData.objects.filter(
+                stock=self.stock,
+                date__range=[min_training_date, cutoff_date]
+            ).order_by('date')
+
+            if training_data.count() < 120:
+                logger.warning(f"Not enough training data for {cutoff_date}. Skipping training.")
+                return
+
+            # Convert to DataFrame
+            df = pd.DataFrame(list(training_data.values()))
+
+            # Convert price columns to float
+            for col in ['open_price', 'high_price', 'low_price', 'close_price']:
+                df[col] = df[col].astype(float)
+
+            # Load SPY data (only up to cutoff_date)
+            try:
+                spy_stock = Stock.objects.get(symbol='SPY')
+                spy_data = StockData.objects.filter(
+                    stock=spy_stock,
+                    date__range=[min_training_date, cutoff_date]
+                ).values('date', 'close_price')
+
+                spy_df = pd.DataFrame(list(spy_data)).rename(columns={'close_price': 'spy_close'})
+
+                if not spy_df.empty:
+                    df = df.merge(spy_df, on='date', how='left')
+                    df['spy_close'] = df['spy_close'].astype(float)
+            except Exception as spy_error:
+                logger.warning(f"Error loading SPY data: {str(spy_error)}")
+
+            # Calculate features
+            from .ml_models import MLPredictor
+            predictor = MLPredictor(stock_symbol=self.symbol, prediction_days=self.prediction_days)
+            df_features = predictor._calculate_features(df)
+
+            # Calculate target variables
+            df_features.loc[:, 'future_return'] = df_features['close_price'].pct_change(self.prediction_days).shift(
+                -self.prediction_days)
+
+            # For signal prediction: Create a categorical target (1=Buy, 0=Hold, -1=Sell) based on future returns
+            df_features.loc[:, 'signal_target'] = 0
+            threshold = 0.02  # 2% movement threshold for signal
+            df_features.loc[df_features['future_return'] > threshold, 'signal_target'] = 1
+            df_features.loc[df_features['future_return'] < -threshold, 'signal_target'] = -1
+
+            # Remove NaN values
+            df_features = df_features.dropna()
+
+            # Features for models (exclude target columns and non-feature columns)
+            feature_columns = [col for col in df_features.columns if col not in
+                               ['id', 'stock_id', 'date', 'future_return', 'signal_target']]
+
+            X = df_features[feature_columns]
+            y_price = df_features['future_return']
+            y_signal = df_features['signal_target']
+
+            # Scale features
+            from sklearn.preprocessing import MinMaxScaler
+            scaler = MinMaxScaler()
+            X_scaled = scaler.fit_transform(X)
+
+            # Train models
+            price_model = None
+            signal_model = None
+
+            # Price Regression Model
+            try:
+                from sklearn.ensemble import GradientBoostingRegressor
+                price_model = GradientBoostingRegressor(
+                    n_estimators=100,
+                    learning_rate=0.1,
+                    max_depth=3,
+                    random_state=42
+                )
+                price_model.fit(X_scaled, y_price)
+                logger.info(f"Price model successfully trained for {model_key}")
+            except Exception as e:
+                logger.error(f"Error training price model: {str(e)}")
+
+            # Signal Classification Model
+            try:
+                from sklearn.ensemble import RandomForestClassifier
+                from sklearn.calibration import CalibratedClassifierCV
+
+                # Check if there are enough examples for each class
+                class_counts = y_signal.value_counts()
+                min_class_samples = class_counts.min()
+
+                if min_class_samples >= 10:
+                    base_model = RandomForestClassifier(
+                        n_estimators=100,
+                        max_depth=5,
+                        random_state=42,
+                        class_weight='balanced'
+                    )
+
+                    # Check if there's enough data for calibration
+                    if len(y_signal) >= 60 and min_class_samples >= 15:
+                        # Calibration for better probability estimates
+                        signal_model = CalibratedClassifierCV(
+                            base_model,
+                            method='sigmoid',
+                            cv=3
+                        )
+                    else:
+                        signal_model = base_model
+
+                    signal_model.fit(X_scaled, y_signal)
+                    logger.info(f"Signal model successfully trained for {model_key}")
+                else:
+                    logger.warning(f"Not enough examples for all classes. Signal model training skipped.")
+            except Exception as e:
+                logger.error(f"Error training signal model: {str(e)}")
+
+            # Store models and scaler in cache
+            self.model_cache[model_key] = {
+                'price_model': price_model,
+                'signal_model': signal_model,
+                'scaler': scaler,
+                'feature_columns': feature_columns
+            }
+
+            # Check cache size and remove oldest models if too large
+            if len(self.model_cache) > 24:  # Max 24 months in cache
+                oldest_keys = sorted(self.model_cache.keys())[:len(self.model_cache) - 24]
+                for key in oldest_keys:
+                    del self.model_cache[key]
+
+            # Optional: Save models to disk
+            model_path = os.path.join(self.model_dir, f'{self.symbol}_{model_key}')
+            try:
+                if price_model is not None and signal_model is not None:
+                    os.makedirs(os.path.dirname(model_path), exist_ok=True)
+                    joblib.dump(self.model_cache[model_key], f"{model_path}_bundle.pkl")
+            except Exception as save_error:
+                logger.error(f"Error saving models: {str(save_error)}")
+
+        except Exception as e:
+            logger.error(f"Error training model for {cutoff_date}: {str(e)}")
+
+    def _generate_prediction_for_date(self, test_date):
+        """
+        Generate a prediction for a specific date using the appropriate model.
 
         Args:
             test_date: The date for which to make predictions
@@ -218,50 +420,130 @@ class MLBacktester:
             dict: Prediction results or None if prediction fails
         """
         try:
+            # Determine model key for this date
+            model_key = f"{test_date.year}-{test_date.month:02d}"
+
+            # If no model for this month, use previous one
+            if model_key not in self.model_cache:
+                # Look for previous month
+                prev_date = test_date - timedelta(days=30)
+                prev_key = f"{prev_date.year}-{prev_date.month:02d}"
+
+                if prev_key not in self.model_cache:
+                    logger.warning(f"No model found for {model_key} or {prev_key}")
+                    return self._generate_mock_prediction(test_date, None)
+
+                model_key = prev_key
+
+            # Load model bundle from cache
+            model_bundle = self.model_cache[model_key]
+            price_model = model_bundle.get('price_model')
+            signal_model = model_bundle.get('signal_model')
+            scaler = model_bundle.get('scaler')
+            feature_columns = model_bundle.get('feature_columns')
+
+            if price_model is None or signal_model is None or scaler is None:
+                logger.warning(f"Missing model components for {model_key}")
+                return self._generate_mock_prediction(test_date, None)
+
+            # Calculate features for this date
+            # 1. Get historical data up to test_date
+            feature_window = 60  # Number of days needed for feature calculation
+            feature_start = test_date - timedelta(days=feature_window)
+
+            historical_data = StockData.objects.filter(
+                stock=self.stock,
+                date__range=[feature_start, test_date]
+            ).order_by('date')
+
+            if historical_data.count() < 30:
+                logger.warning(f"Insufficient data for feature calculation for {test_date}")
+                return self._generate_mock_prediction(test_date, None)
+
+            # 2. Convert to DataFrame
+            df = pd.DataFrame(list(historical_data.values()))
+
+            # 3. Convert price columns to float
+            for col in ['open_price', 'high_price', 'low_price', 'close_price']:
+                df[col] = df[col].astype(float)
+
+            # 4. Load SPY data (for features)
+            try:
+                spy_stock = Stock.objects.get(symbol='SPY')
+                spy_data = StockData.objects.filter(
+                    stock=spy_stock,
+                    date__range=[feature_start, test_date]
+                ).values('date', 'close_price')
+
+                spy_df = pd.DataFrame(list(spy_data)).rename(columns={'close_price': 'spy_close'})
+
+                if not spy_df.empty:
+                    df = df.merge(spy_df, on='date', how='left')
+                    df['spy_close'] = df['spy_close'].astype(float)
+            except Exception as spy_error:
+                logger.warning(f"Error loading SPY data for features: {str(spy_error)}")
+
+            # 5. Calculate features
             from .ml_models import MLPredictor
-
-            # Instantiate the predictor
             predictor = MLPredictor(stock_symbol=self.symbol, prediction_days=self.prediction_days)
+            features_df = predictor._calculate_features(df)
 
-            # Prepare data
-            X, _, _ = predictor.prepare_data()
+            # 6. Remove NaN values
+            features_df = features_df.dropna()
 
-            if X is None or X.shape[0] == 0:
-                logger.warning(f"No valid feature data available for prediction on {test_date}")
-                return None
+            if len(features_df) == 0:
+                logger.warning(f"No valid features for {test_date}")
+                return self._generate_mock_prediction(test_date, None)
 
-            latest_features = X[-1].reshape(1, -1)
+            # 7. Extract latest features
+            latest_features = features_df[feature_columns].iloc[-1:].values
 
+            # 8. Scale features
+            scaled_features = scaler.transform(latest_features)
+
+            # 9. Make predictions
             predicted_return = 0.0
-            confidence = 0.0
+            try:
+                predicted_return = price_model.predict(scaled_features)[0]
+            except Exception as pred_error:
+                logger.error(f"Error in return prediction: {str(pred_error)}")
 
-            if predictor.price_model is not None:
-                predicted_return = predictor.price_model.predict(latest_features)[0]
+            recommendation = 'HOLD'
+            confidence = 0.5
 
-            if predictor.signal_model is not None and hasattr(predictor.signal_model, 'predict_proba'):
-                probas = predictor.signal_model.predict_proba(latest_features)
-                confidence = max(probas[0])
-                signal_class = predictor.signal_model.predict(latest_features)[0]
-                recommendation = {1: 'BUY', 0: 'HOLD', -1: 'SELL'}.get(signal_class, 'HOLD')
-            else:
-                recommendation = 'HOLD'
+            try:
+                if hasattr(signal_model, 'predict_proba'):
+                    probas = signal_model.predict_proba(scaled_features)
+                    confidence = max(probas[0])
+                    signal_class = signal_model.predict(scaled_features)[0]
+                    recommendation = {1: 'BUY', 0: 'HOLD', -1: 'SELL'}.get(signal_class, 'HOLD')
+                else:
+                    signal_class = signal_model.predict(scaled_features)[0]
+                    recommendation = {1: 'BUY', 0: 'HOLD', -1: 'SELL'}.get(signal_class, 'HOLD')
+                    confidence = 0.65  # Default confidence without probabilistic prediction
+            except Exception as signal_error:
+                logger.error(f"Error in signal prediction: {str(signal_error)}")
 
-            # Aktueller Preis
+            # 10. Get current price
             current_price_obj = StockData.objects.filter(
                 stock=self.stock,
-                date__lte=test_date
-            ).order_by('-date').first()
+                date=test_date
+            ).first()
 
             if not current_price_obj:
+                logger.warning(f"No price found for {test_date}")
                 return None
 
             current_price = float(current_price_obj.close_price)
             predicted_price = current_price * (1 + predicted_return)
 
+            # Debug output
+            print(f"{test_date}: {recommendation} @ {confidence:.2f}")
+
             return {
                 'stock_symbol': self.symbol,
                 'current_price': current_price,
-                'predicted_return': round(predicted_return * 100, 2),
+                'predicted_return': round(predicted_return * 100, 2),  # in percent
                 'predicted_price': round(predicted_price, 2),
                 'recommendation': recommendation,
                 'confidence': round(confidence, 2),
@@ -269,8 +551,8 @@ class MLBacktester:
             }
 
         except Exception as e:
-            logger.error(f"Error generating real ML prediction for {self.symbol} on {test_date}: {str(e)}")
-            return None
+            logger.error(f"Error in prediction for {test_date}: {str(e)}")
+            return self._generate_mock_prediction(test_date, None)
 
     def _generate_mock_prediction(self, test_date, current_price):
         """
@@ -305,6 +587,10 @@ class MLBacktester:
             sma_5 = sum(prices[-5:]) / 5
             sma_20 = sum(prices[-20:]) / 20
 
+            # Use date-based random seed for reproducible but varying predictions
+            random_seed = int(test_date.strftime('%Y%m%d'))
+            np.random.seed(random_seed)
+
             # Generate a mock prediction based on SMAs
             if sma_5 > sma_20:
                 prediction = "BUY"
@@ -328,9 +614,16 @@ class MLBacktester:
                     prediction = "BUY"
                     predicted_return *= -1
 
+            # Get the current price if not provided
+            if current_price is None:
+                current_price_obj = historical_data.first()
+                if current_price_obj:
+                    current_price = float(current_price_obj.close_price)
+                else:
+                    return None
+
             # Calculate predicted price
             predicted_price = current_price * (1 + predicted_return)
-            print(f"MOCK {test_date}: {prediction=} {predicted_return=} {confidence=}")
 
             return {
                 'stock_symbol': self.symbol,
@@ -561,13 +854,14 @@ class MLBacktester:
 
         for i in range(1, len(portfolio_values)):
             daily_return = (portfolio_values[i] - portfolio_values[i - 1]) / portfolio_values[i - 1] if \
-            portfolio_values[i - 1] > 0 else 0
+                portfolio_values[i - 1] > 0 else 0
             daily_returns.append(daily_return)
 
         # Annualized metrics
         days = (self.end_date - self.start_date).days
         if days > 0:
-            annualized_return = ((final_value / initial_value) ** (365 / days) - 1) * 100 if initial_value > 0 else 0
+            annualized_return = ((final_value / initial_value) ** (
+                        365 / days) - 1) * 100 if initial_value > 0 else 0
         else:
             annualized_return = 0
 
@@ -592,8 +886,10 @@ class MLBacktester:
             max_drawdown = max(max_drawdown, drawdown)
 
         # Trading metrics
-        winning_trades = [t for t in self.trades if t.get('profit_loss', 0) is not None and t.get('profit_loss', 0) > 0]
-        losing_trades = [t for t in self.trades if t.get('profit_loss', 0) is not None and t.get('profit_loss', 0) <= 0]
+        winning_trades = [t for t in self.trades if
+                          t.get('profit_loss', 0) is not None and t.get('profit_loss', 0) > 0]
+        losing_trades = [t for t in self.trades if
+                         t.get('profit_loss', 0) is not None and t.get('profit_loss', 0) <= 0]
 
         num_trades = len(winning_trades) + len(losing_trades)
         win_rate = len(winning_trades) / num_trades * 100 if num_trades > 0 else 0
@@ -754,7 +1050,8 @@ class MLBacktester:
             plt.figure(figsize=(10, 6))
 
             # Extract profit/loss percentages from trades
-            trade_returns = [t.get('profit_loss_pct', 0) for t in self.trades if t.get('profit_loss_pct') is not None]
+            trade_returns = [t.get('profit_loss_pct', 0) for t in self.trades if
+                             t.get('profit_loss_pct') is not None]
 
             if trade_returns:
                 plt.hist(trade_returns, bins=20)
@@ -772,7 +1069,6 @@ class MLBacktester:
                 plt.close()
 
         return charts
-
 
 def compare_ml_models(symbol, start_date=None, end_date=None, initial_capital=10000):
     """
