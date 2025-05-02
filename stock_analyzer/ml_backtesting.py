@@ -442,6 +442,9 @@ class MLBacktester:
             scaler = model_bundle.get('scaler')
             feature_columns = model_bundle.get('feature_columns')
 
+            # Debug: Feature-Columns
+            print(f"DEBUG: Feature columns expected ({len(feature_columns)}): {feature_columns[:5]} ...")
+
             if price_model is None or signal_model is None or scaler is None:
                 logger.warning(f"Missing model components for {model_key}")
                 return self._generate_mock_prediction(test_date, None)
@@ -455,6 +458,8 @@ class MLBacktester:
                 stock=self.stock,
                 date__range=[feature_start, test_date]
             ).order_by('date')
+
+            print(f"DEBUG: Historical data for {self.symbol}: {historical_data.count()} datapoints")
 
             if historical_data.count() < 30:
                 logger.warning(f"Insufficient data for feature calculation for {test_date}")
@@ -477,35 +482,82 @@ class MLBacktester:
 
                 spy_df = pd.DataFrame(list(spy_data)).rename(columns={'close_price': 'spy_close'})
 
+                # Debug: SPY-Daten
+                print(f"DEBUG: SPY-Daten für {test_date}: {len(spy_df)} Datenpunkte")
+
                 if not spy_df.empty:
                     df = df.merge(spy_df, on='date', how='left')
                     df['spy_close'] = df['spy_close'].astype(float)
+
+                    # Debug: Nach dem Merge
+                    print(f"DEBUG: Nach SPY-Merge: {len(df)} Zeilen")
+                    missing_spy = df['spy_close'].isna().sum()
+                    if missing_spy > 0:
+                        print(f"DEBUG: Fehlende SPY-Werte nach Merge: {missing_spy}")
             except Exception as spy_error:
+                print(f"DEBUG: Fehler beim Laden der SPY-Daten: {str(spy_error)}")
                 logger.warning(f"Error loading SPY data for features: {str(spy_error)}")
 
             # 5. Calculate features
             from .ml_models import MLPredictor
             predictor = MLPredictor(stock_symbol=self.symbol, prediction_days=self.prediction_days)
+
+            # Debug: Vor Feature-Berechnung
+            print(f"DEBUG: Dataframe vor Feature-Berechnung: {len(df)} Zeilen, {len(df.columns)} Spalten")
+
             features_df = predictor._calculate_features(df)
 
+            # Debug: Nach Feature-Berechnung
+            print(f"DEBUG: Features berechnet: {len(features_df)} Zeilen, {len(features_df.columns)} Spalten")
+
+            # Debug: Finde Spalten mit NaN-Werten
+            nan_columns = [col for col in features_df.columns if features_df[col].isna().any()]
+            print(f"DEBUG: Spalten mit NaN-Werten: {len(nan_columns)}")
+            if len(nan_columns) > 0:
+                print(f"DEBUG: Beispiele für NaN-Spalten: {nan_columns[:5]}")
+                print(
+                    f"DEBUG: NaN-Werte in erster Spalte '{nan_columns[0]}': {features_df[nan_columns[0]].isna().sum()}")
+
             # 6. Remove NaN values
+            original_len = len(features_df)
             features_df = features_df.dropna()
+            print(f"DEBUG: Feature-Zeilen nach dropna(): {len(features_df)} (vorher: {original_len})")
 
             if len(features_df) == 0:
+                print("DEBUG: Alle Zeilen haben NaN-Werte!")
                 logger.warning(f"No valid features for {test_date}")
                 return self._generate_mock_prediction(test_date, None)
 
+            # Check if all feature columns are available
+            missing_features = [col for col in feature_columns if col not in features_df.columns]
+            if missing_features:
+                print(f"DEBUG: Fehlende Feature-Columns: {missing_features}")
+                logger.warning(f"Missing feature columns: {missing_features}")
+                return self._generate_mock_prediction(test_date, None)
+
             # 7. Extract latest features
-            latest_features = features_df[feature_columns].iloc[-1:].values
+            try:
+                latest_features = features_df[feature_columns].iloc[-1:].values
+                print(f"DEBUG: Latest features shape: {latest_features.shape}")
+            except Exception as feature_error:
+                print(f"DEBUG: Fehler beim Extrahieren der Features: {str(feature_error)}")
+                return self._generate_mock_prediction(test_date, None)
 
             # 8. Scale features
-            scaled_features = scaler.transform(latest_features)
+            try:
+                scaled_features = scaler.transform(latest_features)
+                print(f"DEBUG: Scaled features shape: {scaled_features.shape}")
+            except Exception as scale_error:
+                print(f"DEBUG: Fehler beim Skalieren der Features: {str(scale_error)}")
+                return self._generate_mock_prediction(test_date, None)
 
             # 9. Make predictions
             predicted_return = 0.0
             try:
                 predicted_return = price_model.predict(scaled_features)[0]
+                print(f"DEBUG: Predicted return: {predicted_return:.4f}")
             except Exception as pred_error:
+                print(f"DEBUG: Fehler bei Return-Prediction: {str(pred_error)}")
                 logger.error(f"Error in return prediction: {str(pred_error)}")
 
             recommendation = 'HOLD'
@@ -514,14 +566,18 @@ class MLBacktester:
             try:
                 if hasattr(signal_model, 'predict_proba'):
                     probas = signal_model.predict_proba(scaled_features)
+                    print(f"DEBUG: Signal probabilities: {probas}")
                     confidence = max(probas[0])
                     signal_class = signal_model.predict(scaled_features)[0]
                     recommendation = {1: 'BUY', 0: 'HOLD', -1: 'SELL'}.get(signal_class, 'HOLD')
+                    print(f"DEBUG: Signal class: {signal_class}, Recommendation: {recommendation}")
                 else:
                     signal_class = signal_model.predict(scaled_features)[0]
                     recommendation = {1: 'BUY', 0: 'HOLD', -1: 'SELL'}.get(signal_class, 'HOLD')
                     confidence = 0.65  # Default confidence without probabilistic prediction
+                    print(f"DEBUG: Signal class (no proba): {signal_class}, Recommendation: {recommendation}")
             except Exception as signal_error:
+                print(f"DEBUG: Fehler bei Signal-Prediction: {str(signal_error)}")
                 logger.error(f"Error in signal prediction: {str(signal_error)}")
 
             # 10. Get current price
@@ -551,6 +607,7 @@ class MLBacktester:
             }
 
         except Exception as e:
+            print(f"DEBUG: Allgemeiner Fehler in prediction für {test_date}: {str(e)}")
             logger.error(f"Error in prediction for {test_date}: {str(e)}")
             return self._generate_mock_prediction(test_date, None)
 

@@ -165,141 +165,404 @@ class MLPredictor:
             return base_window
 
     def _calculate_features(self, df):
-        """Calculate technical indicators and other features for ML models"""
-        df_features = df.copy()
+        """
+        Calculate technical indicators and other features for ML models.
+        Implements adaptive feature calculation based on available data amount.
+        """
+        # Basiskonfiguration für Feature-Sets
+        SHORT_WINDOW = 5
+        MEDIUM_WINDOW = 10
+        STANDARD_WINDOW = 20
+        EXTENDED_WINDOW = 50  # Nur wenn genügend Daten vorhanden
+        LONG_WINDOW = 200  # Nur wenn genügend Daten vorhanden
 
+        # Initialisierung und Datenkonvertierung
+        df_features = df.copy()
+        data_length = len(df_features)
+
+        print(f"DEBUG: Feature-Berechnung mit {data_length} Datenpunkten gestartet")
+
+        # Prüfe, welche Feature-Sets berechnet werden können
+        can_calculate_short = data_length >= SHORT_WINDOW + 5
+        can_calculate_medium = data_length >= MEDIUM_WINDOW + 5
+        can_calculate_standard = data_length >= STANDARD_WINDOW + 5
+        can_calculate_extended = data_length >= EXTENDED_WINDOW + 5
+        can_calculate_long = data_length >= LONG_WINDOW + 5
+
+        # Spaltentypen konvertieren
         for col in ['open_price', 'high_price', 'low_price', 'close_price', 'volume']:
             if col in df_features.columns:
                 df_features[col] = pd.to_numeric(df_features[col], errors='coerce')
 
-        df_features['daily_return'] = df_features['close_price'].pct_change()
-        df_features['weekly_return'] = df_features['close_price'].pct_change(5)
-        df_features['monthly_return'] = df_features['close_price'].pct_change(20)
-
+        # 1. BASIS-FEATURES - immer berechnen
+        # ------------------------------
+        # Preis- und Kerzen-Features
         df_features['hl_ratio'] = df_features['high_price'] / df_features['low_price']
         df_features['co_ratio'] = df_features['close_price'] / df_features['open_price']
-
-        for window in [5, 10, 20, 50, 200]:
-            df_features[f'ma_{window}'] = df_features['close_price'].rolling(window=window).mean()
-            df_features[f'ma_{window}_dist'] = (df_features['close_price'] - df_features[f'ma_{window}']) / df_features[
-                f'ma_{window}']
-
-        df_features['ma_5_10_cross'] = df_features['ma_5'] - df_features['ma_10']
-        df_features['ma_10_50_cross'] = df_features['ma_10'] - df_features['ma_50']
-        df_features['ma_50_200_cross'] = df_features['ma_50'] - df_features['ma_200']
-
-        df_features['volatility_5'] = df_features['daily_return'].rolling(window=5).std()
-        df_features['volatility_20'] = df_features['daily_return'].rolling(window=20).std()
-
-        df_features['volume_ma_5'] = df_features['volume'].rolling(window=5).mean()
-        df_features['volume_ma_20'] = df_features['volume'].rolling(window=20).mean()
-        df_features['volume_ratio'] = df_features['volume'] / df_features['volume_ma_20']
-
-        delta = df_features['close_price'].diff()
-        up = delta.clip(lower=0)
-        down = -delta.clip(upper=0)
-        ema_up = up.ewm(com=13, adjust=False).mean()
-        ema_down = down.ewm(com=13, adjust=False).mean()
-        rs = ema_up / ema_down
-        df_features['rsi'] = 100 - (100 / (1 + rs))
-
         df_features['candle_body'] = df_features['close_price'] - df_features['open_price']
         df_features['upper_shadow'] = df_features['high_price'] - df_features[['close_price', 'open_price']].max(axis=1)
         df_features['lower_shadow'] = df_features[['close_price', 'open_price']].min(axis=1) - df_features['low_price']
-
         df_features['is_bullish'] = (df_features['close_price'] > df_features['open_price']).astype(int)
-
-        df_features['ema_12'] = df_features['close_price'].ewm(span=12, adjust=False).mean()
-        df_features['ema_26'] = df_features['close_price'].ewm(span=26, adjust=False).mean()
-        df_features['macd'] = df_features['ema_12'] - df_features['ema_26']
-        df_features['macd_signal'] = df_features['macd'].ewm(span=9, adjust=False).mean()
-        df_features['macd_hist'] = df_features['macd'] - df_features['macd_signal']
-
-        for lag in [1, 2, 3]:
-            df_features[f'close_lag_{lag}'] = df_features['close_price'].shift(lag)
-            df_features[f'rsi_lag_{lag}'] = df_features['rsi'].shift(lag)
-            df_features[f'macd_lag_{lag}'] = df_features['macd'].shift(lag)
-
-        df_features['volatility_category'] = pd.qcut(df_features['volatility_20'], q=3, labels=[0, 1, 2])
-        df_features['trend_strength_10'] = df_features['close_price'].diff(10)
-
-        df_features['bullish_signals'] = (
-                (df_features['macd'] > df_features['macd_signal']).astype(int) +
-                (df_features['rsi'] < 30).astype(int) +
-                (df_features['close_price'] > df_features['ma_20']).astype(int)
-        )
-
-        window = 30
-        if 'spy_close' in df_features.columns:
-            df_features['spy_return_30d'] = df_features['spy_close'].pct_change().rolling(window).sum()
-            df_features['stock_return_30d'] = df_features['close_price'].pct_change().rolling(window).sum()
-            df_features['rolling_alpha'] = np.nan
-            df_features['rolling_beta'] = np.nan
-
-            for i in range(window, len(df_features)):
-                x = df_features['spy_return_30d'].iloc[i - window + 1:i + 1].values.reshape(-1, 1)
-                y = df_features['stock_return_30d'].iloc[i - window + 1:i + 1].values
-                if not np.any(np.isnan(x)) and not np.any(np.isnan(y)):
-                    model = LinearRegression()
-                    model.fit(x, y)
-                    df_features.loc[df_features.index[i], 'rolling_alpha'] = model.intercept_
-                    df_features.loc[df_features.index[i], 'rolling_beta'] = model.coef_[0]
-        else:
-            df_features['spy_return_30d'] = np.nan
-            df_features['stock_return_30d'] = np.nan
-            df_features['rolling_alpha'] = np.nan
-            df_features['rolling_beta'] = np.nan
-
-        df_features['bb_middle'] = df_features['close_price'].rolling(window=20).mean()
-        std = df_features['close_price'].rolling(window=20).std()
-        df_features['bb_upper'] = df_features['bb_middle'] + 2 * std
-        df_features['bb_lower'] = df_features['bb_middle'] - 2 * std
-        df_features['bb_width'] = (df_features['bb_upper'] - df_features['bb_lower']) / df_features['bb_middle']
-
-        df_features['bb_position'] = np.where(
-            (df_features['bb_upper'] - df_features['bb_lower']) > 0,
-            (df_features['close_price'] - df_features['bb_lower']) / (
-                        df_features['bb_upper'] - df_features['bb_lower']),
-            0.5
-        )
-
-        for window in [5, 10, 20]:
-            df_features[f'momentum_{window}'] = df_features['close_price'] / df_features['close_price'].shift(
-                window) - 1
-
-        df_features['zscore_20'] = (df_features['close_price'] - df_features['ma_20']) / df_features[
-            'close_price'].rolling(20).std()
-        df_features['sma_20_50_cross'] = np.sign(df_features['ma_20'] - df_features['ma_50'])
-        df_features['sma_cross_change'] = df_features['sma_20_50_cross'].diff().fillna(0)
-        df_features['sma_bullish_cross'] = (df_features['sma_cross_change'] > 0).astype(int)
-        df_features['sma_bearish_cross'] = (df_features['sma_cross_change'] < 0).astype(int)
-
-        df_features['ema_12_26_cross'] = np.sign(df_features['ema_12'] - df_features['ema_26'])
-        df_features['ema_cross_change'] = df_features['ema_12_26_cross'].diff().fillna(0)
-        df_features['ema_bullish_cross'] = (df_features['ema_cross_change'] > 0).astype(int)
-        df_features['ema_bearish_cross'] = (df_features['ema_cross_change'] < 0).astype(int)
-
-        if 'spy_close' in df_features.columns:
-            df_features['spy_return_10d'] = df_features['spy_close'].pct_change(10)
-            df_features['rel_strength_10d'] = df_features['close_price'].pct_change(10) - df_features['spy_return_10d']
-            df_features['corr_with_spy_20d'] = df_features['close_price'].rolling(20).corr(df_features['spy_close'])
-
         df_features['is_doji'] = (abs(df_features['candle_body']) < 0.1 * (
                     df_features['high_price'] - df_features['low_price'])).astype(int)
-        df_features['is_bullish_engulfing'] = ((df_features['is_bullish'] == 1) & (
-                    df_features['candle_body'] > df_features['candle_body'].shift())).astype(int)
 
-        df_features['price_velocity_3'] = df_features['close_price'].diff(3) / 3
+        # Kurzfristige Renditen - maximal 1-Tages-Lag
+        df_features['daily_return'] = df_features['close_price'].pct_change()
 
-        vol_thresh = df_features['volatility_20'].quantile(0.75)
-        df_features['high_volatility_flag'] = (df_features['volatility_20'] > vol_thresh).astype(int)
+        # 2. KURZFRISTIGE FEATURES - mindestens 10 Datenpunkte
+        # ------------------------------
+        if can_calculate_short:
+            df_features[f'ma_{SHORT_WINDOW}'] = df_features['close_price'].rolling(window=SHORT_WINDOW,
+                                                                                   min_periods=3).mean()
+            if 'ma_5' in df_features.columns:  # Sicherheitsprüfung
+                df_features[f'ma_{SHORT_WINDOW}_dist'] = (df_features['close_price'] - df_features[
+                    f'ma_{SHORT_WINDOW}']) / df_features[f'ma_{SHORT_WINDOW}'].replace(0, np.nan)
 
-        df_features['return_acceleration'] = df_features['daily_return'].diff()
+            df_features['volatility_5'] = df_features['daily_return'].rolling(window=SHORT_WINDOW, min_periods=3).std()
+            df_features['volume_ma_5'] = df_features['volume'].rolling(window=SHORT_WINDOW, min_periods=3).mean()
 
+            # EMA für MACD (kurze Komponente)
+            df_features['ema_12'] = df_features['close_price'].ewm(span=12, min_periods=5, adjust=False).mean()
+
+            # Kurzfristige Momentum-Features
+            df_features[f'momentum_{SHORT_WINDOW}'] = df_features['close_price'] / df_features['close_price'].shift(
+                SHORT_WINDOW).replace(0, np.nan) - 1
+
+            # RSI mit kleinerem Fenster
+            delta = df_features['close_price'].diff()
+            up = delta.clip(lower=0)
+            down = -delta.clip(upper=0)
+            ema_up = up.ewm(com=SHORT_WINDOW, min_periods=3, adjust=False).mean()
+            ema_down = down.ewm(com=SHORT_WINDOW, min_periods=3, adjust=False).mean()
+            rs = ema_up / (ema_down.replace(0, np.nan))  # Vermeidung von Division durch Null
+            df_features['rsi'] = 100 - (100 / (1 + rs))
+
+            # Close-Lags für kurzfristige Vergleiche
+            df_features['close_lag_1'] = df_features['close_price'].shift(1)
+
+            # Preis-Geschwindigkeit über kurze Perioden
+            df_features['price_velocity_3'] = df_features['close_price'].diff(min(3, data_length - 1)) / min(3,
+                                                                                                             data_length - 1)
+
+        # 3. MITTELFRISTIGE FEATURES - mindestens 15 Datenpunkte
+        # ------------------------------
+        if can_calculate_medium:
+            df_features[f'ma_{MEDIUM_WINDOW}'] = df_features['close_price'].rolling(window=MEDIUM_WINDOW,
+                                                                                    min_periods=5).mean()
+            if 'ma_10' in df_features.columns:  # Sicherheitsprüfung
+                df_features[f'ma_{MEDIUM_WINDOW}_dist'] = (df_features['close_price'] - df_features[
+                    f'ma_{MEDIUM_WINDOW}']) / df_features[f'ma_{MEDIUM_WINDOW}'].replace(0, np.nan)
+
+            # Mittelfristige Renditen
+            df_features['weekly_return'] = df_features['close_price'].pct_change(min(5, data_length - 1))
+
+            # Mittelfristige Momentum-Features
+            df_features[f'momentum_{MEDIUM_WINDOW}'] = df_features['close_price'] / df_features['close_price'].shift(
+                MEDIUM_WINDOW).replace(0, np.nan) - 1
+
+            # MACD-Komponenten (wenn möglich)
+            if 'ema_12' in df_features.columns:
+                df_features['ema_26'] = df_features['close_price'].ewm(span=26, min_periods=10, adjust=False).mean()
+                df_features['macd'] = df_features['ema_12'] - df_features['ema_26']
+                df_features['macd_signal'] = df_features['macd'].ewm(span=9, min_periods=4, adjust=False).mean()
+                df_features['macd_hist'] = df_features['macd'] - df_features['macd_signal']
+
+            # SMA-Kreuzungen (falls möglich)
+            if 'ma_5' in df_features.columns and 'ma_10' in df_features.columns:
+                df_features['ma_5_10_cross'] = df_features['ma_5'] - df_features['ma_10']
+
+            # Weitere Close-Lags
+            df_features['close_lag_2'] = df_features['close_price'].shift(2)
+            if 'rsi' in df_features.columns:
+                df_features['rsi_lag_1'] = df_features['rsi'].shift(1)
+
+            # Mittelfristige Trendstärke
+            df_features['trend_strength_10'] = df_features['close_price'].diff(min(MEDIUM_WINDOW, data_length - 1))
+
+            # Beschleunigung der Rendite
+            if 'daily_return' in df_features.columns:
+                df_features['return_acceleration'] = df_features['daily_return'].diff()
+
+        # 4. STANDARD-FEATURES - mindestens 25 Datenpunkte
+        # ------------------------------
+        if can_calculate_standard:
+            df_features[f'ma_{STANDARD_WINDOW}'] = df_features['close_price'].rolling(window=STANDARD_WINDOW,
+                                                                                      min_periods=10).mean()
+            if 'ma_20' in df_features.columns:  # Sicherheitsprüfung
+                df_features[f'ma_{STANDARD_WINDOW}_dist'] = (df_features['close_price'] - df_features[
+                    f'ma_{STANDARD_WINDOW}']) / df_features[f'ma_{STANDARD_WINDOW}'].replace(0, np.nan)
+
+            # Längerfristige Renditen
+            df_features['monthly_return'] = df_features['close_price'].pct_change(min(STANDARD_WINDOW, data_length - 1))
+
+            # Volatilitätsfeatures
+            df_features['volatility_20'] = df_features['daily_return'].rolling(window=STANDARD_WINDOW,
+                                                                               min_periods=10).std()
+
+            # Volume-Features
+            df_features['volume_ma_20'] = df_features['volume'].rolling(window=STANDARD_WINDOW, min_periods=10).mean()
+            if 'volume_ma_20' in df_features.columns and df_features['volume_ma_20'].max() > 0:
+                df_features['volume_ratio'] = df_features['volume'] / df_features['volume_ma_20'].replace(0, np.nan)
+
+            # Bollinger Bands
+            if 'ma_20' in df_features.columns:
+                std = df_features['close_price'].rolling(window=STANDARD_WINDOW, min_periods=10).std()
+                df_features['bb_middle'] = df_features['ma_20']
+                df_features['bb_upper'] = df_features['bb_middle'] + 2 * std
+                df_features['bb_lower'] = df_features['bb_middle'] - 2 * std
+
+                # Vermeidung von Division durch Null
+                bb_width_divisor = df_features['bb_middle'].replace(0, np.nan)
+                df_features['bb_width'] = (df_features['bb_upper'] - df_features['bb_lower']) / bb_width_divisor
+
+                # BB Position nur berechnen, wenn nicht durch Null geteilt wird
+                bb_denominator = (df_features['bb_upper'] - df_features['bb_lower'])
+                bb_position_valid = bb_denominator > 0
+                df_features['bb_position'] = np.nan  # Default-Wert
+                if bb_position_valid.any():
+                    df_features.loc[bb_position_valid, 'bb_position'] = (
+                            (df_features.loc[bb_position_valid, 'close_price'] -
+                             df_features.loc[bb_position_valid, 'bb_lower']) /
+                            bb_denominator[bb_position_valid]
+                    )
+                # Fallback für ungültige Positionen
+                df_features['bb_position'] = df_features['bb_position'].fillna(0.5)
+
+            # Z-Score
+            if 'ma_20' in df_features.columns:
+                std20 = df_features['close_price'].rolling(window=STANDARD_WINDOW, min_periods=10).std()
+                std20_valid = std20 > 0
+                df_features['zscore_20'] = np.nan
+                if std20_valid.any():
+                    df_features.loc[std20_valid, 'zscore_20'] = (
+                            (df_features.loc[std20_valid, 'close_price'] -
+                             df_features.loc[std20_valid, 'ma_20']) /
+                            std20[std20_valid]
+                    )
+
+            # Standardfeatures für längerfristige Momentum-Features
+            df_features[f'momentum_{STANDARD_WINDOW}'] = df_features['close_price'] / df_features['close_price'].shift(
+                STANDARD_WINDOW).replace(0, np.nan) - 1
+
+            # Bullish Signal Count basierend auf verfügbaren Indikatoren
+            bullish_indicators = []
+            if 'macd' in df_features.columns and 'macd_signal' in df_features.columns:
+                bullish_indicators.append((df_features['macd'] > df_features['macd_signal']).astype(int))
+            if 'rsi' in df_features.columns:
+                bullish_indicators.append((df_features['rsi'] < 30).astype(int))
+            if 'ma_20' in df_features.columns:
+                bullish_indicators.append((df_features['close_price'] > df_features['ma_20']).astype(int))
+
+            if bullish_indicators:
+                df_features['bullish_signals'] = sum(bullish_indicators)
+
+            # Close Lag 3 für längere Trends
+            df_features['close_lag_3'] = df_features['close_price'].shift(3)
+
+            # MACD Lags für Trendveränderungen
+            if 'macd' in df_features.columns:
+                df_features['macd_lag_1'] = df_features['macd'].shift(1)
+
+            # SMA-Kreuzungen und Veränderungen
+            if 'ma_20' in df_features.columns and can_calculate_medium and 'ma_10' in df_features.columns:
+                df_features['ma_10_20_cross'] = df_features['ma_10'] - df_features['ma_20']
+
+            # Bullish Engulfing Muster
+            if 'is_bullish' in df_features.columns and 'candle_body' in df_features.columns:
+                df_features['is_bullish_engulfing'] = ((df_features['is_bullish'] == 1) &
+                                                       (df_features['candle_body'] > df_features[
+                                                           'candle_body'].shift())).astype(int)
+
+        # 5. SPY-KORRELATIONS-FEATURES - nur wenn SPY Daten vorhanden sind
+        # ------------------------------
+        if 'spy_close' in df_features.columns:
+            # Grundlegende SPY-Renditen berechnen
+            df_features['spy_daily_return'] = df_features['spy_close'].pct_change()
+
+            # Kurzfristige relative Stärke
+            if 'daily_return' in df_features.columns:
+                df_features['rel_strength_daily'] = df_features['daily_return'] - df_features['spy_daily_return']
+
+            # Medium-Term SPY Features
+            if can_calculate_medium:
+                df_features['spy_return_10d'] = df_features['spy_close'].pct_change(MEDIUM_WINDOW)
+                if 'weekly_return' in df_features.columns:
+                    df_features['rel_strength_10d'] = df_features['weekly_return'] - df_features['spy_return_10d']
+
+            # Standard SPY Features
+            if can_calculate_standard:
+                # 20-Tage Korrelation - kritisch, dass genügend Datenpunkte vorhanden sind
+                min_corr_periods = min(15, data_length - 5)
+                if min_corr_periods >= 10:  # Mindestens 10 Punkte für sinnvolle Korrelation
+                    df_features['corr_with_spy_20d'] = df_features['close_price'].rolling(STANDARD_WINDOW,
+                                                                                          min_periods=min_corr_periods).corr(
+                        df_features['spy_close'])
+
+                # SPY und Stock Rolling Return
+                min_periods_spy = min(15, data_length - 5)
+                if can_calculate_standard and min_periods_spy >= 10:
+                    spy_ret_window = min(30, data_length - 5)
+                    df_features['spy_return_30d'] = df_features['spy_close'].pct_change().rolling(window=spy_ret_window,
+                                                                                                  min_periods=min_periods_spy).sum()
+                    df_features['stock_return_30d'] = df_features['close_price'].pct_change().rolling(
+                        window=spy_ret_window, min_periods=min_periods_spy).sum()
+
+                    # Alpha und Beta nur berechnen, wenn genügend nicht-NaN Werte vorhanden sind
+                    df_features['rolling_alpha'] = np.nan
+                    df_features['rolling_beta'] = np.nan
+
+                    valid_indices = ~(df_features['spy_return_30d'].isna() | df_features['stock_return_30d'].isna())
+
+                    # Nur Alpha/Beta für einzelne Datenpunkte berechnen, wenn genug Vergangenheitsdaten verfügbar sind
+                    if valid_indices.sum() >= spy_ret_window:
+                        window = min(30, valid_indices.sum() - 5)
+
+                        for i in range(window, len(df_features)):
+                            # Prüfe, ob genügend Daten für eine Regression vorhanden sind
+                            valid_window = ~(df_features['spy_return_30d'].iloc[i - window:i].isna() |
+                                             df_features['stock_return_30d'].iloc[i - window:i].isna())
+
+                            if valid_window.sum() >= 10:  # Mindestens 10 Punkte für Regression
+                                x = df_features['spy_return_30d'].iloc[i - window:i][valid_window].values.reshape(-1, 1)
+                                y = df_features['stock_return_30d'].iloc[i - window:i][valid_window].values
+
+                                try:
+                                    from sklearn.linear_model import LinearRegression
+                                    model = LinearRegression()
+                                    model.fit(x, y)
+                                    df_features.loc[df_features.index[i], 'rolling_alpha'] = model.intercept_
+                                    df_features.loc[df_features.index[i], 'rolling_beta'] = model.coef_[0]
+                                except:
+                                    # Fallback bei Fehlern in der Regression
+                                    pass
+
+        # 6. ERWEITERTE FEATURES - nur wenn genügend Daten vorhanden sind (50+ Datenpunkte)
+        # ------------------------------
+        if can_calculate_extended:
+            df_features[f'ma_{EXTENDED_WINDOW}'] = df_features['close_price'].rolling(window=EXTENDED_WINDOW,
+                                                                                      min_periods=30).mean()
+
+            # SMA Kreuzungen mit Extended Windows
+            if 'ma_20' in df_features.columns and 'ma_50' in df_features.columns:
+                df_features['ma_20_50_cross'] = np.sign(df_features['ma_20'] - df_features['ma_50'])
+                df_features['sma_cross_change'] = df_features['ma_20_50_cross'].diff().fillna(0)
+                df_features['sma_bullish_cross'] = (df_features['sma_cross_change'] > 0).astype(int)
+                df_features['sma_bearish_cross'] = (df_features['sma_cross_change'] < 0).astype(int)
+
+            # EMA Kreuzungen
+            if 'ema_12' in df_features.columns and 'ema_26' in df_features.columns:
+                df_features['ema_12_26_cross'] = np.sign(df_features['ema_12'] - df_features['ema_26'])
+                df_features['ema_cross_change'] = df_features['ema_12_26_cross'].diff().fillna(0)
+                df_features['ema_bullish_cross'] = (df_features['ema_cross_change'] > 0).astype(int)
+                df_features['ema_bearish_cross'] = (df_features['ema_cross_change'] < 0).astype(int)
+
+        # 7. LANGFRISTIGE FEATURES - nur wenn genügend Daten vorhanden sind (200+ Datenpunkte)
+        # ------------------------------
+        if can_calculate_long:
+            df_features[f'ma_{LONG_WINDOW}'] = df_features['close_price'].rolling(window=LONG_WINDOW,
+                                                                                  min_periods=120).mean()
+
+            # SMA Kreuzungen mit Long Windows
+            if 'ma_50' in df_features.columns and 'ma_200' in df_features.columns:
+                df_features['ma_50_200_cross'] = df_features['ma_50'] - df_features['ma_200']
+
+        # Volatilitäts-Kategorisierung (nur wenn vorhanden)
+        if 'volatility_20' in df_features.columns and df_features['volatility_20'].count() >= 10:
+            try:
+                # Quantile-Berechnung könnte fehlschlagen bei zu wenigen Werten
+                df_features['volatility_category'] = pd.qcut(
+                    df_features['volatility_20'].rank(method='first'),  # Ranking für gleiche Werte
+                    q=3,
+                    labels=[0, 1, 2]
+                ).astype(int)
+            except:
+                # Fallback: Manuelle Kategorisierung
+                if df_features['volatility_20'].max() > 0:
+                    thresholds = [
+                        df_features['volatility_20'].quantile(0.33, interpolation='nearest'),
+                        df_features['volatility_20'].quantile(0.67, interpolation='nearest')
+                    ]
+
+                    df_features['volatility_category'] = 1  # Mittlere Kategorie als Default
+                    df_features.loc[df_features['volatility_20'] <= thresholds[0], 'volatility_category'] = 0
+                    df_features.loc[df_features['volatility_20'] > thresholds[1], 'volatility_category'] = 2
+
+        # Bei High Volatility Feature, ein einfacheres Fallback verwenden
+        if 'volatility_20' in df_features.columns and df_features['volatility_20'].count() >= 5:
+            # Verwende Median statt Quantil bei wenigen Datenpunkten
+            vol_thresh = df_features['volatility_20'].median() * 1.5
+            df_features['high_volatility_flag'] = (df_features['volatility_20'] > vol_thresh).astype(int)
+
+        # Bereinigen der Daten
         df_features = df_features.replace([np.inf, -np.inf], np.nan)
-        df_features = df_features.dropna()
 
-        return df_features
+        # Bestimme wichtige Feature-Spalten die komplett sein müssen (keine NaN erlaubt)
+        critical_features = ['close_price', 'open_price', 'high_price', 'low_price']
+
+        # Wichtige Features, die berechnet werden sollten, aber NaN haben dürfen
+        useful_features = []
+
+        if can_calculate_short:
+            useful_features.extend(['daily_return', 'ma_5', 'ema_12', 'rsi'])
+
+        if can_calculate_medium:
+            useful_features.extend(['weekly_return', 'ma_10', 'macd', 'macd_signal'])
+
+        if can_calculate_standard:
+            useful_features.extend(['monthly_return', 'ma_20', 'bb_middle', 'bb_upper', 'bb_lower'])
+
+        # Prüfe, ob kritische Features NaN-Werte enthalten
+        missing_critical = [col for col in critical_features if
+                            col in df_features.columns and df_features[col].isna().any()]
+        if missing_critical:
+            print(f"DEBUG: Kritische Features mit NaN: {missing_critical}")
+
+        # NaN-Werte in nicht-kritischen Features mit Durchschnittswerten füllen
+        for col in df_features.columns:
+            if col not in critical_features and df_features[col].isna().any():
+                # Für Features mit signifikanten NaN-Werten, aber ausreichend Nicht-NaN-Werten
+                non_nan_count = df_features[col].count()
+                if non_nan_count >= 5 and non_nan_count >= len(df_features) * 0.3:
+                    df_features[col] = df_features[col].fillna(df_features[col].mean())
+
+        # Fallback: Wenn nach all diesen Berechnungen immer noch alle Zeilen NaN-Werte enthalten
+        original_len = len(df_features)
+        df_no_nan = df_features.dropna()
+
+        if len(df_no_nan) == 0:
+            print(f"DEBUG: Nach allen Berechnungen immer noch keine vollständigen Zeilen! Führe Minimal-Fallback aus.")
+
+            # Nur minimale kritische Features behalten
+            min_features = critical_features.copy()
+            if 'daily_return' in df_features.columns:
+                min_features.append('daily_return')
+
+            # Auch nützliche Features hinzufügen, die berechnet wurden
+            available_useful = [f for f in useful_features if
+                                f in df_features.columns and (df_features[f].count() / len(df_features) > 0.8)]
+            min_features.extend(available_useful)
+
+            # Reduziertes DataFrame erstellen
+            df_minimal = df_features[min_features].copy()
+
+            # Verbleibende NaN-Werte auffüllen
+            for col in df_minimal.columns:
+                if df_minimal[col].isna().any():
+                    mean_value = df_minimal[col].mean()
+                    print(f"[DEBUG] mean_value type for {col}: {type(mean_value)} | value: {mean_value}")
+                    if np.isscalar(mean_value) and pd.notnull(mean_value):
+                        df_minimal[col] = df_minimal[col].fillna(mean_value)
+                    else:
+                        df_minimal[col] = df_minimal[col].fillna(0)
+
+            print(f"DEBUG: Minimal-Feature-Set verwendet: {min_features}")
+            return df_minimal
+
+        # Normale Rückgabe: Entferne NaN-Zeilen
+        if len(df_no_nan) < original_len:
+            print(f"DEBUG: {original_len - len(df_no_nan)} Zeilen mit NaN-Werten entfernt")
+
+        return df_no_nan
 
     def _load_or_train_model(self, model_type):
         """Load a saved model or train a new one if no saved model exists"""
