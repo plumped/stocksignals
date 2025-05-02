@@ -615,13 +615,6 @@ class MLBacktester:
         """
         Generate a mock prediction when ML model isn't available.
         This uses technical signals to simulate what an ML model might predict.
-
-        Args:
-            test_date: The date for which to make predictions
-            current_price: Current price of the stock
-
-        Returns:
-            dict: Mock prediction results
         """
         try:
             # Get historical data leading up to this date
@@ -649,7 +642,8 @@ class MLBacktester:
             np.random.seed(random_seed)
 
             # Generate a mock prediction based on SMAs
-            if sma_5 > sma_20:
+            # FIX: Use element-wise comparison with scalar values
+            if sma_5 > sma_20:  # This is fine because these are simple scalars, not Series
                 prediction = "BUY"
                 predicted_return = np.random.uniform(0.01, 0.05)  # 1-5% positive return
                 confidence = np.random.uniform(0.60, 0.80)  # 60-80% confidence

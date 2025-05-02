@@ -526,6 +526,7 @@ class MLPredictor:
                     df_features[col] = df_features[col].fillna(df_features[col].mean())
 
         # Fallback: Wenn nach all diesen Berechnungen immer noch alle Zeilen NaN-Werte enthalten
+        # Fallback: Wenn nach all diesen Berechnungen immer noch alle Zeilen NaN-Werte enthalten
         original_len = len(df_features)
         df_no_nan = df_features.dropna()
 
@@ -538,8 +539,14 @@ class MLPredictor:
                 min_features.append('daily_return')
 
             # Auch nützliche Features hinzufügen, die berechnet wurden
-            available_useful = [f for f in useful_features if
-                                f in df_features.columns and (df_features[f].count() / len(df_features) > 0.8)]
+            # FIX: Use explicit boolean indexing with isin()
+            available_useful = []
+            for f in useful_features:
+                if f in df_features.columns:
+                    non_nan_ratio = df_features[f].count() / len(df_features)
+                    if non_nan_ratio > 0.8:  # If at least 80% of values are not NaN
+                        available_useful.append(f)
+
             min_features.extend(available_useful)
 
             # Reduziertes DataFrame erstellen
@@ -550,7 +557,8 @@ class MLPredictor:
                 if df_minimal[col].isna().any():
                     mean_value = df_minimal[col].mean()
                     print(f"[DEBUG] mean_value type for {col}: {type(mean_value)} | value: {mean_value}")
-                    if np.isscalar(mean_value) and pd.notnull(mean_value):
+                    # FIX: Use pd.notna() instead of np.isscalar
+                    if pd.notna(mean_value):
                         df_minimal[col] = df_minimal[col].fillna(mean_value)
                     else:
                         df_minimal[col] = df_minimal[col].fillna(0)
