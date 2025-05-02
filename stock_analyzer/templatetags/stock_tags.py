@@ -49,3 +49,10 @@ def getattr(obj, attr):
         return obj.get(attr)
     else:
         return getattr(obj, attr, None)
+
+@register.filter
+def sub(value, arg):
+    try:
+        return float(value) - float(arg)
+    except (ValueError, TypeError):
+        return ''

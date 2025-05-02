@@ -1,5 +1,8 @@
 <!-- stock_analyzer/templates/stock_analyzer/ml_strategy_comparison_results.html -->
 {% extends 'stock_analyzer/base.html' %}
+{% load stock_tags %}
+{% load math_filters %}
+
 
 {% block title %}ML Strategievergleich Ergebnisse - {{ stock.symbol }}{% endblock %}
 

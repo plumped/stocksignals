@@ -541,7 +541,13 @@ class MLBacktester:
                 'max_drawdown': 0,
                 'win_rate': 0,
                 'profit_factor': 0,
-                'num_trades': 0
+                'num_trades': 0,
+                'winning_trades': 0,
+                'losing_trades': 0,
+                'gross_profit': 0,
+                'gross_loss': 0,
+                'avg_profit_per_trade': 0,
+                'avg_loss_per_trade': 0
             }
             return
 
