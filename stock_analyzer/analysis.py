@@ -476,27 +476,54 @@ class TechnicalAnalyzer:
         if result is None:
             print(f"[ERROR] Kein technisches Ergebnis für {self.stock.symbol}, nichts gespeichert.")
             return None
+
+        # Sicherstellen, dass die Daten nach Datum sortiert sind (neueste zuletzt)
+        if 'date' in self.df.columns:
+            self.df = self.df.sort_values(by='date')
+            print(f"DataFrame für Indikator-Speicherung sortiert: {self.df['date'].iloc[0]} bis {self.df['date'].iloc[-1]}")
+
         latest_date = self.df['date'].iloc[-1]
+
+        # Direkt die letzten Werte aus dem DataFrame extrahieren
+        latest_row = self.df.iloc[-1]
+
+        # Debug-Ausgabe der letzten Werte
+        print(f"Letzte Werte für {self.stock.symbol}:")
+        for col in ['rsi', 'macd', 'macd_signal', 'sma_20', 'sma_50', 'sma_200', 'bollinger_upper', 'bollinger_lower']:
+            if col in latest_row:
+                print(f"  {col}: {latest_row[col]}")
 
         details = result.get('details', {})
 
+        # Verwende die letzten Werte aus dem DataFrame, falls verfügbar
+        rsi_value = latest_row.get('rsi') if 'rsi' in latest_row else details.get('rsi')
+        macd_value = latest_row.get('macd') if 'macd' in latest_row else details.get('macd')
+        macd_signal = latest_row.get('macd_signal') if 'macd_signal' in latest_row else details.get('macd_signal')
+        sma_20 = latest_row.get('sma_20') if 'sma_20' in latest_row else details.get('sma_20')
+        sma_50 = latest_row.get('sma_50') if 'sma_50' in latest_row else details.get('sma_50')
+        sma_200 = latest_row.get('sma_200') if 'sma_200' in latest_row else details.get('sma_200')
+        bollinger_upper = latest_row.get('bollinger_upper') if 'bollinger_upper' in latest_row else details.get('bollinger_upper')
+        bollinger_lower = latest_row.get('bollinger_lower') if 'bollinger_lower' in latest_row else details.get('bollinger_lower')
+
         analysis_result, created = AnalysisResult.objects.update_or_create(
             stock=self.stock,
-            date=latest_date,
+            date=latest_date.date() if hasattr(latest_date, 'date') else latest_date,  # Konvertiere zu date, falls datetime
             defaults={
                 'technical_score': result['score'],
                 'recommendation': result['recommendation'],
-                'rsi_value': details.get('rsi'),
-                'macd_value': details.get('macd'),
-                'macd_signal': details.get('macd_signal'),
-                'sma_20': details.get('sma_20'),
-                'sma_50': details.get('sma_50'),
-                'sma_200': details.get('sma_200'),
-                'bollinger_upper': details.get('bollinger_upper'),
-                'bollinger_lower': details.get('bollinger_lower'),
+                'rsi_value': rsi_value,
+                'macd_value': macd_value,
+                'macd_signal': macd_signal,
+                'sma_20': sma_20,
+                'sma_50': sma_50,
+                'sma_200': sma_200,
+                'bollinger_upper': bollinger_upper,
+                'bollinger_lower': bollinger_lower,
                 'confluence_score': int((result['confluence_score'] + 10) / 20 * 100)  # Skaliert auf 0–100%
             }
         )
+
+        print(f"Analyse-Ergebnis gespeichert mit RSI: {analysis_result.rsi_value}, MACD: {analysis_result.macd_value}")
         return analysis_result
 
     def calculate_advanced_indicators(self):

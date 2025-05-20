@@ -94,6 +94,14 @@
         </div>
     </div>
     <div class="card-footer">
+        <div class="d-flex align-items-center mb-2">
+            <div class="form-check me-3">
+                <input class="form-check-input" type="checkbox" id="use-live-data">
+                <label class="form-check-label" for="use-live-data">
+                    Live-Daten verwenden (statt Schlusskurse)
+                </label>
+            </div>
+        </div>
         <button class="btn btn-primary" id="analyze-all-button">
             <i class="bi bi-graph-up"></i> Alle analysieren
         </button>
@@ -282,13 +290,16 @@
                 symbols.push('{{ stock.symbol }}');
                 {% endfor %}
 
+                // Prüfen, ob Live-Daten verwendet werden sollen
+                const useLiveData = document.getElementById('use-live-data').checked;
+
                 fetch('/batch-analyze/', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/x-www-form-urlencoded',
                         'X-CSRFToken': '{{ csrf_token }}'
                     },
-                    body: symbols.map(s => `symbols=${s}`).join('&')
+                    body: symbols.map(s => `symbols=${s}`).join('&') + `&use_live_data=${useLiveData}`
                 })
                 .then(response => response.json())
                 .then(data => {

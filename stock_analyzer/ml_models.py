@@ -901,6 +901,8 @@ class AdaptiveAnalyzer:
         """Initialize the adaptive analyzer"""
         self.stock_symbol = stock_symbol
         self.ml_predictor = MLPredictor(stock_symbol)
+        self.ta = None  # Wird später initialisiert
+        self.df = None  # DataFrame für Live-Daten
 
     def get_adaptive_score(self):
         """
@@ -911,8 +913,16 @@ class AdaptiveAnalyzer:
             from .analysis import TechnicalAnalyzer
 
             # === Technische Analyse ausführen ===
-            ta = TechnicalAnalyzer(self.stock_symbol)
-            ta_result = ta.calculate_technical_score()
+            if self.ta is None:
+                self.ta = TechnicalAnalyzer(self.stock_symbol)
+
+                # Wenn ein DataFrame gesetzt wurde, dieses verwenden
+                if self.df is not None:
+                    print(f"[DEBUG] AdaptiveAnalyzer verwendet bereitgestelltes DataFrame mit {len(self.df)} Zeilen")
+                    self.ta.df = self.df
+                    self.ta.calculate_indicators()
+
+            ta_result = self.ta.calculate_technical_score()
             ta_score = ta_result['score']
             ta_recommendation = ta_result['recommendation']
 
@@ -1001,12 +1011,51 @@ class AdaptiveAnalyzer:
             result = self.get_adaptive_score()
             stock = Stock.objects.get(symbol=self.stock_symbol)
 
-            # Current date
+            # Datum aus dem DataFrame oder aktuelles Datum
             from datetime import datetime
-            date = datetime.now().date()
 
-            # Get details from the result
-            details = result.get('details', {})
+            # Wenn wir einen TechnicalAnalyzer und ein DataFrame haben, verwenden wir das letzte Datum daraus
+            if self.ta is not None and hasattr(self.ta, 'df') and self.ta.df is not None and not self.ta.df.empty and 'date' in self.ta.df.columns:
+                # Sicherstellen, dass die Daten nach Datum sortiert sind
+                self.ta.df = self.ta.df.sort_values(by='date')
+                latest_date = self.ta.df['date'].iloc[-1]
+                date = latest_date.date() if hasattr(latest_date, 'date') else latest_date
+                print(f"[DEBUG] AdaptiveAnalyzer verwendet Datum aus DataFrame: {date}")
+
+                # Direkt die letzten Werte aus dem DataFrame extrahieren
+                latest_row = self.ta.df.iloc[-1]
+
+                # Debug-Ausgabe der letzten Werte
+                print(f"Letzte Werte für {self.stock_symbol} (AdaptiveAnalyzer):")
+                for col in ['rsi', 'macd', 'macd_signal', 'sma_20', 'sma_50', 'sma_200', 'bollinger_upper', 'bollinger_lower']:
+                    if col in latest_row:
+                        print(f"  {col}: {latest_row[col]}")
+
+                # Verwende die letzten Werte aus dem DataFrame, falls verfügbar
+                rsi_value = latest_row.get('rsi') if 'rsi' in latest_row else None
+                macd_value = latest_row.get('macd') if 'macd' in latest_row else None
+                macd_signal = latest_row.get('macd_signal') if 'macd_signal' in latest_row else None
+                sma_20 = latest_row.get('sma_20') if 'sma_20' in latest_row else None
+                sma_50 = latest_row.get('sma_50') if 'sma_50' in latest_row else None
+                sma_200 = latest_row.get('sma_200') if 'sma_200' in latest_row else None
+                bollinger_upper = latest_row.get('bollinger_upper') if 'bollinger_upper' in latest_row else None
+                bollinger_lower = latest_row.get('bollinger_lower') if 'bollinger_lower' in latest_row else None
+            else:
+                # Fallback auf aktuelles Datum und Details aus dem Ergebnis
+                date = datetime.now().date()
+                print(f"[DEBUG] AdaptiveAnalyzer verwendet aktuelles Datum: {date}")
+
+                # Get details from the result
+                details = result.get('details', {})
+
+                rsi_value = details.get('rsi')
+                macd_value = details.get('macd')
+                macd_signal = details.get('macd_signal')
+                sma_20 = details.get('sma_20')
+                sma_50 = details.get('sma_50')
+                sma_200 = details.get('sma_200')
+                bollinger_upper = details.get('bollinger_upper')
+                bollinger_lower = details.get('bollinger_lower')
 
             # Save to AnalysisResult
             analysis_result, created = AnalysisResult.objects.update_or_create(
@@ -1016,17 +1065,18 @@ class AdaptiveAnalyzer:
                     'technical_score': result['score'],
                     'recommendation': result['recommendation'],
                     'confluence_score': result.get('confluence_score'),
-                    'rsi_value': details.get('rsi'),
-                    'macd_value': details.get('macd'),
-                    'macd_signal': details.get('macd_signal'),
-                    'sma_20': details.get('sma_20'),
-                    'sma_50': details.get('sma_50'),
-                    'sma_200': details.get('sma_200'),
-                    'bollinger_upper': details.get('bollinger_upper'),
-                    'bollinger_lower': details.get('bollinger_lower')
+                    'rsi_value': rsi_value,
+                    'macd_value': macd_value,
+                    'macd_signal': macd_signal,
+                    'sma_20': sma_20,
+                    'sma_50': sma_50,
+                    'sma_200': sma_200,
+                    'bollinger_upper': bollinger_upper,
+                    'bollinger_lower': bollinger_lower
                 }
             )
 
+            print(f"Analyse-Ergebnis (AdaptiveAnalyzer) gespeichert mit RSI: {analysis_result.rsi_value}, MACD: {analysis_result.macd_value}")
             return analysis_result
 
         except Exception as e:
@@ -1091,4 +1141,3 @@ def batch_ml_predictions(symbols=None, force_retrain=False):
             }
 
     return results
-

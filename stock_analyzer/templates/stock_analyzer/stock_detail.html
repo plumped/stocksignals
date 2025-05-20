@@ -121,6 +121,15 @@
                 Aktionen
             </div>
             <div class="card-body">
+                <div id="current-price-container" class="alert alert-info mb-2" style="display: none;">
+                    <strong>Aktueller Kurs:</strong> <span id="current-price-value"></span>
+                </div>
+                <div class="form-check mb-2">
+                    <input class="form-check-input" type="checkbox" id="use-live-data" {% if use_live_data %}checked{% endif %}>
+                    <label class="form-check-label" for="use-live-data">
+                        Live-Daten verwenden (statt Schlusskurse)
+                    </label>
+                </div>
                 <button id="analyze-button" class="btn btn-primary mb-3 w-100">
                     <i class="bi bi-graph-up"></i> Jetzt analysieren
                 </button>
@@ -165,48 +174,52 @@
                 Hauptindikatoren
             </div>
             <div class="card-body">
-                <table class="table table-sm">
+                <table class="table table-sm" id="main-indicators-table">
                     <tbody>
                         {% if latest_analysis %}
                         <tr>
                             <td>RSI (14)</td>
                             <td class="text-end">
-                                {{ latest_analysis.rsi_value|floatformat:2 }}
-                                {% if latest_analysis.rsi_value < 30 %}
-                                <span class="signal-buy"><i class="bi bi-arrow-up-circle-fill"></i></span>
-                                {% elif latest_analysis.rsi_value > 70 %}
-                                <span class="signal-sell"><i class="bi bi-arrow-down-circle-fill"></i></span>
-                                {% endif %}
+                                <span id="indicator-rsi">{{ latest_analysis.rsi_value|floatformat:2 }}</span>
+                                <span id="indicator-rsi-signal" class="{% if latest_analysis.rsi_value < 30 %}signal-buy{% elif latest_analysis.rsi_value > 70 %}signal-sell{% endif %}">
+                                    {% if latest_analysis.rsi_value < 30 %}
+                                    <i class="bi bi-arrow-up-circle-fill"></i>
+                                    {% elif latest_analysis.rsi_value > 70 %}
+                                    <i class="bi bi-arrow-down-circle-fill"></i>
+                                    {% endif %}
+                                </span>
                             </td>
                         </tr>
                         <tr>
                             <td>MACD</td>
                             <td class="text-end">
-                                {{ latest_analysis.macd_value|floatformat:2 }}
-                                {% if latest_analysis.macd_value > latest_analysis.macd_signal %}
-                                <span class="signal-buy"><i class="bi bi-arrow-up-circle-fill"></i></span>
-                                {% else %}
-                                <span class="signal-sell"><i class="bi bi-arrow-down-circle-fill"></i></span>
-                                {% endif %}
+                                <span id="indicator-macd">{{ latest_analysis.macd_value|floatformat:2 }}</span>
+                                <span id="indicator-macd-signal" class="{% if latest_analysis.macd_value > latest_analysis.macd_signal %}signal-buy{% else %}signal-sell{% endif %}">
+                                    {% if latest_analysis.macd_value > latest_analysis.macd_signal %}
+                                    <i class="bi bi-arrow-up-circle-fill"></i>
+                                    {% else %}
+                                    <i class="bi bi-arrow-down-circle-fill"></i>
+                                    {% endif %}
+                                </span>
                             </td>
                         </tr>
                         <tr>
                             <td>SMA 20</td>
-                            <td class="text-end">{{ latest_analysis.sma_20|floatformat:2 }}</td>
+                            <td class="text-end"><span id="indicator-sma20">{{ latest_analysis.sma_20|floatformat:2 }}</span></td>
                         </tr>
                         <tr>
                             <td>SMA 50</td>
-                            <td class="text-end">{{ latest_analysis.sma_50|floatformat:2 }}</td>
+                            <td class="text-end"><span id="indicator-sma50">{{ latest_analysis.sma_50|floatformat:2 }}</span></td>
                         </tr>
                         <tr>
                             <td>SMA 200</td>
-                            <td class="text-end">{{ latest_analysis.sma_200|floatformat:2 }}</td>
+                            <td class="text-end"><span id="indicator-sma200">{{ latest_analysis.sma_200|floatformat:2 }}</span></td>
                         </tr>
                         <tr>
                             <td>Bollinger Bands</td>
                             <td class="text-end">
-                                {{ latest_analysis.bollinger_upper|floatformat:2 }} /
-                                {{ latest_analysis.bollinger_lower|floatformat:2 }}
+                                <span id="indicator-bollinger-upper">{{ latest_analysis.bollinger_upper|floatformat:2 }}</span> /
+                                <span id="indicator-bollinger-lower">{{ latest_analysis.bollinger_lower|floatformat:2 }}</span>
                             </td>
                         </tr>
                         {% else %}
@@ -433,7 +446,13 @@
             this.disabled = true;
             this.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Analysiere...';
 
-            fetch(`/analyze/${symbol}/`)
+            // Prüfen, ob Live-Daten verwendet werden sollen
+            const useLiveData = document.getElementById('use-live-data').checked;
+
+            // URL mit Parameter für Live-Daten
+            const url = `/analyze/${symbol}/?use_live_data=${useLiveData}`;
+
+            fetch(url)
                 .then(response => response.json())
                 .then(data => {
                     if (data.status === 'success') {
@@ -463,16 +482,194 @@
     }
 
     // Daten laden und Charts initialisieren
-    fetch(`/api/stock/${symbol}/`)
-        .then(response => {
-            if (!response.ok) {
-                throw new Error('Netzwerkantwort war nicht ok');
+    function loadChartData() {
+        // Prüfen, ob Live-Daten verwendet werden sollen
+        const useLiveData = document.getElementById('use-live-data').checked;
+
+        // URL mit Parameter für Live-Daten
+        const url = `/api/stock/${symbol}/?use_live_data=${useLiveData}`;
+
+        return fetch(url)
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Netzwerkantwort war nicht ok');
+                }
+                return response.json();
+            });
+    }
+
+    // Funktion zum Anzeigen des aktuellen Preises
+    function updateCurrentPrice(data) {
+        const currentPriceContainer = document.getElementById('current-price-container');
+        const currentPriceValue = document.getElementById('current-price-value');
+
+        if (data.current_price) {
+            currentPriceValue.textContent = `$${data.current_price.toFixed(2)}`;
+            currentPriceContainer.style.display = 'block';
+
+            // Wenn es historische Daten gibt, den letzten Schlusskurs anzeigen
+            if (data.price_data && data.price_data.length > 0) {
+                const lastClosePrice = data.price_data[0].close_price;
+                const priceDiff = data.current_price - lastClosePrice;
+                const priceDiffPercent = (priceDiff / lastClosePrice) * 100;
+
+                // Farbliche Markierung basierend auf der Preisänderung
+                if (priceDiff > 0) {
+                    currentPriceValue.classList.add('text-success');
+                    currentPriceValue.classList.remove('text-danger');
+                    currentPriceValue.textContent += ` (+${priceDiff.toFixed(2)}, +${priceDiffPercent.toFixed(2)}%)`;
+                } else if (priceDiff < 0) {
+                    currentPriceValue.classList.add('text-danger');
+                    currentPriceValue.classList.remove('text-success');
+                    currentPriceValue.textContent += ` (${priceDiff.toFixed(2)}, ${priceDiffPercent.toFixed(2)}%)`;
+                }
             }
-            return response.json();
-        })
+        } else {
+            currentPriceContainer.style.display = 'none';
+        }
+    }
+
+    // Funktion zum Aktualisieren der Hauptindikatoren
+    function updateMainIndicators(data) {
+        if (!data || !data.indicators) return;
+
+        console.log('Aktualisiere Hauptindikatoren mit Live-Daten');
+
+        // Letzte Werte der Indikatoren abrufen
+        const getLastValue = (indicator) => {
+            if (!data.indicators[indicator] || data.indicators[indicator].length === 0) return null;
+            const value = data.indicators[indicator][data.indicators[indicator].length - 1];
+            console.log(`Indikator ${indicator}: Länge=${data.indicators[indicator].length}, letzter Wert=${value}`);
+            return value;
+        };
+
+        // RSI aktualisieren
+        const rsiValue = getLastValue('rsi');
+        if (rsiValue !== null) {
+            console.log('RSI Wert aus API:', rsiValue);
+            const rsiElement = document.getElementById('indicator-rsi');
+            const rsiSignalElement = document.getElementById('indicator-rsi-signal');
+
+            rsiElement.textContent = rsiValue.toFixed(2);
+            console.log('RSI Wert in UI aktualisiert:', rsiValue.toFixed(2));
+
+            // RSI Signal aktualisieren
+            rsiSignalElement.className = '';
+            rsiSignalElement.innerHTML = '';
+
+            if (rsiValue < 30) {
+                rsiSignalElement.className = 'signal-buy';
+                rsiSignalElement.innerHTML = '<i class="bi bi-arrow-up-circle-fill"></i>';
+            } else if (rsiValue > 70) {
+                rsiSignalElement.className = 'signal-sell';
+                rsiSignalElement.innerHTML = '<i class="bi bi-arrow-down-circle-fill"></i>';
+            }
+        }
+
+        // MACD aktualisieren
+        const macdValue = getLastValue('macd');
+        const macdSignalValue = getLastValue('macd_signal');
+
+        if (macdValue !== null && macdSignalValue !== null) {
+            const macdElement = document.getElementById('indicator-macd');
+            const macdSignalElement = document.getElementById('indicator-macd-signal');
+
+            macdElement.textContent = macdValue.toFixed(2);
+
+            // MACD Signal aktualisieren
+            macdSignalElement.className = '';
+            macdSignalElement.innerHTML = '';
+
+            if (macdValue > macdSignalValue) {
+                macdSignalElement.className = 'signal-buy';
+                macdSignalElement.innerHTML = '<i class="bi bi-arrow-up-circle-fill"></i>';
+            } else {
+                macdSignalElement.className = 'signal-sell';
+                macdSignalElement.innerHTML = '<i class="bi bi-arrow-down-circle-fill"></i>';
+            }
+        }
+
+        // SMAs aktualisieren
+        const sma20Value = getLastValue('sma_20');
+        const sma50Value = getLastValue('sma_50');
+        const sma200Value = getLastValue('sma_200');
+
+        if (sma20Value !== null) {
+            document.getElementById('indicator-sma20').textContent = sma20Value.toFixed(2);
+        }
+
+        if (sma50Value !== null) {
+            document.getElementById('indicator-sma50').textContent = sma50Value.toFixed(2);
+        }
+
+        if (sma200Value !== null) {
+            document.getElementById('indicator-sma200').textContent = sma200Value.toFixed(2);
+        }
+
+        // Bollinger Bands aktualisieren
+        const bollingerUpperValue = getLastValue('bollinger_upper');
+        const bollingerLowerValue = getLastValue('bollinger_lower');
+
+        if (bollingerUpperValue !== null) {
+            document.getElementById('indicator-bollinger-upper').textContent = bollingerUpperValue.toFixed(2);
+        }
+
+        if (bollingerLowerValue !== null) {
+            document.getElementById('indicator-bollinger-lower').textContent = bollingerLowerValue.toFixed(2);
+        }
+    }
+
+    // Event-Listener für die Live-Daten-Checkbox
+    document.getElementById('use-live-data').addEventListener('change', function() {
+        // Charts neu laden, wenn die Checkbox geändert wird
+        loadChartData()
+            .then(data => {
+                stockData = data;
+                console.log('Daten neu geladen:', stockData);
+
+                // Aktuellen Preis anzeigen, wenn Live-Daten aktiviert sind
+                if (this.checked) {
+                    updateCurrentPrice(data);
+                    // Hauptindikatoren mit Live-Daten aktualisieren
+                    updateMainIndicators(data);
+                } else {
+                    document.getElementById('current-price-container').style.display = 'none';
+                }
+
+                // Bestehende Charts löschen
+                if (priceChart) priceChart.destroy();
+                if (rsiChart) rsiChart.destroy();
+                if (macdChart) macdChart.destroy();
+                if (stochasticChart) stochasticChart.destroy();
+                if (smaChart) smaChart.destroy();
+                if (bollingerChart) bollingerChart.destroy();
+                if (volumeChart) volumeChart.destroy();
+                if (obvChart) obvChart.destroy();
+                if (atrChart) atrChart.destroy();
+                // Charts neu initialisieren
+                initCharts();
+                // Aktiven Zeitraum beibehalten
+                const activeRange = document.querySelector('.time-range.active').dataset.range;
+                updateCharts(parseInt(activeRange));
+            })
+            .catch(error => {
+                console.error('Fehler beim Neuladen der Aktiendaten:', error);
+            });
+    });
+
+    // Initial data load
+    loadChartData()
         .then(data => {
             stockData = data;
             console.log('Geladene Daten:', stockData);
+
+            // Aktuellen Preis und Hauptindikatoren anzeigen, wenn Live-Daten aktiviert sind
+            if (document.getElementById('use-live-data').checked) {
+                updateCurrentPrice(data);
+                updateMainIndicators(data);
+                console.log('Live-Daten beim initialen Laden aktiviert - Indikatoren aktualisiert');
+            }
+
             initCharts();
             updateCharts(180); // Standardmäßig 6 Monate anzeigen
         })
@@ -919,10 +1116,17 @@
             // Die neuesten Daten sollten am Ende des Arrays sein
             const reversedData = [...stockData.price_data].reverse();
 
+            // Debug-Ausgabe der Daten
+            console.log('Originaldaten:', stockData.price_data.length, 'Datenpunkte');
+            console.log('Erster Datenpunkt:', new Date(stockData.price_data[0].date), stockData.price_data[0].close_price);
+            console.log('Letzter Datenpunkt:', new Date(stockData.price_data[stockData.price_data.length-1].date), stockData.price_data[stockData.price_data.length-1].close_price);
+
             // Zeitraum berechnen
             const endDate = new Date(reversedData[0].date);
             const startDate = new Date(endDate);
             startDate.setDate(endDate.getDate() - days);
+
+            console.log('Zeitraum:', startDate, 'bis', endDate);
 
             // Daten nach Datum filtern
             const filteredData = reversedData.filter(d => {
@@ -932,6 +1136,40 @@
 
             // Sicherstellen, dass nach Datum sortiert ist (aufsteigend)
             filteredData.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+            // Sicherstellen, dass der aktuelle Preis immer angezeigt wird, wenn Live-Daten aktiviert sind
+            if (document.getElementById('use-live-data').checked && stockData.current_price) {
+                // Prüfen, ob der letzte Datenpunkt der aktuelle Preis ist
+                const lastPoint = filteredData[filteredData.length - 1];
+                const lastPrice = lastPoint ? lastPoint.close_price : 0;
+
+                console.log('Letzter Preis in gefilterten Daten:', lastPrice);
+                console.log('Aktueller Preis:', stockData.current_price);
+
+                // Wenn der letzte Preis nicht der aktuelle Preis ist, füge den aktuellen Preis hinzu
+                if (Math.abs(lastPrice - stockData.current_price) > 0.01) {
+                    console.log('Füge aktuellen Preis zu den Chartdaten hinzu');
+
+                    // Aktuelles Datum für den neuen Datenpunkt
+                    const now = new Date();
+
+                    // Neuen Datenpunkt mit aktuellem Preis erstellen
+                    const currentPricePoint = {
+                        date: now.toISOString(),
+                        open_price: stockData.current_price,
+                        high_price: stockData.current_price,
+                        low_price: stockData.current_price,
+                        close_price: stockData.current_price,
+                        volume: 0
+                    };
+
+                    // Zum gefilterten Array hinzufügen
+                    filteredData.push(currentPricePoint);
+
+                    // Neu sortieren, um sicherzustellen, dass die Daten in der richtigen Reihenfolge sind
+                    filteredData.sort((a, b) => new Date(a.date) - new Date(b.date));
+                }
+            }
 
             console.log(`Gefilterte Daten für ${days} Tage:`, filteredData.length);
 

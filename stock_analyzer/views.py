@@ -21,9 +21,7 @@ import csv
 from django.http import HttpResponse
 from django.contrib import messages
 from datetime import datetime, timedelta, date
-import yfinance as yf
 from django.db.models import OuterRef, Subquery, Avg, Count, Max, Q
-from .models import MLPrediction
 
 
 def index(request):
@@ -53,11 +51,27 @@ def stock_detail(request, symbol):
     """Detailansicht für eine bestimmte Aktie"""
     stock = get_object_or_404(Stock, symbol=symbol.upper())
 
-    # Historische Daten abrufen
-    historical_data = StockData.objects.filter(stock=stock).order_by('-date')[:90]
+    # Prüfen, ob Live-Daten verwendet werden sollen (aus URL-Parameter oder Session)
+    use_live_data = request.GET.get('use_live_data') == 'true'
 
-    # Neueste Analyse abrufen
-    latest_analysis = AnalysisResult.objects.filter(stock=stock).order_by('-date').first()
+    # Wenn Live-Daten aktiviert sind, führe eine sofortige Analyse mit Live-Daten durch
+    if use_live_data:
+        try:
+            # Analyze-Stock-Funktion mit Live-Daten aufrufen (ohne Response zu verwenden)
+            analyze_stock(request, symbol)
+
+            # Neueste Analyse nach der Live-Daten-Analyse abrufen
+            latest_analysis = AnalysisResult.objects.filter(stock=stock).order_by('-date').first()
+        except Exception as e:
+            print(f"Fehler bei der Live-Daten-Analyse: {str(e)}")
+            # Fallback auf die neueste gespeicherte Analyse
+            latest_analysis = AnalysisResult.objects.filter(stock=stock).order_by('-date').first()
+    else:
+        # Neueste Analyse abrufen (ohne Live-Daten)
+        latest_analysis = AnalysisResult.objects.filter(stock=stock).order_by('-date').first()
+
+    # Historische Daten abrufen (werden für die Anzeige verwendet)
+    historical_data = StockData.objects.filter(stock=stock).order_by('-date')[:90]
 
     # Neueste ML-Vorhersage abrufen
     latest_ml_prediction = MLPrediction.objects.filter(stock=stock).order_by('-date').first()
@@ -71,7 +85,8 @@ def stock_detail(request, symbol):
         'historical_data': historical_data,
         'latest_analysis': latest_analysis,
         'ml_prediction': latest_ml_prediction,
-        'in_watchlist': in_watchlist
+        'in_watchlist': in_watchlist,
+        'use_live_data': use_live_data  # Live-Daten-Status an das Template übergeben
     }
 
     return render(request, 'stock_analyzer/stock_detail.html', context)
@@ -123,14 +138,102 @@ def analyze_stock(request, symbol):
     try:
         print(f"Analysiere Symbol: {symbol}")
 
-        success, message = StockDataService.update_stock_data(symbol)
-        print(f"Datenaktualisierung: {success}, {message}")
-
-        if not success:
-            return JsonResponse({'status': 'error', 'message': message})
+        # Prüfen, ob Live-Daten verwendet werden sollen
+        use_live_data = request.GET.get('use_live_data') == 'true'
+        data_type = "Live-Daten" if use_live_data else "Schlusskurse"
+        print(f"Verwende {data_type} für die Analyse")
 
         # Zusätzliche Debugging-Informationen
         stock = Stock.objects.get(symbol=symbol.upper())
+
+        # Wenn Live-Daten verwendet werden, direkt von der API abrufen für die Analyse
+        if use_live_data:
+            print("Hole Live-Daten direkt von der API für die Analyse")
+            try:
+                # Rate-Limiting anwenden
+                StockDataService.rate_limit()
+
+                # Twelvedata Client holen
+                td = StockDataService.get_client()
+
+                # Aktuellen Preis abrufen
+                price = td.price(symbol=symbol).as_json()
+                current_price = float(price['price']) if price and 'price' in price else None
+                print(f"Aktueller Preis für {symbol}: ${current_price}")
+
+                # Live-Daten für die letzten 2 Tage abrufen (1-Minuten-Intervall)
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=2)
+
+                # Rate-Limiting anwenden
+                StockDataService.rate_limit()
+
+                # Time-Series-Daten abrufen
+                ts = td.time_series(
+                    symbol=symbol,
+                    interval="1min",
+                    start_date=start_date.strftime('%Y-%m-%d'),
+                    end_date=end_date.strftime('%Y-%m-%d %H:%M:%S'),
+                    outputsize=1000
+                )
+                live_data = ts.as_pandas()
+
+                if not live_data.empty:
+                    print(f"Live-Daten für {symbol}: {len(live_data)} Datenpunkte")
+
+                    # DataFrame für die Analyse vorbereiten
+                    df = pd.DataFrame()
+                    df['date'] = pd.to_datetime(live_data.index)
+                    df['open_price'] = live_data['open'].astype(float)
+                    df['high_price'] = live_data['high'].astype(float)
+                    df['low_price'] = live_data['low'].astype(float)
+                    df['close_price'] = live_data['close'].astype(float)
+                    df['volume'] = live_data['volume'].astype(float)
+                    df['adjusted_close'] = live_data['close'].astype(float)  # Keine adjusted_close in Live-Daten
+
+                    # Aktuellen Preis als neuesten Datenpunkt hinzufügen, wenn verfügbar
+                    if current_price is not None:
+                        current_time = datetime.now()
+                        # Neuen Datenpunkt mit aktuellem Preis erstellen
+                        new_row = pd.DataFrame({
+                            'date': [current_time],
+                            'open_price': [current_price],
+                            'high_price': [current_price],
+                            'low_price': [current_price],
+                            'close_price': [current_price],
+                            'volume': [0],  # Kein Volumen für den aktuellen Preis
+                            'adjusted_close': [current_price]
+                        })
+                        # Zum DataFrame hinzufügen
+                        df = pd.concat([df, new_row], ignore_index=True)
+                        print(f"Aktueller Preis ${current_price} als Datenpunkt hinzugefügt")
+
+                    # Auch die Daten in der Datenbank aktualisieren für andere Funktionen
+                    success, message = StockDataService.update_stock_data(symbol, use_live_data=use_live_data)
+                    print(f"Datenaktualisierung in DB: {success}, {message}")
+                else:
+                    print("Keine Live-Daten gefunden, verwende Datenbank")
+                    success, message = StockDataService.update_stock_data(symbol, use_live_data=use_live_data)
+                    print(f"Datenaktualisierung: {success}, {message}")
+                    if not success:
+                        return JsonResponse({'status': 'error', 'message': message})
+                    df = None  # Wird später aus der Datenbank geladen
+            except Exception as e:
+                print(f"Fehler beim Abrufen der Live-Daten: {str(e)}")
+                # Fallback auf Datenbank-Update
+                success, message = StockDataService.update_stock_data(symbol, use_live_data=False)
+                print(f"Fallback-Datenaktualisierung: {success}, {message}")
+                if not success:
+                    return JsonResponse({'status': 'error', 'message': message})
+                df = None  # Wird später aus der Datenbank geladen
+        else:
+            # Für historische Daten den normalen Weg gehen
+            success, message = StockDataService.update_stock_data(symbol, use_live_data=False)
+            print(f"Datenaktualisierung: {success}, {message}")
+            if not success:
+                return JsonResponse({'status': 'error', 'message': message})
+            df = None  # Wird später aus der Datenbank geladen
+
         historical_data_count = StockData.objects.filter(stock=stock).count()
         print(f"Anzahl historischer Datenpunkte: {historical_data_count}")
 
@@ -142,11 +245,24 @@ def analyze_stock(request, symbol):
             if has_ml_data:
                 analyzer = AdaptiveAnalyzer(symbol)
                 print("Verwende AdaptiveAnalyzer")
+
+                # Wenn wir Live-Daten haben, diese verwenden
+                if use_live_data and df is not None:
+                    print("Verwende Live-Daten für AdaptiveAnalyzer")
+                    analyzer.df = df  # DataFrame direkt setzen
+
                 result = analyzer.get_adaptive_score()
                 analysis_result = analyzer.save_analysis_result()
             else:
                 analyzer = TechnicalAnalyzer(symbol)
                 print("Verwende TechnicalAnalyzer")
+
+                # Wenn wir Live-Daten haben, diese verwenden
+                if use_live_data and df is not None:
+                    print("Verwende Live-Daten für TechnicalAnalyzer")
+                    analyzer.df = df
+                    analyzer.calculate_indicators()
+
                 result = analyzer.calculate_technical_score()
 
                 # Fügen Sie zusätzliche Debugging-Ausgaben hinzu
@@ -274,9 +390,9 @@ def remove_from_watchlist(request):
 
 @login_required
 def search_stocks(request):
-    """Sucht nach Aktien basierend auf Symbol oder Name"""
+    """Sucht nach Aktien basierend auf Symbol oder Name mit optimierter API-Nutzung"""
     query = request.GET.get('q', '')
-    action = request.GET.get('action', '')  # New parameter for specifying action
+    action = request.GET.get('action', '')  # Parameter für spezifische Aktion
 
     if query:
         # Zuerst in der Datenbank suchen
@@ -284,7 +400,7 @@ def search_stocks(request):
             Q(symbol__icontains=query) | Q(name__icontains=query)
         ).order_by('symbol')[:20]
 
-        # If there is exactly one match and an action is specified, redirect directly
+        # Bei genau einem Treffer und spezifizierter Aktion direkt weiterleiten
         if stocks_queryset.count() == 1 and action:
             stock = stocks_queryset.first()
             if action == 'backtest':
@@ -315,24 +431,28 @@ def search_stocks(request):
 
             results.append(stock_data)
 
-        # Wenn keine lokalen Ergebnisse gefunden wurden, versuchen wir es bei Yahoo Finance
+        # Wenn keine lokalen Ergebnisse gefunden wurden und die Abfrage mindestens 2 Zeichen hat,
+        # verwenden wir die optimierte Suche über den StockDataService
         if not results and len(query) >= 2:
             try:
-                # Nach dem Symbol bei Yahoo Finance suchen
-                ticker = yf.Ticker(query.upper())
-                if hasattr(ticker, 'info') and 'longName' in ticker.info:
-                    # Aktie existiert bei Yahoo Finance
+                # Optimierte Suche mit Caching und Rate-Limiting
+                api_results = StockDataService.search_stocks(query)
+
+                for item in api_results:
+                    # Aktie existiert bei Twelvedata
                     # Wir erstellen sie nicht sofort, sondern zeigen sie nur als Suchergebnis an
                     stock_data = {
                         'id': 0,  # Temporäre ID
-                        'symbol': query.upper(),
-                        'name': ticker.info.get('longName', query.upper()),
-                        'sector': ticker.info.get('sector', 'Unbekannt'),
-                        'from_yahoo': True  # Markieren, dass dies ein Yahoo-Ergebnis ist
+                        'symbol': item['symbol'],
+                        'name': item['name'],
+                        'sector': item.get('type', 'Unbekannt'),
+                        'exchange': item.get('exchange', ''),
+                        'country': item.get('country', ''),
+                        'from_twelvedata': True  # Markieren, dass dies ein Twelvedata-Ergebnis ist
                     }
                     results.append(stock_data)
             except Exception as e:
-                print(f"Fehler bei der Yahoo-Suche: {str(e)}")
+                print(f"Fehler bei der Twelvedata-Suche: {str(e)}")
 
         return JsonResponse({'results': results})
 
@@ -346,7 +466,7 @@ def search_stocks(request):
     context = {
         'query': query,
         'stocks': stocks_for_template,
-        'action': action,  # Pass action to template
+        'action': action,  # Aktion an Template übergeben
     }
 
     return render(request, 'stock_analyzer/search_results.html', context)
@@ -355,59 +475,179 @@ def search_stocks(request):
 def api_stock_data(request, symbol):
     """API-Endpunkt für Kurs- und Indikator-Daten"""
     try:
+        # Prüfen, ob Live-Daten verwendet werden sollen
+        use_live_data = request.GET.get('use_live_data') == 'true'
+        data_type = "Live-Daten" if use_live_data else "Schlusskurse"
+        print(f"API: Verwende {data_type} für die Diagramme")
+
         stock = Stock.objects.get(symbol=symbol.upper())
 
-        analyzer = TechnicalAnalyzer(stock_symbol=symbol)
-        analyzer.calculate_indicators()
+        # Wenn Live-Daten verwendet werden, direkt von der API abrufen
+        if use_live_data:
+            try:
+                # Rate-Limiting anwenden
+                StockDataService.rate_limit()
 
-        df = analyzer.df  # Das berechnete DataFrame
+                # Twelvedata Client holen
+                td = StockDataService.get_client()
+
+                # Aktuellen Preis abrufen
+                price = td.price(symbol=symbol).as_json()
+                current_price = float(price['price']) if price and 'price' in price else None
+                print(f"Aktueller Preis für {symbol}: ${current_price}")
+
+                # Live-Daten für die letzten 2 Tage abrufen (1-Minuten-Intervall)
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=2)
+
+                # Rate-Limiting anwenden
+                StockDataService.rate_limit()
+
+                # Time-Series-Daten abrufen
+                ts = td.time_series(
+                    symbol=symbol,
+                    interval="1min",
+                    start_date=start_date.strftime('%Y-%m-%d'),
+                    end_date=end_date.strftime('%Y-%m-%d %H:%M:%S'),
+                    outputsize=1000
+                )
+                live_data = ts.as_pandas()
+
+                if not live_data.empty:
+                    print(f"Live-Daten für {symbol}: {len(live_data)} Datenpunkte")
+
+                    # DataFrame für die Analyse vorbereiten
+                    df = pd.DataFrame()
+                    df['date'] = pd.to_datetime(live_data.index)
+                    df['open_price'] = live_data['open'].astype(float)
+                    df['high_price'] = live_data['high'].astype(float)
+                    df['low_price'] = live_data['low'].astype(float)
+                    df['close_price'] = live_data['close'].astype(float)
+                    df['volume'] = live_data['volume'].astype(float)
+                    df['adjusted_close'] = live_data['close'].astype(float)  # Keine adjusted_close in Live-Daten
+
+                    # Aktuellen Preis als neuesten Datenpunkt hinzufügen, wenn verfügbar
+                    if current_price is not None:
+                        current_time = datetime.now()
+                        # Neuen Datenpunkt mit aktuellem Preis erstellen
+                        new_row = pd.DataFrame({
+                            'date': [current_time],
+                            'open_price': [current_price],
+                            'high_price': [current_price],
+                            'low_price': [current_price],
+                            'close_price': [current_price],
+                            'volume': [0],  # Kein Volumen für den aktuellen Preis
+                            'adjusted_close': [current_price]
+                        })
+                        # Zum DataFrame hinzufügen
+                        df = pd.concat([df, new_row], ignore_index=True)
+                        print(f"Aktueller Preis ${current_price} als Datenpunkt hinzugefügt")
+
+                    # Indikatoren berechnen
+                    analyzer = TechnicalAnalyzer(stock_symbol=symbol)
+                    analyzer.df = df  # Ersetze das DataFrame mit den Live-Daten
+                    analyzer.calculate_indicators()
+                    df = analyzer.df
+
+                    # Sicherstellen, dass die Daten nach Datum sortiert sind (älteste zuerst)
+                    df = df.sort_values(by='date')
+                else:
+                    # Fallback auf gespeicherte Daten, wenn keine Live-Daten verfügbar sind
+                    print(f"Keine Live-Daten für {symbol} gefunden, verwende gespeicherte Daten")
+                    analyzer = TechnicalAnalyzer(stock_symbol=symbol)
+                    analyzer.calculate_indicators()
+                    df = analyzer.df
+
+                    # Sicherstellen, dass die Daten nach Datum sortiert sind (älteste zuerst)
+                    df = df.sort_values(by='date')
+            except Exception as e:
+                print(f"Fehler beim Abrufen der Live-Daten: {str(e)}")
+                # Fallback auf gespeicherte Daten
+                analyzer = TechnicalAnalyzer(stock_symbol=symbol)
+                analyzer.calculate_indicators()
+                df = analyzer.df
+
+                # Sicherstellen, dass die Daten nach Datum sortiert sind (älteste zuerst)
+                df = df.sort_values(by='date')
+                current_price = None
+        else:
+            # Für historische Daten den normalen Weg gehen
+            analyzer = TechnicalAnalyzer(stock_symbol=symbol)
+            analyzer.calculate_indicators()
+            df = analyzer.df
+
+            # Sicherstellen, dass die Daten nach Datum sortiert sind (älteste zuerst)
+            df = df.sort_values(by='date')
+            current_price = None
 
         # Preis-Daten
         price_data = []
         for _, row in df.iterrows():
             price_data.append({
                 'date': row['date'].isoformat() if isinstance(row['date'], datetime) else str(row['date']),
-                'open_price': float(row['open_price']),
-                'high_price': float(row['high_price']),
-                'low_price': float(row['low_price']),
-                'close_price': float(row['close_price']),
+                'open_price': float(row['open_price']) if not pd.isna(row['open_price']) else None,
+                'high_price': float(row['high_price']) if not pd.isna(row['high_price']) else None,
+                'low_price': float(row['low_price']) if not pd.isna(row['low_price']) else None,
+                'close_price': float(row['close_price']) if not pd.isna(row['close_price']) else None,
                 'volume': int(row['volume']) if not pd.isna(row['volume']) else 0
             })
 
         # Indikator-Daten - ALLE verfügbaren Indikatoren einschließen
+        # Debug-Ausgabe für die Sortierung
+        print(f"DataFrame sortiert nach Datum: {df['date'].iloc[0]} bis {df['date'].iloc[-1]}")
+
+        # Hilfsfunktion zum sicheren Konvertieren von DataFrame-Spalten zu Listen
+        def safe_column_to_list(df, column_name):
+            if column_name not in df.columns:
+                return []
+            # NaN-Werte entfernen und dann verbleibende NaN-Werte durch None ersetzen
+            values = df[column_name].dropna()
+            # Sicherstellen, dass keine NaN-Werte übrig bleiben
+            result = [float(x) if not pd.isna(x) else None for x in values.tolist()]
+            # Debug-Ausgabe für RSI
+            if column_name == 'rsi' and len(result) > 0:
+                print(f"RSI Werte: erster={result[0]:.2f}, letzter={result[-1]:.2f}")
+            return result
+
         indicators = {
-            'rsi': df['rsi'].dropna().tolist() if 'rsi' in df.columns else [],
-            'macd': df['macd'].dropna().tolist() if 'macd' in df.columns else [],
-            'macd_signal': df['macd_signal'].dropna().tolist() if 'macd_signal' in df.columns else [],
-            'macd_histogram': df['macd_histogram'].dropna().tolist() if 'macd_histogram' in df.columns else [],
-            'sma_20': df['sma_20'].dropna().tolist() if 'sma_20' in df.columns else [],
-            'sma_50': df['sma_50'].dropna().tolist() if 'sma_50' in df.columns else [],
-            'sma_200': df['sma_200'].dropna().tolist() if 'sma_200' in df.columns else [],
-            'bollinger_upper': df['bollinger_upper'].dropna().tolist() if 'bollinger_upper' in df.columns else [],
-            'bollinger_lower': df['bollinger_lower'].dropna().tolist() if 'bollinger_lower' in df.columns else [],
-            'stoch_k': df['stoch_k'].dropna().tolist() if 'stoch_k' in df.columns else [],
-            'stoch_d': df['stoch_d'].dropna().tolist() if 'stoch_d' in df.columns else [],
-            'adx': df['adx'].dropna().tolist() if 'adx' in df.columns else [],
-            '+di': df['+di'].dropna().tolist() if '+di' in df.columns else [],
-            '-di': df['-di'].dropna().tolist() if '-di' in df.columns else [],
-            'obv': df['obv'].dropna().tolist() if 'obv' in df.columns else [],
-            'atr': df['atr'].dropna().tolist() if 'atr' in df.columns else [],
-            'roc': df['roc'].dropna().tolist() if 'roc' in df.columns else [],
-            'psar': df['psar'].dropna().tolist() if 'psar' in df.columns else [],
+            'rsi': safe_column_to_list(df, 'rsi'),
+            'macd': safe_column_to_list(df, 'macd'),
+            'macd_signal': safe_column_to_list(df, 'macd_signal'),
+            'macd_histogram': safe_column_to_list(df, 'macd_histogram'),
+            'sma_20': safe_column_to_list(df, 'sma_20'),
+            'sma_50': safe_column_to_list(df, 'sma_50'),
+            'sma_200': safe_column_to_list(df, 'sma_200'),
+            'bollinger_upper': safe_column_to_list(df, 'bollinger_upper'),
+            'bollinger_lower': safe_column_to_list(df, 'bollinger_lower'),
+            'stoch_k': safe_column_to_list(df, 'stoch_k'),
+            'stoch_d': safe_column_to_list(df, 'stoch_d'),
+            'adx': safe_column_to_list(df, 'adx'),
+            '+di': safe_column_to_list(df, '+di'),
+            '-di': safe_column_to_list(df, '-di'),
+            'obv': safe_column_to_list(df, 'obv'),
+            'atr': safe_column_to_list(df, 'atr'),
+            'roc': safe_column_to_list(df, 'roc'),
+            'psar': safe_column_to_list(df, 'psar'),
             # Ichimoku-Komponenten
-            'tenkan_sen': df['tenkan_sen'].dropna().tolist() if 'tenkan_sen' in df.columns else [],
-            'kijun_sen': df['kijun_sen'].dropna().tolist() if 'kijun_sen' in df.columns else [],
-            'senkou_span_a': df['senkou_span_a'].dropna().tolist() if 'senkou_span_a' in df.columns else [],
-            'senkou_span_b': df['senkou_span_b'].dropna().tolist() if 'senkou_span_b' in df.columns else [],
-            'chikou_span': df['chikou_span'].dropna().tolist() if 'chikou_span' in df.columns else []
+            'tenkan_sen': safe_column_to_list(df, 'tenkan_sen'),
+            'kijun_sen': safe_column_to_list(df, 'kijun_sen'),
+            'senkou_span_a': safe_column_to_list(df, 'senkou_span_a'),
+            'senkou_span_b': safe_column_to_list(df, 'senkou_span_b'),
+            'chikou_span': safe_column_to_list(df, 'chikou_span')
         }
 
-        return JsonResponse({
+        response_data = {
             'symbol': stock.symbol,
             'name': stock.name,
             'price_data': price_data,
             'indicators': indicators
-        })
+        }
+
+        # Wenn Live-Daten verwendet werden und ein aktueller Preis verfügbar ist, diesen hinzufügen
+        if use_live_data and current_price is not None:
+            response_data['current_price'] = current_price
+
+        return JsonResponse(response_data)
     except Stock.DoesNotExist:
         return JsonResponse({'error': 'Aktie nicht gefunden'}, status=404)
     except Exception as e:
@@ -417,36 +657,51 @@ def api_stock_data(request, symbol):
 
 @login_required
 def batch_analyze(request):
-    """Analysiert mehrere Aktien gleichzeitig"""
+    """Analysiert mehrere Aktien gleichzeitig mit optimierter Batch-Verarbeitung"""
     if request.method == 'POST':
         symbols = request.POST.getlist('symbols')
+        use_live_data = request.POST.get('use_live_data') == 'true'  # Checkbox-Wert als Boolean
+
+        if not symbols:
+            return JsonResponse({'error': 'Keine Symbole angegeben'}, status=400)
+
+        # Daten für alle Aktien in einem Batch aktualisieren
+        update_results = StockDataService.update_multiple_stocks(symbols, use_live_data=use_live_data)
+
         results = {}
 
+        # Analyse für jede Aktie durchführen
         for symbol in symbols:
             try:
-                # Daten aktualisieren
-                StockDataService.update_stock_data(symbol)
+                # Prüfen, ob die Datenaktualisierung erfolgreich war
+                if symbol in update_results and update_results[symbol]['success']:
+                    # Aktie laden
+                    stock = Stock.objects.get(symbol=symbol.upper())
+                    has_ml_data = StockData.objects.filter(stock=stock).count() >= 200
 
-                # Aktie laden
-                stock = Stock.objects.get(symbol=symbol.upper())
-                has_ml_data = StockData.objects.filter(stock=stock).count() >= 200
+                    # Analyse durchführen (technisch oder adaptiv)
+                    if has_ml_data:
+                        analyzer = AdaptiveAnalyzer(symbol)
+                        result = analyzer.get_adaptive_score()
+                        analysis_result = analyzer.save_analysis_result()
+                    else:
+                        analyzer = TechnicalAnalyzer(symbol)
+                        result = analyzer.calculate_technical_score()
+                        analysis_result = analyzer.save_analysis_result()
 
-                # Analyse durchführen (technisch oder adaptiv)
-                if has_ml_data:
-                    analyzer = AdaptiveAnalyzer(symbol)
-                    result = analyzer.get_adaptive_score()
-                    analysis_result = analyzer.save_analysis_result()
+                    results[symbol] = {
+                        'success': True,
+                        'score': float(analysis_result.technical_score),
+                        'recommendation': analysis_result.recommendation,
+                        'confluence': result.get('confluence_score', None)
+                    }
                 else:
-                    analyzer = TechnicalAnalyzer(symbol)
-                    result = analyzer.calculate_technical_score()
-                    analysis_result = analyzer.save_analysis_result()
-
-                results[symbol] = {
-                    'success': True,
-                    'score': float(analysis_result.technical_score),
-                    'recommendation': analysis_result.recommendation,
-                    'confluence': result.get('confluence_score', None)
-                }
+                    # Wenn die Datenaktualisierung fehlgeschlagen ist, Fehlermeldung übernehmen
+                    error_message = update_results[symbol]['message'] if symbol in update_results else "Unbekannter Fehler"
+                    results[symbol] = {
+                        'success': False,
+                        'error': error_message
+                    }
             except Exception as e:
                 results[symbol] = {
                     'success': False,
