@@ -636,7 +636,7 @@ class AdvancedIndicators:
             self.df[col] = ha_df[col]
 
         # Bestimme Trend basierend auf Heikin-Ashi
-        self.df['ha_trend'] = np.where(
+        self.df['ha_trend_strength'] = np.where(
             self.df['ha_close'] > self.df['ha_open'],
             1,  # Grüne Kerze = Aufwärtstrend
             -1  # Rote Kerze = Abwärtstrend

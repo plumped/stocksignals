@@ -35,6 +35,7 @@ urlpatterns = [
 
     path('ml/predict/<str:symbol>/', views.generate_ml_prediction, name='generate_ml_prediction'),
     path('ml/evaluate/<str:symbol>/', views.evaluate_ml_model, name='evaluate_ml_model'),
+    path('ml/get_model_stocks/', views.get_model_stocks, name='get_model_stocks'),
     path('ml/dashboard/', views.ml_dashboard, name='ml_dashboard'),
     path('ml/batch/', views.batch_ml_predictions_view, name='batch_ml_predictions'),
 
@@ -58,6 +59,7 @@ urlpatterns = [
     path('ml/strategy-comparison/<str:symbol>/', views.ml_strategy_comparison, name='ml_strategy_comparison'),
     path('ml/batch-backtest/', views.ml_batch_backtest, name='ml_batch_backtest'),
     path('api/ml/backtest/<str:symbol>/', views.api_ml_backtest, name='api_ml_backtest'),
+    path('api/ml_metrics/<str:symbol>/', views.api_ml_metrics, name='api_ml_metrics'),
 
     # Portfolio Performance
     path('portfolio/<int:portfolio_id>/performance/', views.portfolio_performance, name='portfolio_performance'),

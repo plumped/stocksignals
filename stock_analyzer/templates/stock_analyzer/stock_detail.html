@@ -121,15 +121,6 @@
                 Aktionen
             </div>
             <div class="card-body">
-                <div id="current-price-container" class="alert alert-info mb-2" style="display: none;">
-                    <strong>Aktueller Kurs:</strong> <span id="current-price-value"></span>
-                </div>
-                <div class="form-check mb-2">
-                    <input class="form-check-input" type="checkbox" id="use-live-data" {% if use_live_data %}checked{% endif %}>
-                    <label class="form-check-label" for="use-live-data">
-                        Live-Daten verwenden (statt Schlusskurse)
-                    </label>
-                </div>
                 <button id="analyze-button" class="btn btn-primary mb-3 w-100">
                     <i class="bi bi-graph-up"></i> Jetzt analysieren
                 </button>
@@ -248,6 +239,9 @@
             </li>
             <li class="nav-item">
                 <a class="nav-link" id="volume-tab" data-bs-toggle="tab" href="#volume">Volumen</a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" id="heikin-ashi-tab" data-bs-toggle="tab" href="#heikin-ashi">Heikin-Ashi</a>
             </li>
             <li class="nav-item">
                 <a class="nav-link" id="historical-tab" data-bs-toggle="tab" href="#historical">Historische Daten</a>
@@ -372,6 +366,50 @@
                 </div>
             </div>
 
+            <div class="tab-pane fade" id="heikin-ashi">
+                <div class="row">
+                    <div class="col-md-12 mb-4">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5>Heikin-Ashi Kerzen</h5>
+                                <p class="text-muted small">Heikin-Ashi Kerzen reduzieren Rauschen und zeigen Trends deutlicher als normale Kerzen.</p>
+                            </div>
+                            <div class="card-body">
+                                <canvas id="heikin-ashi-chart" height="350"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6 mb-4">
+                        <div class="card indicator-card">
+                            <div class="card-header">Heikin-Ashi Trendstärke</div>
+                            <div class="card-body">
+                                <canvas id="ha-trend-chart" height="250"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6 mb-4">
+                        <div class="card indicator-card">
+                            <div class="card-header">Heikin-Ashi vs. Normale Kerzen</div>
+                            <div class="card-body">
+                                <p>Vorteile von Heikin-Ashi:</p>
+                                <ul>
+                                    <li>Glättere Preisbewegungen</li>
+                                    <li>Deutlichere Trendidentifikation</li>
+                                    <li>Weniger Fehlsignale</li>
+                                    <li>Bessere Erkennung von Trendwechseln</li>
+                                </ul>
+                                <p>Interpretation:</p>
+                                <ul>
+                                    <li><span class="text-success">Grüne Kerzen ohne untere Schatten</span>: Starker Aufwärtstrend</li>
+                                    <li><span class="text-danger">Rote Kerzen ohne obere Schatten</span>: Starker Abwärtstrend</li>
+                                    <li>Kleine Körper mit Schatten: Möglicher Trendwechsel</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div class="tab-pane fade" id="historical">
                 <div class="card">
                     <div class="card-header">Historische Daten</div>
@@ -429,6 +467,8 @@
     let volumeChart = null;
     let obvChart = null;
     let atrChart = null;
+    let heikinAshiChart = null;
+    let haTrendChart = null;
 
     // Tabs konfigurieren
     document.querySelectorAll('.time-range').forEach(btn => {
@@ -446,11 +486,8 @@
             this.disabled = true;
             this.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Analysiere...';
 
-            // Prüfen, ob Live-Daten verwendet werden sollen
-            const useLiveData = document.getElementById('use-live-data').checked;
-
-            // URL mit Parameter für Live-Daten
-            const url = `/analyze/${symbol}/?use_live_data=${useLiveData}`;
+            // URL ohne Live-Daten Parameter
+            const url = `/analyze/${symbol}/`;
 
             fetch(url)
                 .then(response => response.json())
@@ -483,11 +520,8 @@
 
     // Daten laden und Charts initialisieren
     function loadChartData() {
-        // Prüfen, ob Live-Daten verwendet werden sollen
-        const useLiveData = document.getElementById('use-live-data').checked;
-
-        // URL mit Parameter für Live-Daten
-        const url = `/api/stock/${symbol}/?use_live_data=${useLiveData}`;
+        // URL ohne Live-Daten Parameter
+        const url = `/api/stock/${symbol}/`;
 
         return fetch(url)
             .then(response => {
@@ -498,36 +532,6 @@
             });
     }
 
-    // Funktion zum Anzeigen des aktuellen Preises
-    function updateCurrentPrice(data) {
-        const currentPriceContainer = document.getElementById('current-price-container');
-        const currentPriceValue = document.getElementById('current-price-value');
-
-        if (data.current_price) {
-            currentPriceValue.textContent = `$${data.current_price.toFixed(2)}`;
-            currentPriceContainer.style.display = 'block';
-
-            // Wenn es historische Daten gibt, den letzten Schlusskurs anzeigen
-            if (data.price_data && data.price_data.length > 0) {
-                const lastClosePrice = data.price_data[0].close_price;
-                const priceDiff = data.current_price - lastClosePrice;
-                const priceDiffPercent = (priceDiff / lastClosePrice) * 100;
-
-                // Farbliche Markierung basierend auf der Preisänderung
-                if (priceDiff > 0) {
-                    currentPriceValue.classList.add('text-success');
-                    currentPriceValue.classList.remove('text-danger');
-                    currentPriceValue.textContent += ` (+${priceDiff.toFixed(2)}, +${priceDiffPercent.toFixed(2)}%)`;
-                } else if (priceDiff < 0) {
-                    currentPriceValue.classList.add('text-danger');
-                    currentPriceValue.classList.remove('text-success');
-                    currentPriceValue.textContent += ` (${priceDiff.toFixed(2)}, ${priceDiffPercent.toFixed(2)}%)`;
-                }
-            }
-        } else {
-            currentPriceContainer.style.display = 'none';
-        }
-    }
 
     // Funktion zum Aktualisieren der Hauptindikatoren
     function updateMainIndicators(data) {
@@ -619,43 +623,6 @@
         }
     }
 
-    // Event-Listener für die Live-Daten-Checkbox
-    document.getElementById('use-live-data').addEventListener('change', function() {
-        // Charts neu laden, wenn die Checkbox geändert wird
-        loadChartData()
-            .then(data => {
-                stockData = data;
-                console.log('Daten neu geladen:', stockData);
-
-                // Aktuellen Preis anzeigen, wenn Live-Daten aktiviert sind
-                if (this.checked) {
-                    updateCurrentPrice(data);
-                    // Hauptindikatoren mit Live-Daten aktualisieren
-                    updateMainIndicators(data);
-                } else {
-                    document.getElementById('current-price-container').style.display = 'none';
-                }
-
-                // Bestehende Charts löschen
-                if (priceChart) priceChart.destroy();
-                if (rsiChart) rsiChart.destroy();
-                if (macdChart) macdChart.destroy();
-                if (stochasticChart) stochasticChart.destroy();
-                if (smaChart) smaChart.destroy();
-                if (bollingerChart) bollingerChart.destroy();
-                if (volumeChart) volumeChart.destroy();
-                if (obvChart) obvChart.destroy();
-                if (atrChart) atrChart.destroy();
-                // Charts neu initialisieren
-                initCharts();
-                // Aktiven Zeitraum beibehalten
-                const activeRange = document.querySelector('.time-range.active').dataset.range;
-                updateCharts(parseInt(activeRange));
-            })
-            .catch(error => {
-                console.error('Fehler beim Neuladen der Aktiendaten:', error);
-            });
-    });
 
     // Initial data load
     loadChartData()
@@ -663,12 +630,6 @@
             stockData = data;
             console.log('Geladene Daten:', stockData);
 
-            // Aktuellen Preis und Hauptindikatoren anzeigen, wenn Live-Daten aktiviert sind
-            if (document.getElementById('use-live-data').checked) {
-                updateCurrentPrice(data);
-                updateMainIndicators(data);
-                console.log('Live-Daten beim initialen Laden aktiviert - Indikatoren aktualisiert');
-            }
 
             initCharts();
             updateCharts(180); // Standardmäßig 6 Monate anzeigen
@@ -1104,6 +1065,107 @@
                 }
             });
         }
+
+        // Heikin-Ashi Chart
+        const heikinAshiCtx = document.getElementById('heikin-ashi-chart');
+        if (heikinAshiCtx) {
+            heikinAshiChart = new Chart(heikinAshiCtx.getContext('2d'), {
+                type: 'line',
+                data: {
+                    datasets: [
+                        {
+                            label: 'Heikin-Ashi Open',
+                            borderColor: 'rgba(75, 192, 192, 0.8)',
+                            borderWidth: 1,
+                            pointRadius: 0,
+                            fill: false,
+                            data: []
+                        },
+                        {
+                            label: 'Heikin-Ashi High',
+                            borderColor: 'rgba(54, 162, 235, 0.8)',
+                            borderWidth: 1,
+                            pointRadius: 0,
+                            fill: false,
+                            data: []
+                        },
+                        {
+                            label: 'Heikin-Ashi Low',
+                            borderColor: 'rgba(255, 99, 132, 0.8)',
+                            borderWidth: 1,
+                            pointRadius: 0,
+                            fill: false,
+                            data: []
+                        },
+                        {
+                            label: 'Heikin-Ashi Close',
+                            borderColor: 'rgba(153, 102, 255, 0.8)',
+                            borderWidth: 2,
+                            pointRadius: 0,
+                            fill: false,
+                            data: []
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'day',
+                                tooltipFormat: 'dd.MM.yyyy'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Preis'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Heikin-Ashi Trend Strength Chart
+        const haTrendCtx = document.getElementById('ha-trend-chart');
+        if (haTrendCtx) {
+            haTrendChart = new Chart(haTrendCtx.getContext('2d'), {
+                type: 'line',
+                data: {
+                    datasets: [{
+                        label: 'Trend Stärke',
+                        borderColor: 'rgb(75, 192, 192)',
+                        backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                        fill: true,
+                        data: []
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'day',
+                                tooltipFormat: 'dd.MM.yyyy'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Trend Stärke'
+                            },
+                            min: -3,
+                            max: 3
+                        }
+                    }
+                }
+            });
+        }
     }
 
     function updateCharts(days) {
@@ -1137,39 +1199,6 @@
             // Sicherstellen, dass nach Datum sortiert ist (aufsteigend)
             filteredData.sort((a, b) => new Date(a.date) - new Date(b.date));
 
-            // Sicherstellen, dass der aktuelle Preis immer angezeigt wird, wenn Live-Daten aktiviert sind
-            if (document.getElementById('use-live-data').checked && stockData.current_price) {
-                // Prüfen, ob der letzte Datenpunkt der aktuelle Preis ist
-                const lastPoint = filteredData[filteredData.length - 1];
-                const lastPrice = lastPoint ? lastPoint.close_price : 0;
-
-                console.log('Letzter Preis in gefilterten Daten:', lastPrice);
-                console.log('Aktueller Preis:', stockData.current_price);
-
-                // Wenn der letzte Preis nicht der aktuelle Preis ist, füge den aktuellen Preis hinzu
-                if (Math.abs(lastPrice - stockData.current_price) > 0.01) {
-                    console.log('Füge aktuellen Preis zu den Chartdaten hinzu');
-
-                    // Aktuelles Datum für den neuen Datenpunkt
-                    const now = new Date();
-
-                    // Neuen Datenpunkt mit aktuellem Preis erstellen
-                    const currentPricePoint = {
-                        date: now.toISOString(),
-                        open_price: stockData.current_price,
-                        high_price: stockData.current_price,
-                        low_price: stockData.current_price,
-                        close_price: stockData.current_price,
-                        volume: 0
-                    };
-
-                    // Zum gefilterten Array hinzufügen
-                    filteredData.push(currentPricePoint);
-
-                    // Neu sortieren, um sicherzustellen, dass die Daten in der richtigen Reihenfolge sind
-                    filteredData.sort((a, b) => new Date(a.date) - new Date(b.date));
-                }
-            }
 
             console.log(`Gefilterte Daten für ${days} Tage:`, filteredData.length);
 
@@ -1304,6 +1333,90 @@
                         y: d
                     }));
                     stochasticChart.update();
+                }
+            }
+
+            // Heikin-Ashi Chart
+            if (heikinAshiChart && stockData.indicators &&
+                stockData.indicators.ha_open &&
+                stockData.indicators.ha_high &&
+                stockData.indicators.ha_low &&
+                stockData.indicators.ha_close) {
+
+                const indicatorLength = stockData.indicators.ha_open.length;
+                const priceLength = stockData.price_data.length;
+                const offset = Math.max(0, priceLength - indicatorLength);
+
+                const filteredIndices = filteredData.map(d => {
+                    return stockData.price_data.findIndex(p => p.date === d.date);
+                }).filter(idx => idx !== -1);
+
+                const haOpenData = [];
+                const haHighData = [];
+                const haLowData = [];
+                const haCloseData = [];
+
+                filteredIndices.forEach(idx => {
+                    const adjustedIdx = idx - offset;
+                    if (adjustedIdx >= 0 && adjustedIdx < stockData.indicators.ha_open.length) {
+                        const date = new Date(filteredData[filteredIndices.indexOf(idx)].date);
+
+                        haOpenData.push({
+                            x: date,
+                            y: stockData.indicators.ha_open[adjustedIdx]
+                        });
+
+                        haHighData.push({
+                            x: date,
+                            y: stockData.indicators.ha_high[adjustedIdx]
+                        });
+
+                        haLowData.push({
+                            x: date,
+                            y: stockData.indicators.ha_low[adjustedIdx]
+                        });
+
+                        haCloseData.push({
+                            x: date,
+                            y: stockData.indicators.ha_close[adjustedIdx]
+                        });
+                    }
+                });
+
+                if (haOpenData.length > 0) {
+                    heikinAshiChart.data.datasets[0].data = haOpenData;
+                    heikinAshiChart.data.datasets[1].data = haHighData;
+                    heikinAshiChart.data.datasets[2].data = haLowData;
+                    heikinAshiChart.data.datasets[3].data = haCloseData;
+                    heikinAshiChart.update();
+                }
+            }
+
+            // Heikin-Ashi Trend Strength Chart
+            if (haTrendChart && stockData.indicators && stockData.indicators.ha_trend_strength) {
+                const indicatorLength = stockData.indicators.ha_trend_strength.length;
+                const priceLength = stockData.price_data.length;
+                const offset = Math.max(0, priceLength - indicatorLength);
+
+                const filteredIndices = filteredData.map(d => {
+                    return stockData.price_data.findIndex(p => p.date === d.date);
+                }).filter(idx => idx !== -1);
+
+                const trendData = [];
+
+                filteredIndices.forEach(idx => {
+                    const adjustedIdx = idx - offset;
+                    if (adjustedIdx >= 0 && adjustedIdx < stockData.indicators.ha_trend_strength.length) {
+                        trendData.push(stockData.indicators.ha_trend_strength[adjustedIdx]);
+                    }
+                });
+
+                if (trendData.length > 0) {
+                    haTrendChart.data.datasets[0].data = trendData.map((trend, i) => ({
+                        x: chartDates[i],
+                        y: trend
+                    }));
+                    haTrendChart.update();
                 }
             }
             // Bolesche Flagge, um zu prüfen, ob die Indikatoren in den API-Daten vorhanden sind

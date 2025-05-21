@@ -6,8 +6,10 @@ from sklearn.calibration import CalibratedClassifierCV
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingRegressor
 from sklearn.model_selection import train_test_split, TimeSeriesSplit, RandomizedSearchCV, StratifiedKFold
-from sklearn.metrics import accuracy_score, mean_squared_error, classification_report
+from sklearn.metrics import accuracy_score, mean_squared_error, classification_report, r2_score
 from sklearn.linear_model import LinearRegression
+import xgboost as xgb
+from sklearn.inspection import permutation_importance
 import joblib
 import os
 from datetime import datetime, timedelta
@@ -41,6 +43,7 @@ class MLPredictor:
     def prepare_data(self):
         """Prepare data for model training and prediction"""
         try:
+            print(f"DEBUG: Starting prepare_data for {self.stock_symbol}")
             # Get stock data
             stock = Stock.objects.get(symbol=self.stock_symbol)
 
@@ -59,6 +62,7 @@ class MLPredictor:
 
             # Convert to DataFrame
             df = pd.DataFrame(list(data.values()))
+            print(f"DEBUG: Got {len(df)} data points for {self.stock_symbol}")
 
             # Convert Decimal fields to float before any calculations
             for col in ['open_price', 'high_price', 'low_price', 'close_price', 'volume']:
@@ -91,7 +95,7 @@ class MLPredictor:
                 return None, None, None
 
             # For price prediction: target is the next n-day percentage change
-            features.loc[:, 'future_return'] = features['close_price'].pct_change(self.prediction_days).shift(
+            features.loc[:, 'future_return'] = features['close_price'].pct_change(self.prediction_days, fill_method=None).fillna(0).shift(
                 -self.prediction_days)
 
             # For signal prediction: create a categorical target (1=Buy, 0=Hold, -1=Sell) based on future returns
@@ -115,6 +119,7 @@ class MLPredictor:
             scaler = MinMaxScaler()
             X_scaled = scaler.fit_transform(X)
 
+            print(f"DEBUG: Prepared data for {self.stock_symbol}: X shape={X_scaled.shape}, feature count={X_scaled.shape[1]}")
             return X_scaled, y_price, y_signal
 
         except Exception as e:
@@ -169,6 +174,13 @@ class MLPredictor:
         Calculate technical indicators and other features for ML models.
         Implements adaptive feature calculation based on available data amount.
         """
+        # Get caller information for debugging
+        import inspect
+        caller_frame = inspect.currentframe().f_back
+        caller_function = caller_frame.f_code.co_name
+        caller_line = caller_frame.f_lineno
+        print(f"DEBUG: _calculate_features called from {caller_function} at line {caller_line}")
+
         # Basiskonfiguration für Feature-Sets
         SHORT_WINDOW = 5
         MEDIUM_WINDOW = 10
@@ -180,7 +192,7 @@ class MLPredictor:
         df_features = df.copy()
         data_length = len(df_features)
 
-        print(f"DEBUG: Feature-Berechnung mit {data_length} Datenpunkten gestartet")
+        print(f"DEBUG: Feature-Berechnung mit {data_length} Datenpunkten gestartet für {self.stock_symbol}")
 
         # Prüfe, welche Feature-Sets berechnet werden können
         can_calculate_short = data_length >= SHORT_WINDOW + 5
@@ -208,8 +220,48 @@ class MLPredictor:
         df_features['is_doji'] = (abs(df_features['candle_body']) < 0.1 * (
                 df_features['high_price'] - df_features['low_price'])).astype(int)
 
+        # Heikin-Ashi Kerzen - reduzieren Rauschen und zeigen Trends deutlicher
+        try:
+            # Heikin-Ashi Berechnung
+            ha_close = (df_features['open_price'] + df_features['high_price'] + 
+                        df_features['low_price'] + df_features['close_price']) / 4
+
+            # Ersten Wert für HA Open setzen
+            ha_open = df_features['open_price'].copy()
+
+            # Iterativ berechnen (erfordert Schleife)
+            for i in range(1, len(df_features)):
+                ha_open.iloc[i] = (ha_open.iloc[i-1] + ha_close.iloc[i-1]) / 2
+
+            # HA High und Low
+            ha_high = df_features[['high_price', 'open_price', 'close_price']].max(axis=1)
+            ha_low = df_features[['low_price', 'open_price', 'close_price']].min(axis=1)
+
+            # Als Features speichern
+            df_features['ha_open'] = ha_open
+            df_features['ha_close'] = ha_close
+            df_features['ha_high'] = ha_high
+            df_features['ha_low'] = ha_low
+
+            # Heikin-Ashi Kerzen-Features
+            df_features['ha_body'] = ha_close - ha_open
+            df_features['ha_is_bullish'] = (ha_close > ha_open).astype(int)
+
+            # Trendstärke basierend auf Heikin-Ashi
+            # Mehrere aufeinanderfolgende gleichfarbige Kerzen deuten auf starken Trend hin
+            df_features['ha_trend_strength'] = df_features['ha_is_bullish'].rolling(window=3).sum()
+            df_features.loc[df_features['ha_trend_strength'] == 0, 'ha_trend_strength'] = -3  # Alle 3 bearish
+
+            # Trendwechsel-Signale
+            df_features['ha_trend_change'] = df_features['ha_is_bullish'].diff().fillna(0)
+            df_features['ha_bullish_reversal'] = (df_features['ha_trend_change'] > 0).astype(int)
+            df_features['ha_bearish_reversal'] = (df_features['ha_trend_change'] < 0).astype(int)
+
+        except Exception as e:
+            print(f"Fehler bei Heikin-Ashi-Berechnung: {str(e)}")
+
         # Kurzfristige Renditen - maximal 1-Tages-Lag
-        df_features['daily_return'] = df_features['close_price'].pct_change()
+        df_features['daily_return'] = df_features['close_price'].pct_change(fill_method=None).fillna(0)
 
         # 2. KURZFRISTIGE FEATURES - mindestens 10 Datenpunkte
         # ------------------------------
@@ -256,7 +308,7 @@ class MLPredictor:
                     f'ma_{MEDIUM_WINDOW}']) / df_features[f'ma_{MEDIUM_WINDOW}'].replace(0, np.nan)
 
             # Mittelfristige Renditen
-            df_features['weekly_return'] = df_features['close_price'].pct_change(min(5, data_length - 1))
+            df_features['weekly_return'] = df_features['close_price'].pct_change(min(5, data_length - 1), fill_method=None).fillna(0)
 
             # Mittelfristige Momentum-Features
             df_features[f'momentum_{MEDIUM_WINDOW}'] = df_features['close_price'] / df_features['close_price'].shift(
@@ -295,7 +347,7 @@ class MLPredictor:
                     f'ma_{STANDARD_WINDOW}']) / df_features[f'ma_{STANDARD_WINDOW}'].replace(0, np.nan)
 
             # Längerfristige Renditen
-            df_features['monthly_return'] = df_features['close_price'].pct_change(min(STANDARD_WINDOW, data_length - 1))
+            df_features['monthly_return'] = df_features['close_price'].pct_change(min(STANDARD_WINDOW, data_length - 1), fill_method=None).fillna(0)
 
             # Volatilitätsfeatures
             df_features['volatility_20'] = df_features['daily_return'].rolling(window=STANDARD_WINDOW,
@@ -375,11 +427,58 @@ class MLPredictor:
                                                        (df_features['candle_body'] > df_features[
                                                            'candle_body'].shift())).astype(int)
 
+            # ADX (Average Directional Index) - Trendstärke-Indikator
+            try:
+                # Berechnung der Richtungsbewegungen
+                plus_dm = df_features['high_price'].diff()
+                minus_dm = df_features['low_price'].diff(-1).abs()
+
+                # Positive/Negative Richtungsbewegung
+                plus_dm = plus_dm.where((plus_dm > 0) & (plus_dm > minus_dm), 0)
+                minus_dm = minus_dm.where((minus_dm > 0) & (minus_dm > plus_dm), 0)
+
+                # True Range
+                high_low = df_features['high_price'] - df_features['low_price']
+                high_close = (df_features['high_price'] - df_features['close_price'].shift()).abs()
+                low_close = (df_features['low_price'] - df_features['close_price'].shift()).abs()
+                tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+
+                # Smoothed Werte (14-Perioden)
+                window = min(14, data_length - 5)
+                if window >= 5:  # Mindestens 5 Perioden für sinnvolle Berechnung
+                    smoothed_tr = tr.rolling(window=window, min_periods=5).sum()
+                    smoothed_plus_dm = plus_dm.rolling(window=window, min_periods=5).sum()
+                    smoothed_minus_dm = minus_dm.rolling(window=window, min_periods=5).sum()
+
+                    # Direktionale Indikatoren
+                    plus_di = 100 * smoothed_plus_dm / smoothed_tr.replace(0, np.nan)
+                    minus_di = 100 * smoothed_minus_dm / smoothed_tr.replace(0, np.nan)
+
+                    # Direktionaler Index
+                    di_diff = (plus_di - minus_di).abs()
+                    di_sum = plus_di + minus_di
+                    dx = 100 * di_diff / di_sum.replace(0, np.nan)
+
+                    # ADX (Average Directional Index) - geglätteter DX
+                    df_features['adx'] = dx.rolling(window=window, min_periods=5).mean()
+                    df_features['+di'] = plus_di
+                    df_features['-di'] = minus_di
+
+                    # ADX Interpretation als Features
+                    df_features['strong_trend'] = (df_features['adx'] > 25).astype(int)
+                    df_features['very_strong_trend'] = (df_features['adx'] > 50).astype(int)
+                    df_features['bullish_trend'] = ((df_features['+di'] > df_features['-di']) & 
+                                                   (df_features['adx'] > 20)).astype(int)
+                    df_features['bearish_trend'] = ((df_features['+di'] < df_features['-di']) & 
+                                                   (df_features['adx'] > 20)).astype(int)
+            except Exception as e:
+                print(f"Fehler bei ADX-Berechnung: {str(e)}")
+
         # 5. SPY-KORRELATIONS-FEATURES - nur wenn SPY Daten vorhanden sind
         # ------------------------------
         if 'spy_close' in df_features.columns:
             # Grundlegende SPY-Renditen berechnen
-            df_features['spy_daily_return'] = df_features['spy_close'].pct_change()
+            df_features['spy_daily_return'] = df_features['spy_close'].pct_change(fill_method=None).fillna(0)
 
             # Kurzfristige relative Stärke
             if 'daily_return' in df_features.columns:
@@ -387,7 +486,7 @@ class MLPredictor:
 
             # Medium-Term SPY Features
             if can_calculate_medium:
-                df_features['spy_return_10d'] = df_features['spy_close'].pct_change(MEDIUM_WINDOW)
+                df_features['spy_return_10d'] = df_features['spy_close'].pct_change(MEDIUM_WINDOW, fill_method=None).fillna(0)
                 if 'weekly_return' in df_features.columns:
                     df_features['rel_strength_10d'] = df_features['weekly_return'] - df_features['spy_return_10d']
 
@@ -404,9 +503,9 @@ class MLPredictor:
                 min_periods_spy = min(15, data_length - 5)
                 if can_calculate_standard and min_periods_spy >= 10:
                     spy_ret_window = min(30, data_length - 5)
-                    df_features['spy_return_30d'] = df_features['spy_close'].pct_change().rolling(window=spy_ret_window,
+                    df_features['spy_return_30d'] = df_features['spy_close'].pct_change(fill_method=None).fillna(0).rolling(window=spy_ret_window,
                                                                                                   min_periods=min_periods_spy).sum()
-                    df_features['stock_return_30d'] = df_features['close_price'].pct_change().rolling(
+                    df_features['stock_return_30d'] = df_features['close_price'].pct_change(fill_method=None).fillna(0).rolling(
                         window=spy_ret_window, min_periods=min_periods_spy).sum()
 
                     # Alpha und Beta nur berechnen, wenn genügend nicht-NaN Werte vorhanden sind
@@ -458,21 +557,98 @@ class MLPredictor:
                 df_features['ema_bullish_cross'] = (df_features['ema_cross_change'] > 0).astype(int)
                 df_features['ema_bearish_cross'] = (df_features['ema_cross_change'] < 0).astype(int)
 
+            # Ichimoku Cloud - umfassendes Indikator-System
+            try:
+                # Parameter für Ichimoku (angepasst an verfügbare Datenmenge)
+                tenkan_period = min(9, data_length // 5)  # Conversion Line
+                kijun_period = min(26, data_length // 3)  # Base Line
+                senkou_b_period = min(52, data_length // 2)  # Leading Span B
+
+                if tenkan_period >= 3 and kijun_period >= 5 and senkou_b_period >= 10:
+                    # Tenkan-sen (Conversion Line): (n-period high + n-period low) / 2
+                    period_high = df_features['high_price'].rolling(window=tenkan_period).max()
+                    period_low = df_features['low_price'].rolling(window=tenkan_period).min()
+                    df_features['tenkan_sen'] = (period_high + period_low) / 2
+
+                    # Kijun-sen (Base Line): (n-period high + n-period low) / 2
+                    period_high = df_features['high_price'].rolling(window=kijun_period).max()
+                    period_low = df_features['low_price'].rolling(window=kijun_period).min()
+                    df_features['kijun_sen'] = (period_high + period_low) / 2
+
+                    # Senkou Span A (Leading Span A): (Tenkan-sen + Kijun-sen) / 2
+                    df_features['senkou_span_a'] = ((df_features['tenkan_sen'] + df_features['kijun_sen']) / 2)
+
+                    # Senkou Span B (Leading Span B): (n-period high + n-period low) / 2
+                    period_high = df_features['high_price'].rolling(window=senkou_b_period).max()
+                    period_low = df_features['low_price'].rolling(window=senkou_b_period).min()
+                    df_features['senkou_span_b'] = (period_high + period_low) / 2
+
+                    # Chikou Span (Lagging Span): Aktuelle Schlusskurse
+                    df_features['chikou_span'] = df_features['close_price']
+
+                    # Ichimoku-Signale als Features
+                    # Preis über der Cloud (bullish)
+                    df_features['price_above_cloud'] = (df_features['close_price'] > df_features['senkou_span_a']) & \
+                                                      (df_features['close_price'] > df_features['senkou_span_b'])
+                    df_features['price_above_cloud'] = df_features['price_above_cloud'].astype(int)
+
+                    # Preis unter der Cloud (bearish)
+                    df_features['price_below_cloud'] = (df_features['close_price'] < df_features['senkou_span_a']) & \
+                                                      (df_features['close_price'] < df_features['senkou_span_b'])
+                    df_features['price_below_cloud'] = df_features['price_below_cloud'].astype(int)
+
+                    # Collect all new columns in a dictionary
+                    new_columns = {
+                        'price_in_cloud': (~(df_features['price_above_cloud'] | df_features['price_below_cloud'])).astype(int),
+
+                        # TK Cross (Tenkan kreuzt Kijun) - starkes Signal
+                        'tk_cross': np.sign(df_features['tenkan_sen'] - df_features['kijun_sen']),
+                    }
+
+                    # Add tk_cross_change after tk_cross is calculated
+                    new_columns['tk_cross_change'] = new_columns['tk_cross'].diff().fillna(0)
+                    new_columns['bullish_tk_cross'] = (new_columns['tk_cross_change'] > 0).astype(int)
+                    new_columns['bearish_tk_cross'] = (new_columns['tk_cross_change'] < 0).astype(int)
+
+                    # Kijun Cross (Preis kreuzt Kijun) - wichtiges Signal
+                    new_columns['kijun_cross'] = np.sign(df_features['close_price'] - df_features['kijun_sen'])
+                    new_columns['kijun_cross_change'] = new_columns['kijun_cross'].diff().fillna(0)
+                    new_columns['bullish_kijun_cross'] = (new_columns['kijun_cross_change'] > 0).astype(int)
+                    new_columns['bearish_kijun_cross'] = (new_columns['kijun_cross_change'] < 0).astype(int)
+
+                    # Cloud-Twist (Senkou Span A kreuzt Senkou Span B) - langfristiges Signal
+                    new_columns['cloud_twist'] = np.sign(df_features['senkou_span_a'] - df_features['senkou_span_b'])
+                    new_columns['cloud_twist_change'] = new_columns['cloud_twist'].diff().fillna(0)
+                    new_columns['bullish_cloud_twist'] = (new_columns['cloud_twist_change'] > 0).astype(int)
+                    new_columns['bearish_cloud_twist'] = (new_columns['cloud_twist_change'] < 0).astype(int)
+
+                    # Add all new columns at once
+                    df_features = pd.concat([df_features, pd.DataFrame(new_columns, index=df_features.index)], axis=1)
+            except Exception as e:
+                print(f"Fehler bei Ichimoku-Berechnung: {str(e)}")
+
         # 7. LANGFRISTIGE FEATURES - nur wenn genügend Daten vorhanden sind (200+ Datenpunkte)
         # ------------------------------
         if can_calculate_long:
-            df_features[f'ma_{LONG_WINDOW}'] = df_features['close_price'].rolling(window=LONG_WINDOW,
-                                                                                  min_periods=120).mean()
+            # Collect long-term features in a dictionary
+            long_term_columns = {
+                f'ma_{LONG_WINDOW}': df_features['close_price'].rolling(window=LONG_WINDOW, min_periods=120).mean()
+            }
 
             # SMA Kreuzungen mit Long Windows
             if 'ma_50' in df_features.columns and 'ma_200' in df_features.columns:
-                df_features['ma_50_200_cross'] = df_features['ma_50'] - df_features['ma_200']
+                long_term_columns['ma_50_200_cross'] = df_features['ma_50'] - df_features['ma_200']
+
+            # Add all long-term columns at once
+            df_features = pd.concat([df_features, pd.DataFrame(long_term_columns, index=df_features.index)], axis=1)
 
         # Volatilitäts-Kategorisierung (nur wenn vorhanden)
+        new_columns = {}
+
         if 'volatility_20' in df_features.columns and df_features['volatility_20'].count() >= 10:
             try:
                 # Quantile-Berechnung könnte fehlschlagen bei zu wenigen Werten
-                df_features['volatility_category'] = pd.qcut(
+                new_columns['volatility_category'] = pd.qcut(
                     df_features['volatility_20'].rank(method='first'),  # Ranking für gleiche Werte
                     q=3,
                     labels=[0, 1, 2]
@@ -485,15 +661,22 @@ class MLPredictor:
                         df_features['volatility_20'].quantile(0.67, interpolation='nearest')
                     ]
 
-                    df_features['volatility_category'] = 1  # Mittlere Kategorie als Default
-                    df_features.loc[df_features['volatility_20'] <= thresholds[0], 'volatility_category'] = 0
-                    df_features.loc[df_features['volatility_20'] > thresholds[1], 'volatility_category'] = 2
+                    # Create a Series with default value 1
+                    volatility_category = pd.Series(1, index=df_features.index)
+                    # Update values based on thresholds
+                    volatility_category[df_features['volatility_20'] <= thresholds[0]] = 0
+                    volatility_category[df_features['volatility_20'] > thresholds[1]] = 2
+                    new_columns['volatility_category'] = volatility_category
 
         # Bei High Volatility Feature, ein einfacheres Fallback verwenden
         if 'volatility_20' in df_features.columns and df_features['volatility_20'].count() >= 5:
             # Verwende Median statt Quantil bei wenigen Datenpunkten
             vol_thresh = df_features['volatility_20'].median() * 1.5
-            df_features['high_volatility_flag'] = (df_features['volatility_20'] > vol_thresh).astype(int)
+            new_columns['high_volatility_flag'] = (df_features['volatility_20'] > vol_thresh).astype(int)
+
+        # Add all new columns at once if there are any
+        if new_columns:
+            df_features = pd.concat([df_features, pd.DataFrame(new_columns, index=df_features.index)], axis=1)
 
         # Bereinigen der Daten
         df_features = df_features.replace([np.inf, -np.inf], np.nan)
@@ -574,18 +757,28 @@ class MLPredictor:
                     else:
                         df_minimal[col] = df_minimal[col].fillna(0)
 
+            feature_count = len(df_minimal.columns)
             print(f"DEBUG: Minimal-Feature-Set verwendet: {list(df_minimal.columns)}")
+            print(f"DEBUG: _calculate_features returning minimal set with {feature_count} features for {self.stock_symbol}")
+            print(f"DEBUG: WARNING - Using minimal feature set due to data quality issues")
             return df_minimal
 
         # Normale Rückgabe: Entferne NaN-Zeilen
         if len(df_no_nan) < original_len:
             print(f"DEBUG: {original_len - len(df_no_nan)} Zeilen mit NaN-Werten entfernt")
 
+        # Log the number of features being returned
+        feature_count = len(df_no_nan.columns)
+        print(f"DEBUG: _calculate_features returning {feature_count} features for {self.stock_symbol}")
+        if feature_count < 10:
+            print(f"DEBUG: WARNING - Very few features calculated: {list(df_no_nan.columns)}")
+
         return df_no_nan
 
     def _load_or_train_model(self, model_type):
-        """Load a saved model or train a new one if no saved model exists"""
+        """Load a saved model or train a new one if no saved model exists or if feature count has changed"""
         model_path = self.price_model_path if model_type == 'price' else self.signal_model_path
+        feature_names_path = os.path.join(self.models_dir, f'{self.stock_symbol}_feature_names.pkl')
 
         try:
             # Try to load the model
@@ -594,12 +787,52 @@ class MLPredictor:
 
                 # Retrain model if it's older than 30 days
                 if model_age.days > 30:
+                    logger.info(f"Model for {self.stock_symbol} is older than 30 days, retraining")
                     return self._train_model(model_type)
 
+                # Load the model
                 logger.info(f"Loading existing {model_type} model for {self.stock_symbol}")
-                return joblib.load(model_path)
+                model = joblib.load(model_path)
+
+                # Check if the model is compatible with the current feature set
+                # First, get the current feature count
+                X, _, _ = self.prepare_data()
+                if X is None:
+                    logger.error(f"Could not prepare data for {self.stock_symbol}, cannot check feature compatibility")
+                    return model
+
+                # Check if the model has n_features_in_ attribute (most sklearn models do)
+                if hasattr(model, 'n_features_in_'):
+                    expected_n_features = model.n_features_in_
+                    current_n_features = X.shape[1]
+
+                    if expected_n_features != current_n_features:
+                        logger.warning(f"Feature count mismatch for {self.stock_symbol} {model_type} model: "
+                                      f"Model expects {expected_n_features} features, but current data has {current_n_features}")
+
+                        # If we have more features than the model expects, we can still use the model
+                        # The predict method will handle the feature selection
+                        if current_n_features > expected_n_features:
+                            logger.info(f"Current data has more features than model expects. "
+                                       f"The predict method will handle feature selection.")
+                            return model
+                        else:
+                            # If we have fewer features than expected, we need to retrain
+                            logger.warning(f"Current data has fewer features than model expects. Retraining model.")
+                            return self._train_model(model_type)
+
+                # Load feature names if available
+                if os.path.exists(feature_names_path):
+                    try:
+                        self.feature_names = joblib.load(feature_names_path)
+                        logger.info(f"Loaded feature names for {self.stock_symbol} {model_type} model")
+                    except Exception as e:
+                        logger.error(f"Error loading feature names for {self.stock_symbol} {model_type} model: {str(e)}")
+
+                return model
             else:
                 # Train a new model if none exists
+                logger.info(f"No existing model found for {self.stock_symbol}, training new model")
                 return self._train_model(model_type)
 
         except Exception as e:
@@ -644,12 +877,16 @@ class MLPredictor:
             # Modell & Parameter definieren
             if model_type == 'price':
                 model_path = self.price_model_path
-                base_model = GradientBoostingRegressor(random_state=42)
+                # XGBoost statt GradientBoostingRegressor für bessere Performance
+                base_model = xgb.XGBRegressor(random_state=42, objective='reg:squarederror')
                 param_grid = {
-                    'n_estimators': [100, 150, 200],
-                    'learning_rate': [0.05, 0.1, 0.2],
-                    'max_depth': [3, 4, 5],
-                    'subsample': [0.8, 1.0]
+                    'n_estimators': [100, 150, 200, 300],
+                    'learning_rate': [0.01, 0.05, 0.1, 0.2],
+                    'max_depth': [3, 4, 5, 6],
+                    'subsample': [0.8, 0.9, 1.0],
+                    'colsample_bytree': [0.8, 0.9, 1.0],
+                    'gamma': [0, 0.1, 0.2],
+                    'min_child_weight': [1, 3, 5]
                 }
                 scoring = 'neg_mean_squared_error'
             else:
@@ -704,6 +941,36 @@ class MLPredictor:
 
             if best_model is not None:
                 joblib.dump(best_model, model_path)
+
+                # Save feature names for consistent feature selection during prediction
+                feature_names_path = os.path.join(self.models_dir, f'{self.stock_symbol}_feature_names.pkl')
+
+                # Get feature names from original dataframe
+                stock = Stock.objects.get(symbol=self.stock_symbol)
+                df = pd.DataFrame(list(StockData.objects.filter(stock=stock).order_by('date').values()))
+
+                # Ensure numeric conversion
+                for col in ['open_price', 'high_price', 'low_price', 'close_price', 'volume']:
+                    df[col] = df[col].astype(float)
+
+                df = self._calculate_features(df)
+                feature_columns = [col for col in df.columns if col not in
+                                  ['id', 'stock_id', 'date', 'future_return', 'signal_target']]
+
+                # Load existing feature names if available
+                if hasattr(self, 'feature_names') and self.feature_names:
+                    feature_names = self.feature_names
+                else:
+                    feature_names = {}
+
+                # Update feature names for current model type
+                feature_names[model_type] = feature_columns
+
+                # Store feature names
+                self.feature_names = feature_names
+                joblib.dump(self.feature_names, feature_names_path)
+                logger.info(f"Saved feature names for {self.stock_symbol} {model_type} model")
+
                 logger.info(
                     f"Trained and saved new {model_type} model for {self.stock_symbol} with best score: {best_score:.4f}"
                 )
@@ -716,14 +983,58 @@ class MLPredictor:
             logger.error(f"Error training {model_type} model for {self.stock_symbol}: {str(e)}")
             return None
 
-    def predict(self):
-        """Make predictions with the trained models (verbessert)"""
+    def predict(self, use_feature_importance=True, feature_importance_threshold=0.01):
+        """
+        Make predictions with the trained models, optionally using feature importance analysis
+
+        Args:
+            use_feature_importance (bool): If True, analyze feature importance and use only important features
+            feature_importance_threshold (float): Threshold for feature importance analysis
+
+        Returns:
+            dict: Prediction results including recommendation, confidence, and adaptive thresholds
+        """
         try:
+            print(f"DEBUG: Starting prediction for {self.stock_symbol}")
             X, _, _ = self.prepare_data()
+
+            if X is None:
+                print(f"DEBUG: No data available for prediction for {self.stock_symbol}")
+                return None
+
+            print(f"DEBUG: After prepare_data, X shape: {X.shape}")
 
             if X is None or X.shape[0] == 0:
                 logger.error(f"No data available for prediction for {self.stock_symbol}")
                 return None
+
+            # Feature importance analysis to remove unimportant features
+            feature_importance_results = None
+            feature_indices_to_keep = None
+
+            if use_feature_importance:
+                try:
+                    logger.info(f"Analyzing feature importance for {self.stock_symbol}")
+                    feature_importance_results = self.analyze_feature_importance(
+                        threshold=feature_importance_threshold,
+                        remove_least_important=True
+                    )
+
+                    if feature_importance_results and 'feature_indices_to_keep' in feature_importance_results:
+                        feature_indices_to_keep = feature_importance_results['feature_indices_to_keep']
+                        logger.info(f"Using {len(feature_indices_to_keep)}/{X.shape[1]} features for prediction")
+
+                        # Filter features based on importance, but ensure we have at least some features
+                        if len(feature_indices_to_keep) > 0:
+                            X = X[:, feature_indices_to_keep]
+                            logger.info(f"Reduced feature set shape: {X.shape}")
+                        else:
+                            logger.warning(f"No features deemed important enough! Using all features instead.")
+                            feature_indices_to_keep = list(range(X.shape[1]))
+                except Exception as e:
+                    logger.error(f"Error in feature importance analysis: {str(e)}")
+                    # Continue with all features if there's an error
+                    feature_indices_to_keep = None
 
             latest_features = X[-1].reshape(1, -1)
 
@@ -732,12 +1043,318 @@ class MLPredictor:
 
             # Price Prediction
             if self.price_model is not None:
-                predicted_return = self.price_model.predict(latest_features)[0]
+                # Check for feature count mismatch
+                expected_n_features = self.price_model.n_features_in_ if hasattr(self.price_model, 'n_features_in_') else None
+
+                if expected_n_features is not None and latest_features.shape[1] != expected_n_features:
+                    logger.warning(f"Feature count mismatch for {self.stock_symbol}: Model expects {expected_n_features} features, but got {latest_features.shape[1]}")
+
+                    # Check if we have saved feature names
+                    if hasattr(self, 'feature_names') and self.feature_names and 'price' in self.feature_names:
+                        logger.info(f"Using saved feature names for consistent feature selection")
+
+                        # Get the original feature names from the current data
+                        stock = Stock.objects.get(symbol=self.stock_symbol)
+                        df = pd.DataFrame(list(StockData.objects.filter(stock=stock).order_by('date').values()))
+
+                        # Ensure numeric conversion
+                        for col in ['open_price', 'high_price', 'low_price', 'close_price', 'volume']:
+                            df[col] = df[col].astype(float)
+
+                        df = self._calculate_features(df)
+                        current_features = [col for col in df.columns if col not in
+                                          ['id', 'stock_id', 'date', 'future_return', 'signal_target']]
+
+                        # Get the expected feature names from the saved model
+                        expected_features = self.feature_names['price']
+
+                        print(f"DEBUG: Current features count: {len(current_features)}")
+                        print(f"DEBUG: Expected features count: {len(expected_features)}")
+
+                        # Create a mapping from current features to expected features
+                        feature_mapping = {}
+                        for i, feature in enumerate(current_features):
+                            if feature in expected_features:
+                                feature_mapping[i] = expected_features.index(feature)
+
+                        print(f"DEBUG: Mapped {len(feature_mapping)} features out of {len(current_features)}")
+
+                        # If we have enough mappings, use them to rearrange features
+                        if len(feature_mapping) >= expected_n_features * 0.8:  # At least 80% of features can be mapped
+                            print(f"DEBUG: Have enough mappings ({len(feature_mapping)} >= {expected_n_features * 0.8}), using feature alignment")
+                            # Create a new feature array with the correct order
+                            print(f"DEBUG: Before alignment, X shape: {X.shape}")
+                            X_aligned = np.zeros((X.shape[0], expected_n_features))
+                            print(f"DEBUG: Created X_aligned with shape: {X_aligned.shape}")
+
+                            # Log some of the mapping for debugging
+                            mapping_sample = list(feature_mapping.items())[:5]
+                            print(f"DEBUG: Mapping sample (first 5): {mapping_sample}")
+
+                            try:
+                                # Filter the mapping to only include valid indices for X
+                                valid_mapping = {k: v for k, v in feature_mapping.items() if k < X.shape[1]}
+                                print(f"DEBUG: Filtered mapping to {len(valid_mapping)} valid features (out of {len(feature_mapping)})")
+
+                                for current_idx, expected_idx in valid_mapping.items():
+                                    if expected_idx < expected_n_features:
+                                        print(f"DEBUG: Mapping feature {current_idx} to {expected_idx}")
+                                        X_aligned[:, expected_idx] = X[:, current_idx]
+
+                                # Fill remaining features with zeros (they're already zeros, but log it)
+                                missing_features = set(range(expected_n_features)) - set(valid_mapping.values())
+                                print(f"DEBUG: {len(missing_features)} features will be zeros")
+                            except Exception as e:
+                                import traceback
+                                print(f"DEBUG: Error during feature mapping: {str(e)}")
+                                print(f"DEBUG: Traceback:\n{traceback.format_exc()}")
+                                raise
+
+                            # Use the aligned features
+                            X = X_aligned
+                            latest_features = X[-1].reshape(1, -1)
+                            print(f"DEBUG: After alignment, feature shape: {latest_features.shape}")
+                            logger.info(f"Successfully aligned features using feature names mapping")
+                        else:
+                            print(f"DEBUG: Not enough mappings ({len(feature_mapping)} < {expected_n_features * 0.8}), falling back to retraining")
+                            logger.warning(f"Could not align enough features using names, falling back to retraining")
+                            # Fall back to retraining
+                            self.price_model = self._train_model('price')
+                            if self.price_model is None:
+                                logger.error(f"Failed to retrain price model for {self.stock_symbol}")
+                                print(f"DEBUG: Retraining failed, latest_features shape: {latest_features.shape}")
+                                return None
+
+                            # After retraining, recalculate features
+                            X, _, _ = self.prepare_data()
+                            if X is None or X.shape[0] == 0:
+                                logger.error(f"No data available for prediction after retraining for {self.stock_symbol}")
+                                return None
+
+                            latest_features = X[-1].reshape(1, -1)
+                    else:
+                        # If we don't have saved feature names, use the old approach
+                        if latest_features.shape[1] > expected_n_features:
+                            # If we have more features than expected, use only the first n_features that the model expects
+                            logger.info(f"Using only the first {expected_n_features} features for prediction")
+                            latest_features = latest_features[:, :expected_n_features]
+                        else:
+                            # If we have fewer features than expected, we need to retrain the model
+                            logger.warning(f"Retraining model for {self.stock_symbol} due to feature count mismatch")
+                            self.price_model = self._train_model('price')
+                            if self.price_model is None:
+                                logger.error(f"Failed to retrain price model for {self.stock_symbol}")
+
+                                # Extreme feature count mismatch fallback (e.g., GME with 6 vs 113 features)
+                                # If retraining fails and we have a significant feature count mismatch, pad with zeros
+                                print(f"DEBUG: Checking extreme feature count mismatch for {self.stock_symbol}: {latest_features.shape[1]} vs {expected_n_features}")
+                                # Always use the fallback for extreme mismatches
+                                if latest_features.shape[1] != expected_n_features:
+                                    logger.warning(f"Extreme feature count mismatch for {self.stock_symbol}: {latest_features.shape[1]} vs {expected_n_features}")
+                                    print(f"DEBUG: Using fallback padding for {self.stock_symbol}")
+
+                                    # Create padded feature array
+                                    padded_features = np.zeros((latest_features.shape[0], expected_n_features))
+                                    # Copy available features (only up to the minimum of both dimensions)
+                                    min_features = min(latest_features.shape[1], expected_n_features)
+                                    padded_features[:, :min_features] = latest_features[:, :min_features]
+                                    latest_features = padded_features
+
+                                    logger.info(f"Padded features from {latest_features.shape[1]} to {expected_n_features}")
+                                    print(f"DEBUG: After padding, feature shape: {latest_features.shape}")
+                                else:
+                                    return None
+
+                            else:
+                                # After retraining, we need to recalculate features to match the new models
+                                X, _, _ = self.prepare_data()
+                                if X is None or X.shape[0] == 0:
+                                    logger.error(f"No data available for prediction after retraining for {self.stock_symbol}")
+                                    return None
+
+                                # If we're using feature importance, we need to recalculate it after retraining
+                                if use_feature_importance:
+                                    try:
+                                        logger.info(f"Recalculating feature importance after retraining for {self.stock_symbol}")
+                                        feature_importance_results = self.analyze_feature_importance(
+                                            threshold=feature_importance_threshold,
+                                            remove_least_important=True
+                                        )
+
+                                        if feature_importance_results and 'feature_indices_to_keep' in feature_importance_results:
+                                            feature_indices_to_keep = feature_importance_results['feature_indices_to_keep']
+                                            logger.info(f"Using {len(feature_indices_to_keep)}/{X.shape[1]} features for prediction after retraining")
+
+                                            # Filter features based on importance, but ensure we have at least some features
+                                            if len(feature_indices_to_keep) > 0:
+                                                X = X[:, feature_indices_to_keep]
+                                                logger.info(f"Reduced feature set shape after retraining: {X.shape}")
+                                            else:
+                                                logger.warning(f"No features deemed important enough after retraining! Using all features instead.")
+                                                feature_indices_to_keep = list(range(X.shape[1]))
+                                    except Exception as e:
+                                        logger.error(f"Error in feature importance analysis after retraining: {str(e)}")
+                                        # Continue with all features if there's an error
+                                        feature_indices_to_keep = None
+
+                                latest_features = X[-1].reshape(1, -1)
+
+                try:
+                    print(f"DEBUG: About to predict with price model, feature shape: {latest_features.shape}")
+                    # Check if the feature count matches what the model expects
+                    if hasattr(self.price_model, 'n_features_in_'):
+                        print(f"DEBUG: Model expects {self.price_model.n_features_in_} features, got {latest_features.shape[1]}")
+                        if latest_features.shape[1] != self.price_model.n_features_in_:
+                            print(f"DEBUG: WARNING - Feature count mismatch right before prediction!")
+                    predicted_return = float(self.price_model.predict(latest_features)[0])
+                    print(f"DEBUG: Price prediction successful: {predicted_return}")
+                except Exception as e:
+                    import traceback
+                    print(f"DEBUG: Error in price prediction: {str(e)}")
+                    print(f"DEBUG: Traceback:\n{traceback.format_exc()}")
+                    raise
 
             # Signal Prediction
             if self.signal_model is not None and hasattr(self.signal_model, 'predict_proba'):
-                probas = self.signal_model.predict_proba(latest_features)
-                confidence = max(probas[0])
+                # Check for feature count mismatch
+                expected_n_features = self.signal_model.n_features_in_ if hasattr(self.signal_model, 'n_features_in_') else None
+
+                if expected_n_features is not None and latest_features.shape[1] != expected_n_features:
+                    logger.warning(f"Feature count mismatch for signal model: Model expects {expected_n_features} features, but got {latest_features.shape[1]}")
+
+                    # Check if we have saved feature names
+                    if hasattr(self, 'feature_names') and self.feature_names and 'signal' in self.feature_names:
+                        logger.info(f"Using saved feature names for consistent feature selection in signal model")
+
+                        # Get the original feature names from the current data
+                        stock = Stock.objects.get(symbol=self.stock_symbol)
+                        df = pd.DataFrame(list(StockData.objects.filter(stock=stock).order_by('date').values()))
+
+                        # Ensure numeric conversion
+                        for col in ['open_price', 'high_price', 'low_price', 'close_price', 'volume']:
+                            df[col] = df[col].astype(float)
+
+                        df = self._calculate_features(df)
+                        current_features = [col for col in df.columns if col not in
+                                          ['id', 'stock_id', 'date', 'future_return', 'signal_target']]
+
+                        # Get the expected feature names from the saved model
+                        expected_features = self.feature_names['signal']
+
+                        # Create a mapping from current features to expected features
+                        feature_mapping = {}
+                        for i, feature in enumerate(current_features):
+                            if feature in expected_features:
+                                feature_mapping[i] = expected_features.index(feature)
+
+                        # If we have enough mappings, use them to rearrange features
+                        if len(feature_mapping) >= expected_n_features * 0.8:  # At least 80% of features can be mapped
+                            # Create a new feature array with the correct order
+                            X_aligned = np.zeros((X.shape[0], expected_n_features))
+                            for current_idx, expected_idx in feature_mapping.items():
+                                if expected_idx < expected_n_features:
+                                    X_aligned[:, expected_idx] = X[:, current_idx]
+
+                            # Use the aligned features
+                            X = X_aligned
+                            latest_features = X[-1].reshape(1, -1)
+                            latest_features_signal = latest_features
+                            logger.info(f"Successfully aligned features using feature names mapping for signal model")
+                        else:
+                            logger.warning(f"Could not align enough features using names for signal model, falling back to retraining")
+                            # Fall back to retraining
+                            self.signal_model = self._train_model('signal')
+                            if self.signal_model is None:
+                                logger.error(f"Failed to retrain signal model for {self.stock_symbol}")
+                                return None
+
+                            # After retraining, recalculate features
+                            X, _, _ = self.prepare_data()
+                            if X is None or X.shape[0] == 0:
+                                logger.error(f"No data available for prediction after retraining for {self.stock_symbol}")
+                                return None
+
+                            latest_features = X[-1].reshape(1, -1)
+                            latest_features_signal = latest_features
+                    else:
+                        # If we don't have saved feature names, use the old approach
+                        if latest_features.shape[1] > expected_n_features:
+                            # If we have more features than expected, use only the first n_features that the model expects
+                            logger.info(f"Using only the first {expected_n_features} features for signal prediction")
+                            latest_features_signal = latest_features[:, :expected_n_features]
+                        else:
+                            # If we have fewer features than expected, we need to retrain the model
+                            logger.warning(f"Retraining signal model for {self.stock_symbol} due to feature count mismatch")
+                            self.signal_model = self._train_model('signal')
+                            if self.signal_model is None:
+                                logger.error(f"Failed to retrain signal model for {self.stock_symbol}")
+
+                                # Extreme feature count mismatch fallback (e.g., GME with 6 vs 113 features)
+                                # If retraining fails and we have a significant feature count mismatch, pad with zeros
+                                print(f"DEBUG: Checking extreme feature count mismatch for signal model: {latest_features.shape[1]} vs {expected_n_features}")
+                                # Always use the fallback for extreme mismatches
+                                if latest_features.shape[1] != expected_n_features:
+                                    logger.warning(f"Extreme feature count mismatch for signal model: {latest_features.shape[1]} vs {expected_n_features}")
+                                    print(f"DEBUG: Using fallback padding for signal model")
+
+                                    # Create padded feature array
+                                    padded_features = np.zeros((latest_features.shape[0], expected_n_features))
+                                    # Copy available features (only up to the minimum of both dimensions)
+                                    min_features = min(latest_features.shape[1], expected_n_features)
+                                    padded_features[:, :min_features] = latest_features[:, :min_features]
+                                    latest_features_signal = padded_features
+
+                                    logger.info(f"Padded features from {latest_features.shape[1]} to {expected_n_features}")
+                                    print(f"DEBUG: After padding, signal feature shape: {latest_features_signal.shape}")
+                                else:
+                                    return None
+                            else:
+                                # After retraining, we need to recalculate features to match the new model
+                                X, _, _ = self.prepare_data()
+                                if X is None or X.shape[0] == 0:
+                                    logger.error(f"No data available for prediction after retraining for {self.stock_symbol}")
+                                    return None
+
+                                # If we're using feature importance, we need to recalculate it after retraining
+                                if use_feature_importance:
+                                    try:
+                                        logger.info(f"Recalculating feature importance after retraining signal model for {self.stock_symbol}")
+                                        feature_importance_results = self.analyze_feature_importance(
+                                            threshold=feature_importance_threshold,
+                                            remove_least_important=True
+                                        )
+
+                                        if feature_importance_results and 'feature_indices_to_keep' in feature_importance_results:
+                                            feature_indices_to_keep = feature_importance_results['feature_indices_to_keep']
+                                            logger.info(f"Using {len(feature_indices_to_keep)}/{X.shape[1]} features for signal prediction after retraining")
+
+                                            # Filter features based on importance, but ensure we have at least some features
+                                            if len(feature_indices_to_keep) > 0:
+                                                X = X[:, feature_indices_to_keep]
+                                                logger.info(f"Reduced feature set shape after retraining: {X.shape}")
+                                            else:
+                                                logger.warning(f"No features deemed important enough for signal model after retraining! Using all features instead.")
+                                                feature_indices_to_keep = list(range(X.shape[1]))
+                                    except Exception as e:
+                                        logger.error(f"Error in feature importance analysis after retraining signal model: {str(e)}")
+                                        # Continue with all features if there's an error
+                                        feature_indices_to_keep = None
+
+                                latest_features = X[-1].reshape(1, -1)
+                                latest_features_signal = latest_features
+                else:
+                    latest_features_signal = latest_features
+
+                try:
+                    print(f"DEBUG: About to predict with signal model, feature shape: {latest_features_signal.shape}")
+                    probas = self.signal_model.predict_proba(latest_features_signal)
+                    confidence = float(max(probas[0]))
+                    print(f"DEBUG: Signal prediction successful, confidence: {confidence}")
+                except Exception as e:
+                    import traceback
+                    print(f"DEBUG: Error in signal prediction: {str(e)}")
+                    print(f"DEBUG: Traceback:\n{traceback.format_exc()}")
+                    raise
 
             # Aktueller Kurs
             stock = Stock.objects.get(symbol=self.stock_symbol)
@@ -747,9 +1364,97 @@ class MLPredictor:
             # Vorhergesagter Kurs
             predicted_price = current_price * (1 + predicted_return)
 
-            # NEUE Logik: Empfehlung basierend auf Mindest-Renditen
-            min_return_for_buy = 0.02  # Mindestens +2% erwartet
-            min_return_for_sell = -0.02  # Mindestens -2% erwartet
+            # Adaptive Schwellenwerte basierend auf Volatilität
+            # ATR-basierte Volatilitätsberechnung für adaptive Schwellenwerte
+            volatility_info = {}
+            try:
+                # Letzten 20 Tage für Volatilitätsberechnung verwenden
+                recent_data = StockData.objects.filter(stock=stock).order_by('-date')[:20]
+
+                if recent_data.count() >= 14:  # Mindestens 14 Tage für ATR-Berechnung
+                    df_vol = pd.DataFrame(list(recent_data.values()))
+                    df_vol['close_price'] = df_vol['close_price'].astype(float)
+                    df_vol['high_price'] = df_vol['high_price'].astype(float)
+                    df_vol['low_price'] = df_vol['low_price'].astype(float)
+
+                    # ATR-Berechnung
+                    high_low = df_vol['high_price'] - df_vol['low_price']
+                    high_close = abs(df_vol['high_price'] - df_vol['close_price'].shift())
+                    low_close = abs(df_vol['low_price'] - df_vol['close_price'].shift())
+
+                    ranges = pd.concat([high_low, high_close, low_close], axis=1)
+                    true_range = ranges.max(axis=1)
+
+                    atr = true_range.rolling(window=14).mean().iloc[-1]
+                    last_close = df_vol['close_price'].iloc[0]  # Neuester Schlusskurs
+                    atr_pct = (atr / last_close) * 100 if last_close != 0 else 5
+
+                    # Adaptive Schwellenwerte basierend auf ATR
+                    # Höhere Volatilität = höhere Schwellenwerte
+                    base_threshold = 0.02  # 2% Basis-Schwellenwert
+
+                    # Volatilitätsbasierte Anpassung
+                    volatility_category = ""
+                    if atr_pct < 1.5:  # Niedrige Volatilität
+                        volatility_factor = 0.8
+                        volatility_category = "niedrig"
+                        logger.info(f"Niedrige Volatilität für {self.stock_symbol}: {atr_pct:.2f}% ATR")
+                    elif atr_pct < 3.0:  # Mittlere Volatilität
+                        volatility_factor = 1.0
+                        volatility_category = "mittel"
+                        logger.info(f"Mittlere Volatilität für {self.stock_symbol}: {atr_pct:.2f}% ATR")
+                    elif atr_pct < 5.0:  # Hohe Volatilität
+                        volatility_factor = 1.5
+                        volatility_category = "hoch"
+                        logger.info(f"Hohe Volatilität für {self.stock_symbol}: {atr_pct:.2f}% ATR")
+                    else:  # Sehr hohe Volatilität
+                        volatility_factor = 2.0
+                        volatility_category = "sehr hoch"
+                        logger.info(f"Sehr hohe Volatilität für {self.stock_symbol}: {atr_pct:.2f}% ATR")
+
+                    min_return_for_buy = base_threshold * volatility_factor
+                    min_return_for_sell = -base_threshold * volatility_factor
+
+                    # Store volatility information for frontend display
+                    volatility_info = {
+                        'atr': float(atr),
+                        'atr_pct': float(atr_pct),
+                        'volatility_category': volatility_category,
+                        'volatility_factor': float(volatility_factor),
+                        'base_threshold': float(base_threshold),
+                        'buy_threshold': float(min_return_for_buy),
+                        'sell_threshold': float(min_return_for_sell)
+                    }
+
+                    logger.info(f"Adaptive Schwellenwerte für {self.stock_symbol}: Buy={min_return_for_buy:.2%}, Sell={min_return_for_sell:.2%}")
+                else:
+                    # Fallback auf Standardwerte, wenn nicht genug Daten
+                    min_return_for_buy = 0.02
+                    min_return_for_sell = -0.02
+                    volatility_info = {
+                        'atr': None,
+                        'atr_pct': None,
+                        'volatility_category': "standard",
+                        'volatility_factor': 1.0,
+                        'base_threshold': 0.02,
+                        'buy_threshold': float(min_return_for_buy),
+                        'sell_threshold': float(min_return_for_sell)
+                    }
+                    logger.warning(f"Nicht genug Daten für adaptive Schwellenwerte bei {self.stock_symbol}, verwende Standardwerte")
+            except Exception as e:
+                # Fallback bei Fehlern
+                min_return_for_buy = 0.02
+                min_return_for_sell = -0.02
+                volatility_info = {
+                    'atr': None,
+                    'atr_pct': None,
+                    'volatility_category': "standard (Fehler)",
+                    'volatility_factor': 1.0,
+                    'base_threshold': 0.02,
+                    'buy_threshold': float(min_return_for_buy),
+                    'sell_threshold': float(min_return_for_sell)
+                }
+                logger.error(f"Fehler bei Berechnung adaptiver Schwellenwerte für {self.stock_symbol}: {str(e)}")
 
             recommendation = 'HOLD'  # Default
 
@@ -762,6 +1467,38 @@ class MLPredictor:
             if current_price < 1.0 and abs(predicted_return) < 0.05:
                 recommendation = 'HOLD'
 
+            # Prepare feature importance summary for the result
+            feature_importance_summary = None
+            if feature_importance_results:
+                # Get the reduction stats
+                reduction_stats = feature_importance_results.get('feature_reduction', {})
+
+                # Get the top price and signal features
+                top_price_features = dict(list(feature_importance_results.get('important_features', {}).get('price', []))[:5])
+                top_signal_features = dict(list(feature_importance_results.get('important_features', {}).get('signal', []))[:5])
+
+                # If no important features were found, get the top features by importance
+                if not top_price_features and 'price_importance' in feature_importance_results:
+                    price_importance = feature_importance_results['price_importance']
+                    top_price_features = dict(sorted(price_importance.items(), key=lambda x: x[1], reverse=True)[:5])
+
+                if not top_signal_features and 'signal_importance' in feature_importance_results:
+                    signal_importance = feature_importance_results['signal_importance']
+                    top_signal_features = dict(sorted(signal_importance.items(), key=lambda x: x[1], reverse=True)[:5])
+
+                # Create the summary
+                feature_importance_summary = {
+                    'reduction_stats': reduction_stats,
+                    'top_price_features': top_price_features,
+                    'top_signal_features': top_signal_features
+                }
+
+                # Log the summary for debugging
+                logger.info(f"Feature importance summary for {self.stock_symbol}:")
+                logger.info(f"  Reduction stats: {reduction_stats}")
+                logger.info(f"  Top price features: {list(top_price_features.keys())}")
+                logger.info(f"  Top signal features: {list(top_signal_features.keys())}")
+
             result = {
                 'stock_symbol': self.stock_symbol,
                 'current_price': current_price,
@@ -769,8 +1506,11 @@ class MLPredictor:
                 'predicted_price': round(predicted_price, 2),
                 'recommendation': recommendation,
                 'confidence': round(confidence, 2),
-                'prediction_days': self.prediction_days
+                'prediction_days': self.prediction_days,
+                'adaptive_thresholds': volatility_info,
+                'feature_importance': feature_importance_summary
             }
+
             print(
                 f"[MLPredictor] {self.stock_symbol}: pred_return={predicted_return:.4f}, confidence={confidence:.2f}, recommendation={recommendation}")
 
@@ -805,6 +1545,241 @@ class MLPredictor:
         except Exception as e:
             logger.error(f"Error saving prediction for {self.stock_symbol}: {str(e)}")
             # Nur Logging, keine Exception werfen, um den Prozess nicht zu unterbrechen
+
+    def analyze_feature_importance(self, threshold=0.01, remove_least_important=True):
+        """
+        Analyze feature importance using permutation importance and optionally remove least important features
+
+        Args:
+            threshold (float): Features with importance below this threshold will be considered unimportant
+            remove_least_important (bool): If True, remove least important features from the model
+
+        Returns:
+            dict: Dictionary containing feature importance scores and lists of important/unimportant features
+        """
+        try:
+            X, y_price, y_signal = self.prepare_data()
+
+            if X is None or y_price is None or y_signal is None:
+                logger.error(f"No data available for feature importance analysis for {self.stock_symbol}")
+                return None
+
+            # Get feature names
+            feature_columns = [col for col in pd.DataFrame(list(StockData.objects.filter(
+                stock=Stock.objects.get(symbol=self.stock_symbol)
+            ).values())).columns if col not in ['id', 'stock_id', 'date']]
+
+            # Additional features from _calculate_features method
+            additional_features = ['hl_ratio', 'co_ratio', 'candle_body', 'upper_shadow', 'lower_shadow', 
+                                  'is_bullish', 'is_doji', 'daily_return', 'rsi', 'macd', 'macd_signal',
+                                  'momentum_5', 'momentum_10', 'momentum_20', 'ma_5', 'ma_10', 'ma_20',
+                                  'ma_50', 'ma_200', 'bb_width', 'bb_position', 'volatility_20']
+
+            # Combine all possible features
+            all_features = feature_columns + additional_features
+
+            # Filter to only include features that exist in the data
+            X_df = pd.DataFrame(X)
+            if X_df.shape[1] <= len(all_features):
+                feature_names = all_features[:X_df.shape[1]]
+            else:
+                # If we have more columns than expected, use more descriptive names
+                # First, use all the known feature names we have
+                feature_names = all_features.copy()
+
+                # Then add generic names for the remaining features, but with better context
+                remaining_count = X_df.shape[1] - len(feature_names)
+                for i in range(remaining_count):
+                    feature_names.append(f"calculated_feature_{i+1}")
+
+                # Log this situation for debugging
+                logger.info(f"More features than expected for {self.stock_symbol}: {X_df.shape[1]} vs {len(all_features)}")
+
+            results = {}
+            important_features = {'price': [], 'signal': []}
+            unimportant_features = {'price': [], 'signal': []}
+            feature_indices_to_keep = set(range(X.shape[1]))  # Start with all features
+
+            # Analyze price model importance
+            if self.price_model is not None:
+                try:
+                    # Use permutation importance for more reliable results
+                    price_importance = permutation_importance(
+                        self.price_model, X, y_price, 
+                        n_repeats=10, 
+                        random_state=42,
+                        n_jobs=-1
+                    )
+
+                    # Get sorted indices by importance
+                    sorted_idx = np.argsort(price_importance.importances_mean)[::-1]
+
+                    # Create sorted importance dictionary
+                    price_feature_importance = {}
+                    for i in sorted_idx:
+                        if i < len(feature_names):
+                            feature_name = feature_names[i]
+                            importance = float(price_importance.importances_mean[i])
+                            price_feature_importance[feature_name] = importance
+
+                            # Classify as important or unimportant
+                            if importance >= threshold:
+                                important_features['price'].append((feature_name, importance))
+                            else:
+                                unimportant_features['price'].append((feature_name, importance))
+                                # Mark for removal if below threshold
+                                if remove_least_important and i in feature_indices_to_keep:
+                                    feature_indices_to_keep.remove(i)
+
+                    results['price_importance'] = price_feature_importance
+                    logger.info(f"Top 5 features for price prediction: {list(price_feature_importance.items())[:5]}")
+                    logger.info(f"Found {len(unimportant_features['price'])} unimportant features for price prediction")
+                except Exception as e:
+                    logger.error(f"Error calculating price model importance: {str(e)}")
+
+            # Analyze signal model importance
+            if self.signal_model is not None:
+                try:
+                    # Use permutation importance for more reliable results
+                    signal_importance = permutation_importance(
+                        self.signal_model, X, y_signal, 
+                        n_repeats=10, 
+                        random_state=42,
+                        n_jobs=-1
+                    )
+
+                    # Get sorted indices by importance
+                    sorted_idx = np.argsort(signal_importance.importances_mean)[::-1]
+
+                    # Create sorted importance dictionary
+                    signal_feature_importance = {}
+                    for i in sorted_idx:
+                        if i < len(feature_names):
+                            feature_name = feature_names[i]
+                            importance = float(signal_importance.importances_mean[i])
+                            signal_feature_importance[feature_name] = importance
+
+                            # Classify as important or unimportant
+                            if importance >= threshold:
+                                important_features['signal'].append((feature_name, importance))
+                            else:
+                                unimportant_features['signal'].append((feature_name, importance))
+                                # Mark for removal if below threshold
+                                if remove_least_important and i in feature_indices_to_keep:
+                                    feature_indices_to_keep.remove(i)
+
+                    results['signal_importance'] = signal_feature_importance
+                    logger.info(f"Top 5 features for signal prediction: {list(signal_feature_importance.items())[:5]}")
+                    logger.info(f"Found {len(unimportant_features['signal'])} unimportant features for signal prediction")
+                except Exception as e:
+                    logger.error(f"Error calculating signal model importance: {str(e)}")
+
+            # Add important and unimportant features to results
+            results['important_features'] = important_features
+            results['unimportant_features'] = unimportant_features
+
+            # Convert set to sorted list for consistent results
+            feature_indices_to_keep = sorted(list(feature_indices_to_keep))
+
+            # Ensure we always keep at least some features, even if they're below the threshold
+            if len(feature_indices_to_keep) == 0:
+                logger.warning(f"No features deemed important enough for {self.stock_symbol}! Keeping top features instead.")
+
+                # Keep at least the top 5 features from price model
+                if self.price_model is not None:
+                    try:
+                        # Get the top 5 features by importance
+                        sorted_indices = np.argsort([-importance for importance in price_feature_importance.values()])[:5]
+                        top_features = [list(price_feature_importance.keys())[i] for i in sorted_indices]
+
+                        # Convert feature names back to indices
+                        top_price_indices = [feature_names.index(feature) for feature in top_features 
+                                            if feature in feature_names]
+
+                        feature_indices_to_keep.extend(top_price_indices)
+                        logger.info(f"Keeping top price features: {top_features}")
+                    except Exception as e:
+                        logger.error(f"Error selecting top price features: {str(e)}")
+
+                # Keep at least the top 5 features from signal model
+                if self.signal_model is not None:
+                    try:
+                        # Get the top 5 features by importance
+                        sorted_indices = np.argsort([-importance for importance in signal_feature_importance.values()])[:5]
+                        top_features = [list(signal_feature_importance.keys())[i] for i in sorted_indices]
+
+                        # Convert feature names back to indices
+                        top_signal_indices = [feature_names.index(feature) for feature in top_features 
+                                             if feature in feature_names]
+
+                        feature_indices_to_keep.extend(top_signal_indices)
+                        logger.info(f"Keeping top signal features: {top_features}")
+                    except Exception as e:
+                        logger.error(f"Error selecting top signal features: {str(e)}")
+
+                # If still empty, just keep the first 10 features
+                if len(feature_indices_to_keep) == 0:
+                    feature_indices_to_keep = list(range(min(10, X.shape[1])))
+
+                # Remove duplicates and sort
+                feature_indices_to_keep = sorted(list(set(feature_indices_to_keep)))
+
+                logger.info(f"Keeping {len(feature_indices_to_keep)} top features for {self.stock_symbol}")
+
+            results['feature_indices_to_keep'] = feature_indices_to_keep
+
+            # Calculate how many features were removed
+            total_features = X.shape[1]
+            kept_features = len(feature_indices_to_keep)
+            removed_features = total_features - kept_features
+            removal_percentage = (removed_features / total_features) * 100 if total_features > 0 else 0
+
+            results['feature_reduction'] = {
+                'total_features': total_features,
+                'kept_features': kept_features,
+                'removed_features': removed_features,
+                'removal_percentage': removal_percentage
+            }
+
+            logger.info(f"Feature reduction: Removed {removed_features}/{total_features} features ({removal_percentage:.1f}%)")
+
+            # Store feature importance in MLModelMetrics
+            try:
+                stock = Stock.objects.get(symbol=self.stock_symbol)
+
+                # Combine both importance dictionaries for storage
+                combined_importance = {
+                    'price': dict(important_features['price'] + unimportant_features['price']),
+                    'signal': dict(important_features['signal'] + unimportant_features['signal']),
+                    'reduction_stats': results['feature_reduction']
+                }
+
+                # Get or create the metrics object first
+                metrics, created = MLModelMetrics.objects.get_or_create(
+                    stock=stock,
+                    date=datetime.now().date(),
+                    defaults={
+                        'accuracy': 0,
+                        'rmse': 0,
+                        'feature_importance': combined_importance,
+                        'directional_accuracy': 0
+                    }
+                )
+
+                # If the object already exists, just update the feature_importance field
+                if not created:
+                    metrics.feature_importance = combined_importance
+                    metrics.save(update_fields=['feature_importance'])
+
+                logger.info(f"Stored feature importance in MLModelMetrics for {self.stock_symbol}")
+            except Exception as e:
+                logger.error(f"Error storing feature importance: {str(e)}")
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Error analyzing feature importance for {self.stock_symbol}: {str(e)}")
+            return None
 
     def evaluate_model_performance(self):
         """Evaluate the performance of the models on historical data"""
@@ -1110,6 +2085,16 @@ def batch_ml_predictions(symbols=None, force_retrain=False):
             if force_retrain:
                 predictor._train_model('price')
                 predictor._train_model('signal')
+
+                # After retraining, we need to recalculate features to match the new models
+                X, _, _ = predictor.prepare_data()
+                if X is None or X.shape[0] == 0:
+                    logger.error(f"No data available for prediction after retraining for {symbol}")
+                    results[symbol] = {
+                        'status': 'error',
+                        'message': 'No data available after retraining'
+                    }
+                    continue
 
             prediction = predictor.predict()
 

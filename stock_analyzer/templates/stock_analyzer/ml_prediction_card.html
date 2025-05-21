@@ -34,6 +34,91 @@
                 </div>
             </div>
 
+            <!-- Adaptive Thresholds Section -->
+            <div class="mt-3">
+                <button class="btn btn-sm btn-outline-secondary w-100 mb-2" type="button" data-bs-toggle="collapse" data-bs-target="#adaptiveThresholds" aria-expanded="false" aria-controls="adaptiveThresholds">
+                    <i class="bi bi-sliders"></i> Adaptive Schwellenwerte anzeigen
+                </button>
+                <div class="collapse" id="adaptiveThresholds">
+                    <div class="card card-body bg-light">
+                        <h6 class="card-subtitle mb-2 text-muted">Volatilitätsbasierte Schwellenwerte</h6>
+                        <div id="adaptive-thresholds-container">
+                            <div class="d-flex justify-content-between mb-1">
+                                <span>Volatilität:</span>
+                                <span id="volatility-category" class="fw-bold">
+                                    <!-- Will be filled by JavaScript -->
+                                </span>
+                            </div>
+                            <div class="d-flex justify-content-between mb-1">
+                                <span>ATR (%):</span>
+                                <span id="atr-pct" class="fw-bold">
+                                    <!-- Will be filled by JavaScript -->
+                                </span>
+                            </div>
+                            <div class="d-flex justify-content-between mb-1">
+                                <span>Kauf-Schwelle:</span>
+                                <span id="buy-threshold" class="fw-bold text-success">
+                                    <!-- Will be filled by JavaScript -->
+                                </span>
+                            </div>
+                            <div class="d-flex justify-content-between mb-1">
+                                <span>Verkauf-Schwelle:</span>
+                                <span id="sell-threshold" class="fw-bold text-danger">
+                                    <!-- Will be filled by JavaScript -->
+                                </span>
+                            </div>
+                            <div class="progress mt-2" style="height: 20px;">
+                                <div id="sell-threshold-bar" class="progress-bar bg-danger" role="progressbar" style="width: 25%"></div>
+                                <div class="progress-bar bg-warning" role="progressbar" style="width: 50%"></div>
+                                <div id="buy-threshold-bar" class="progress-bar bg-success" role="progressbar" style="width: 25%"></div>
+                            </div>
+                            <div class="d-flex justify-content-between mt-1">
+                                <small class="text-danger">Verkaufen</small>
+                                <small class="text-warning">Halten</small>
+                                <small class="text-success">Kaufen</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Feature Importance Section -->
+            <div class="mt-2">
+                <button class="btn btn-sm btn-outline-secondary w-100 mb-2" type="button" data-bs-toggle="collapse" data-bs-target="#featureImportance" aria-expanded="false" aria-controls="featureImportance">
+                    <i class="bi bi-bar-chart-line"></i> Feature-Wichtigkeit anzeigen
+                </button>
+                <div class="collapse" id="featureImportance">
+                    <div class="card card-body bg-light">
+                        <h6 class="card-subtitle mb-2 text-muted">Feature-Wichtigkeit</h6>
+                        <div id="feature-importance-container">
+                            <div class="mb-2">
+                                <div class="d-flex justify-content-between">
+                                    <span>Feature-Reduktion:</span>
+                                    <span id="feature-reduction" class="fw-bold">
+                                        <!-- Will be filled by JavaScript -->
+                                    </span>
+                                </div>
+                            </div>
+
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <h6 class="text-muted">Top Preis-Features</h6>
+                                    <div id="price-features-chart" style="height: 150px;">
+                                        <!-- Will be filled by JavaScript -->
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <h6 class="text-muted">Top Signal-Features</h6>
+                                    <div id="signal-features-chart" style="height: 150px;">
+                                        <!-- Will be filled by JavaScript -->
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Add buttons for ML backtesting -->
             <div class="text-center mt-3 mb-3">
                 <div class="btn-group" role="group">
@@ -63,3 +148,132 @@
         {% endif %}
     </div>
 </div>
+
+<!-- JavaScript for ML Prediction Card -->
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Function to load ML prediction data with feature importance and adaptive thresholds
+    function loadMLPredictionData() {
+        const symbol = document.querySelector('h2').textContent.split(' - ')[0].trim();
+
+        fetch(`/generate_ml_prediction/${symbol}/?use_feature_importance=true&feature_importance_threshold=0.01`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    // Update adaptive thresholds section
+                    updateAdaptiveThresholds(data.prediction.adaptive_thresholds);
+
+                    // Update feature importance section
+                    updateFeatureImportance(data.prediction.feature_importance);
+
+                    // Reload the page to show the updated prediction
+                    window.location.reload();
+                } else {
+                    console.error('Error generating ML prediction:', data.message);
+                    alert('Fehler bei der ML-Vorhersage: ' + data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Error fetching ML prediction:', error);
+                alert('Fehler beim Abrufen der ML-Vorhersage: ' + error.message);
+            });
+    }
+
+    // Function to update adaptive thresholds display
+    function updateAdaptiveThresholds(thresholds) {
+        if (!thresholds) return;
+
+        document.getElementById('volatility-category').textContent = thresholds.volatility_category || 'Standard';
+        document.getElementById('atr-pct').textContent = thresholds.atr_pct ? thresholds.atr_pct.toFixed(2) + '%' : 'N/A';
+        document.getElementById('buy-threshold').textContent = (thresholds.buy_threshold * 100).toFixed(2) + '%';
+        document.getElementById('sell-threshold').textContent = (thresholds.sell_threshold * 100).toFixed(2) + '%';
+
+        // Update threshold bars in the progress bar
+        const buyThreshold = thresholds.buy_threshold || 0.02;
+        const sellThreshold = thresholds.sell_threshold || -0.02;
+        const totalRange = buyThreshold - sellThreshold;
+
+        const sellWidth = (Math.abs(sellThreshold) / totalRange) * 100;
+        const buyWidth = (buyThreshold / totalRange) * 100;
+        const holdWidth = 100 - sellWidth - buyWidth;
+
+        document.getElementById('sell-threshold-bar').style.width = sellWidth + '%';
+        document.getElementById('buy-threshold-bar').style.width = buyWidth + '%';
+        document.querySelector('.progress-bar.bg-warning').style.width = holdWidth + '%';
+    }
+
+    // Function to update feature importance display
+    function updateFeatureImportance(featureImportance) {
+        if (!featureImportance) return;
+
+        // Update feature reduction stats
+        const reductionStats = featureImportance.reduction_stats;
+        if (reductionStats) {
+            const reductionText = `${reductionStats.removed_features}/${reductionStats.total_features} Features entfernt (${reductionStats.removal_percentage.toFixed(1)}%)`;
+            document.getElementById('feature-reduction').textContent = reductionText;
+        }
+
+        // Create simple bar charts for top features
+        createFeatureChart('price-features-chart', featureImportance.top_price_features, 'rgba(54, 162, 235, 0.8)');
+        createFeatureChart('signal-features-chart', featureImportance.top_signal_features, 'rgba(255, 99, 132, 0.8)');
+    }
+
+    // Function to create a simple bar chart for feature importance
+    function createFeatureChart(containerId, features, color) {
+        if (!features) return;
+
+        const container = document.getElementById(containerId);
+        container.innerHTML = '';
+
+        // Convert features object to array of [name, value] pairs
+        const featureArray = Object.entries(features);
+
+        // Sort by importance (descending)
+        featureArray.sort((a, b) => b[1] - a[1]);
+
+        // Find max importance for scaling
+        const maxImportance = Math.max(...featureArray.map(f => f[1]));
+
+        // Create bars for each feature
+        featureArray.forEach(([name, importance]) => {
+            const barWidth = (importance / maxImportance) * 100;
+            const barContainer = document.createElement('div');
+            barContainer.className = 'd-flex align-items-center mb-1';
+            barContainer.innerHTML = `
+                <div class="me-2 text-truncate" style="max-width: 40%;" title="${name}">${name}</div>
+                <div class="progress flex-grow-1" style="height: 12px;">
+                    <div class="progress-bar" style="width: ${barWidth}%; background-color: ${color}"></div>
+                </div>
+                <div class="ms-1 small">${importance.toFixed(3)}</div>
+            `;
+            container.appendChild(barContainer);
+        });
+    }
+
+    // Add event listener to the generate ML prediction button
+    const generateButton = document.getElementById('generate-ml-prediction');
+    if (generateButton) {
+        generateButton.addEventListener('click', loadMLPredictionData);
+    }
+
+    // If we already have a prediction, load the adaptive thresholds and feature importance
+    if (document.getElementById('adaptiveThresholds')) {
+        const symbol = document.querySelector('h2').textContent.split(' - ')[0].trim();
+
+        fetch(`/api/ml_metrics/${symbol}/`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    updateAdaptiveThresholds(data.adaptive_thresholds);
+                    updateFeatureImportance(data.feature_importance);
+                    console.log('Successfully loaded ML metrics:', data);
+                } else {
+                    console.error('Error in ML metrics response:', data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Error fetching ML metrics:', error);
+            });
+    }
+});
+</script>

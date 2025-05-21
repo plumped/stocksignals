@@ -58,9 +58,11 @@ class Command(BaseCommand):
                         self.style.ERROR(f'✗ {symbol}: Vorhersage fehlgeschlagen')
                     )
             except Exception as e:
+                import traceback
                 self.stdout.write(
                     self.style.ERROR(f'✗ {symbol}: Fehler bei der Vorhersage: {str(e)}')
                 )
+                self.stdout.write(self.style.ERROR(f'Traceback:\n{traceback.format_exc()}'))
                 logger.error(f'Fehler bei der ML-Vorhersage für {symbol}: {str(e)}')
         else:
             # Bestimme die zu verarbeitenden Symbole

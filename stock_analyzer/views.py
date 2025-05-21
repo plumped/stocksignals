@@ -26,20 +26,45 @@ from django.db.models import OuterRef, Subquery, Avg, Count, Max, Q
 
 def index(request):
     """Dashboard-Ansicht"""
-    recent_analyses = AnalysisResult.objects.order_by('-date')[:20]
+    # Nur die neuesten Signale für jedes Symbol anzeigen
+    # Zuerst die neueste Analyse für jede Aktie finden
+    latest_analyses_ids = AnalysisResult.objects.values('stock').annotate(
+        latest_id=Max('id')
+    ).values_list('latest_id', flat=True)
 
-    # Top Kaufempfehlungen
-    buy_recommendations = AnalysisResult.objects.filter(
+    # Dann die Analysen mit diesen IDs abrufen
+    recent_analyses = AnalysisResult.objects.filter(
+        id__in=latest_analyses_ids
+    ).order_by('-date')[:20]
+
+    # Alle Analysen für die historische Ansicht
+    historical_analyses = AnalysisResult.objects.order_by('-date')[:100]
+
+    # Top Kaufempfehlungen (nur neueste pro Symbol)
+    buy_latest_ids = AnalysisResult.objects.filter(
         recommendation='BUY'
+    ).values('stock').annotate(
+        latest_id=Max('id')
+    ).values_list('latest_id', flat=True)
+
+    buy_recommendations = AnalysisResult.objects.filter(
+        id__in=buy_latest_ids
     ).order_by('-technical_score')[:5]
 
-    # Top Verkaufsempfehlungen
-    sell_recommendations = AnalysisResult.objects.filter(
+    # Top Verkaufsempfehlungen (nur neueste pro Symbol)
+    sell_latest_ids = AnalysisResult.objects.filter(
         recommendation='SELL'
+    ).values('stock').annotate(
+        latest_id=Max('id')
+    ).values_list('latest_id', flat=True)
+
+    sell_recommendations = AnalysisResult.objects.filter(
+        id__in=sell_latest_ids
     ).order_by('technical_score')[:5]
 
     context = {
         'recent_analyses': recent_analyses,
+        'historical_analyses': historical_analyses,
         'buy_recommendations': buy_recommendations,
         'sell_recommendations': sell_recommendations
     }
@@ -51,24 +76,8 @@ def stock_detail(request, symbol):
     """Detailansicht für eine bestimmte Aktie"""
     stock = get_object_or_404(Stock, symbol=symbol.upper())
 
-    # Prüfen, ob Live-Daten verwendet werden sollen (aus URL-Parameter oder Session)
-    use_live_data = request.GET.get('use_live_data') == 'true'
-
-    # Wenn Live-Daten aktiviert sind, führe eine sofortige Analyse mit Live-Daten durch
-    if use_live_data:
-        try:
-            # Analyze-Stock-Funktion mit Live-Daten aufrufen (ohne Response zu verwenden)
-            analyze_stock(request, symbol)
-
-            # Neueste Analyse nach der Live-Daten-Analyse abrufen
-            latest_analysis = AnalysisResult.objects.filter(stock=stock).order_by('-date').first()
-        except Exception as e:
-            print(f"Fehler bei der Live-Daten-Analyse: {str(e)}")
-            # Fallback auf die neueste gespeicherte Analyse
-            latest_analysis = AnalysisResult.objects.filter(stock=stock).order_by('-date').first()
-    else:
-        # Neueste Analyse abrufen (ohne Live-Daten)
-        latest_analysis = AnalysisResult.objects.filter(stock=stock).order_by('-date').first()
+    # Neueste Analyse abrufen
+    latest_analysis = AnalysisResult.objects.filter(stock=stock).order_by('-date').first()
 
     # Historische Daten abrufen (werden für die Anzeige verwendet)
     historical_data = StockData.objects.filter(stock=stock).order_by('-date')[:90]
@@ -85,8 +94,7 @@ def stock_detail(request, symbol):
         'historical_data': historical_data,
         'latest_analysis': latest_analysis,
         'ml_prediction': latest_ml_prediction,
-        'in_watchlist': in_watchlist,
-        'use_live_data': use_live_data  # Live-Daten-Status an das Template übergeben
+        'in_watchlist': in_watchlist
     }
 
     return render(request, 'stock_analyzer/stock_detail.html', context)
@@ -94,7 +102,7 @@ def stock_detail(request, symbol):
 
 @login_required
 def generate_ml_prediction(request, symbol):
-    """Generiert eine ML-Vorhersage für eine bestimmte Aktie"""
+    """Generiert eine ML-Vorhersage für eine bestimmte Aktie mit Feature-Wichtigkeit und adaptiven Schwellenwerten"""
     try:
         # Versuchen, die Aktie zu laden
         stock = get_object_or_404(Stock, symbol=symbol.upper())
@@ -106,12 +114,20 @@ def generate_ml_prediction(request, symbol):
                 'message': 'Nicht genügend historische Daten für eine ML-Vorhersage (mindestens 200 Tage erforderlich)'
             })
 
-        # ML-Vorhersage generieren
+        # Parameter aus der Anfrage extrahieren
+        use_feature_importance = request.GET.get('use_feature_importance', 'true').lower() == 'true'
+        feature_importance_threshold = float(request.GET.get('feature_importance_threshold', '0.01'))
+
+        # ML-Vorhersage generieren mit Feature-Wichtigkeit
         predictor = MLPredictor(symbol)
-        prediction = predictor.predict()
+        prediction = predictor.predict(
+            use_feature_importance=use_feature_importance,
+            feature_importance_threshold=feature_importance_threshold
+        )
 
         if prediction:
-            return JsonResponse({
+            # Vollständige Vorhersage mit allen Details zurückgeben
+            response_data = {
                 'status': 'success',
                 'prediction': {
                     'recommendation': prediction['recommendation'],
@@ -120,7 +136,17 @@ def generate_ml_prediction(request, symbol):
                     'confidence': prediction['confidence'],
                     'prediction_days': prediction['prediction_days']
                 }
-            })
+            }
+
+            # Adaptive Schwellenwerte hinzufügen, wenn vorhanden
+            if 'adaptive_thresholds' in prediction and prediction['adaptive_thresholds']:
+                response_data['prediction']['adaptive_thresholds'] = prediction['adaptive_thresholds']
+
+            # Feature-Wichtigkeit hinzufügen, wenn vorhanden
+            if 'feature_importance' in prediction and prediction['feature_importance']:
+                response_data['prediction']['feature_importance'] = prediction['feature_importance']
+
+            return JsonResponse(response_data)
         else:
             return JsonResponse({
                 'status': 'error',
@@ -128,6 +154,8 @@ def generate_ml_prediction(request, symbol):
             })
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return JsonResponse({
             'status': 'error',
             'message': f'Fehler bei der ML-Vorhersage: {str(e)}'
@@ -138,101 +166,15 @@ def analyze_stock(request, symbol):
     try:
         print(f"Analysiere Symbol: {symbol}")
 
-        # Prüfen, ob Live-Daten verwendet werden sollen
-        use_live_data = request.GET.get('use_live_data') == 'true'
-        data_type = "Live-Daten" if use_live_data else "Schlusskurse"
-        print(f"Verwende {data_type} für die Analyse")
-
         # Zusätzliche Debugging-Informationen
         stock = Stock.objects.get(symbol=symbol.upper())
 
-        # Wenn Live-Daten verwendet werden, direkt von der API abrufen für die Analyse
-        if use_live_data:
-            print("Hole Live-Daten direkt von der API für die Analyse")
-            try:
-                # Rate-Limiting anwenden
-                StockDataService.rate_limit()
-
-                # Twelvedata Client holen
-                td = StockDataService.get_client()
-
-                # Aktuellen Preis abrufen
-                price = td.price(symbol=symbol).as_json()
-                current_price = float(price['price']) if price and 'price' in price else None
-                print(f"Aktueller Preis für {symbol}: ${current_price}")
-
-                # Live-Daten für die letzten 2 Tage abrufen (1-Minuten-Intervall)
-                end_date = datetime.now()
-                start_date = end_date - timedelta(days=2)
-
-                # Rate-Limiting anwenden
-                StockDataService.rate_limit()
-
-                # Time-Series-Daten abrufen
-                ts = td.time_series(
-                    symbol=symbol,
-                    interval="1min",
-                    start_date=start_date.strftime('%Y-%m-%d'),
-                    end_date=end_date.strftime('%Y-%m-%d %H:%M:%S'),
-                    outputsize=1000
-                )
-                live_data = ts.as_pandas()
-
-                if not live_data.empty:
-                    print(f"Live-Daten für {symbol}: {len(live_data)} Datenpunkte")
-
-                    # DataFrame für die Analyse vorbereiten
-                    df = pd.DataFrame()
-                    df['date'] = pd.to_datetime(live_data.index)
-                    df['open_price'] = live_data['open'].astype(float)
-                    df['high_price'] = live_data['high'].astype(float)
-                    df['low_price'] = live_data['low'].astype(float)
-                    df['close_price'] = live_data['close'].astype(float)
-                    df['volume'] = live_data['volume'].astype(float)
-                    df['adjusted_close'] = live_data['close'].astype(float)  # Keine adjusted_close in Live-Daten
-
-                    # Aktuellen Preis als neuesten Datenpunkt hinzufügen, wenn verfügbar
-                    if current_price is not None:
-                        current_time = datetime.now()
-                        # Neuen Datenpunkt mit aktuellem Preis erstellen
-                        new_row = pd.DataFrame({
-                            'date': [current_time],
-                            'open_price': [current_price],
-                            'high_price': [current_price],
-                            'low_price': [current_price],
-                            'close_price': [current_price],
-                            'volume': [0],  # Kein Volumen für den aktuellen Preis
-                            'adjusted_close': [current_price]
-                        })
-                        # Zum DataFrame hinzufügen
-                        df = pd.concat([df, new_row], ignore_index=True)
-                        print(f"Aktueller Preis ${current_price} als Datenpunkt hinzugefügt")
-
-                    # Auch die Daten in der Datenbank aktualisieren für andere Funktionen
-                    success, message = StockDataService.update_stock_data(symbol, use_live_data=use_live_data)
-                    print(f"Datenaktualisierung in DB: {success}, {message}")
-                else:
-                    print("Keine Live-Daten gefunden, verwende Datenbank")
-                    success, message = StockDataService.update_stock_data(symbol, use_live_data=use_live_data)
-                    print(f"Datenaktualisierung: {success}, {message}")
-                    if not success:
-                        return JsonResponse({'status': 'error', 'message': message})
-                    df = None  # Wird später aus der Datenbank geladen
-            except Exception as e:
-                print(f"Fehler beim Abrufen der Live-Daten: {str(e)}")
-                # Fallback auf Datenbank-Update
-                success, message = StockDataService.update_stock_data(symbol, use_live_data=False)
-                print(f"Fallback-Datenaktualisierung: {success}, {message}")
-                if not success:
-                    return JsonResponse({'status': 'error', 'message': message})
-                df = None  # Wird später aus der Datenbank geladen
-        else:
-            # Für historische Daten den normalen Weg gehen
-            success, message = StockDataService.update_stock_data(symbol, use_live_data=False)
-            print(f"Datenaktualisierung: {success}, {message}")
-            if not success:
-                return JsonResponse({'status': 'error', 'message': message})
-            df = None  # Wird später aus der Datenbank geladen
+        # Historische Daten verwenden
+        success, message = StockDataService.update_stock_data(symbol, use_live_data=False)
+        print(f"Datenaktualisierung: {success}, {message}")
+        if not success:
+            return JsonResponse({'status': 'error', 'message': message})
+        df = None  # Wird später aus der Datenbank geladen
 
         historical_data_count = StockData.objects.filter(stock=stock).count()
         print(f"Anzahl historischer Datenpunkte: {historical_data_count}")
@@ -246,22 +188,11 @@ def analyze_stock(request, symbol):
                 analyzer = AdaptiveAnalyzer(symbol)
                 print("Verwende AdaptiveAnalyzer")
 
-                # Wenn wir Live-Daten haben, diese verwenden
-                if use_live_data and df is not None:
-                    print("Verwende Live-Daten für AdaptiveAnalyzer")
-                    analyzer.df = df  # DataFrame direkt setzen
-
                 result = analyzer.get_adaptive_score()
                 analysis_result = analyzer.save_analysis_result()
             else:
                 analyzer = TechnicalAnalyzer(symbol)
                 print("Verwende TechnicalAnalyzer")
-
-                # Wenn wir Live-Daten haben, diese verwenden
-                if use_live_data and df is not None:
-                    print("Verwende Live-Daten für TechnicalAnalyzer")
-                    analyzer.df = df
-                    analyzer.calculate_indicators()
 
                 result = analyzer.calculate_technical_score()
 
@@ -475,110 +406,16 @@ def search_stocks(request):
 def api_stock_data(request, symbol):
     """API-Endpunkt für Kurs- und Indikator-Daten"""
     try:
-        # Prüfen, ob Live-Daten verwendet werden sollen
-        use_live_data = request.GET.get('use_live_data') == 'true'
-        data_type = "Live-Daten" if use_live_data else "Schlusskurse"
-        print(f"API: Verwende {data_type} für die Diagramme")
-
         stock = Stock.objects.get(symbol=symbol.upper())
 
-        # Wenn Live-Daten verwendet werden, direkt von der API abrufen
-        if use_live_data:
-            try:
-                # Rate-Limiting anwenden
-                StockDataService.rate_limit()
 
-                # Twelvedata Client holen
-                td = StockDataService.get_client()
+        # Historische Daten verwenden
+        analyzer = TechnicalAnalyzer(stock_symbol=symbol)
+        analyzer.calculate_indicators(include_advanced=True)
+        df = analyzer.df
 
-                # Aktuellen Preis abrufen
-                price = td.price(symbol=symbol).as_json()
-                current_price = float(price['price']) if price and 'price' in price else None
-                print(f"Aktueller Preis für {symbol}: ${current_price}")
-
-                # Live-Daten für die letzten 2 Tage abrufen (1-Minuten-Intervall)
-                end_date = datetime.now()
-                start_date = end_date - timedelta(days=2)
-
-                # Rate-Limiting anwenden
-                StockDataService.rate_limit()
-
-                # Time-Series-Daten abrufen
-                ts = td.time_series(
-                    symbol=symbol,
-                    interval="1min",
-                    start_date=start_date.strftime('%Y-%m-%d'),
-                    end_date=end_date.strftime('%Y-%m-%d %H:%M:%S'),
-                    outputsize=1000
-                )
-                live_data = ts.as_pandas()
-
-                if not live_data.empty:
-                    print(f"Live-Daten für {symbol}: {len(live_data)} Datenpunkte")
-
-                    # DataFrame für die Analyse vorbereiten
-                    df = pd.DataFrame()
-                    df['date'] = pd.to_datetime(live_data.index)
-                    df['open_price'] = live_data['open'].astype(float)
-                    df['high_price'] = live_data['high'].astype(float)
-                    df['low_price'] = live_data['low'].astype(float)
-                    df['close_price'] = live_data['close'].astype(float)
-                    df['volume'] = live_data['volume'].astype(float)
-                    df['adjusted_close'] = live_data['close'].astype(float)  # Keine adjusted_close in Live-Daten
-
-                    # Aktuellen Preis als neuesten Datenpunkt hinzufügen, wenn verfügbar
-                    if current_price is not None:
-                        current_time = datetime.now()
-                        # Neuen Datenpunkt mit aktuellem Preis erstellen
-                        new_row = pd.DataFrame({
-                            'date': [current_time],
-                            'open_price': [current_price],
-                            'high_price': [current_price],
-                            'low_price': [current_price],
-                            'close_price': [current_price],
-                            'volume': [0],  # Kein Volumen für den aktuellen Preis
-                            'adjusted_close': [current_price]
-                        })
-                        # Zum DataFrame hinzufügen
-                        df = pd.concat([df, new_row], ignore_index=True)
-                        print(f"Aktueller Preis ${current_price} als Datenpunkt hinzugefügt")
-
-                    # Indikatoren berechnen
-                    analyzer = TechnicalAnalyzer(stock_symbol=symbol)
-                    analyzer.df = df  # Ersetze das DataFrame mit den Live-Daten
-                    analyzer.calculate_indicators()
-                    df = analyzer.df
-
-                    # Sicherstellen, dass die Daten nach Datum sortiert sind (älteste zuerst)
-                    df = df.sort_values(by='date')
-                else:
-                    # Fallback auf gespeicherte Daten, wenn keine Live-Daten verfügbar sind
-                    print(f"Keine Live-Daten für {symbol} gefunden, verwende gespeicherte Daten")
-                    analyzer = TechnicalAnalyzer(stock_symbol=symbol)
-                    analyzer.calculate_indicators()
-                    df = analyzer.df
-
-                    # Sicherstellen, dass die Daten nach Datum sortiert sind (älteste zuerst)
-                    df = df.sort_values(by='date')
-            except Exception as e:
-                print(f"Fehler beim Abrufen der Live-Daten: {str(e)}")
-                # Fallback auf gespeicherte Daten
-                analyzer = TechnicalAnalyzer(stock_symbol=symbol)
-                analyzer.calculate_indicators()
-                df = analyzer.df
-
-                # Sicherstellen, dass die Daten nach Datum sortiert sind (älteste zuerst)
-                df = df.sort_values(by='date')
-                current_price = None
-        else:
-            # Für historische Daten den normalen Weg gehen
-            analyzer = TechnicalAnalyzer(stock_symbol=symbol)
-            analyzer.calculate_indicators()
-            df = analyzer.df
-
-            # Sicherstellen, dass die Daten nach Datum sortiert sind (älteste zuerst)
-            df = df.sort_values(by='date')
-            current_price = None
+        # Sicherstellen, dass die Daten nach Datum sortiert sind (älteste zuerst)
+        df = df.sort_values(by='date')
 
         # Preis-Daten
         price_data = []
@@ -633,7 +470,13 @@ def api_stock_data(request, symbol):
             'kijun_sen': safe_column_to_list(df, 'kijun_sen'),
             'senkou_span_a': safe_column_to_list(df, 'senkou_span_a'),
             'senkou_span_b': safe_column_to_list(df, 'senkou_span_b'),
-            'chikou_span': safe_column_to_list(df, 'chikou_span')
+            'chikou_span': safe_column_to_list(df, 'chikou_span'),
+            # Heikin-Ashi-Komponenten
+            'ha_open': safe_column_to_list(df, 'ha_open'),
+            'ha_close': safe_column_to_list(df, 'ha_close'),
+            'ha_high': safe_column_to_list(df, 'ha_high'),
+            'ha_low': safe_column_to_list(df, 'ha_low'),
+            'ha_trend_strength': safe_column_to_list(df, 'ha_trend_strength')
         }
 
         response_data = {
@@ -643,9 +486,6 @@ def api_stock_data(request, symbol):
             'indicators': indicators
         }
 
-        # Wenn Live-Daten verwendet werden und ein aktueller Preis verfügbar ist, diesen hinzufügen
-        if use_live_data and current_price is not None:
-            response_data['current_price'] = current_price
 
         return JsonResponse(response_data)
     except Stock.DoesNotExist:
@@ -660,13 +500,12 @@ def batch_analyze(request):
     """Analysiert mehrere Aktien gleichzeitig mit optimierter Batch-Verarbeitung"""
     if request.method == 'POST':
         symbols = request.POST.getlist('symbols')
-        use_live_data = request.POST.get('use_live_data') == 'true'  # Checkbox-Wert als Boolean
 
         if not symbols:
             return JsonResponse({'error': 'Keine Symbole angegeben'}, status=400)
 
         # Daten für alle Aktien in einem Batch aktualisieren
-        update_results = StockDataService.update_multiple_stocks(symbols, use_live_data=use_live_data)
+        update_results = StockDataService.update_multiple_stocks(symbols, use_live_data=False)
 
         results = {}
 
@@ -1323,6 +1162,27 @@ def api_advanced_indicators(request, symbol):
 
 
 @login_required
+def get_model_stocks(request):
+    """Returns a list of stocks that have ML models"""
+    try:
+        # Get all model files from the ml_models directory
+        models_dir = 'ml_models'
+        model_files = [f for f in os.listdir(models_dir) if f.endswith('_price_model.pkl')] if os.path.exists(models_dir) else []
+
+        # Extract stock symbols from model filenames
+        stocks = [f.replace('_price_model.pkl', '') for f in model_files]
+
+        return JsonResponse({
+            'status': 'success',
+            'stocks': stocks
+        })
+    except Exception as e:
+        return JsonResponse({
+            'status': 'error',
+            'message': f'Error getting model stocks: {str(e)}'
+        })
+
+@login_required
 def evaluate_ml_model(request, symbol):
     """Evaluiert das ML-Modell für eine bestimmte Aktie"""
     try:
@@ -1406,9 +1266,56 @@ def ml_dashboard(request):
         'accuracy': 65, 'return': 70, 'speed': 85, 'adaptability': 50, 'robustness': 80
     }
 
+    # Calculate ML metrics for radar chart
+    ml_metrics = {}
+    if metrics.exists():
+        # Get the most recent metrics
+        latest_metric = metrics.first()
+
+        # Accuracy: Use the model's accuracy
+        ml_accuracy = round(latest_metric.accuracy * 100, 2)
+
+        # Return: Derive from directional accuracy or use a reasonable value
+        ml_return = round(latest_metric.directional_accuracy * 100, 2) if latest_metric.directional_accuracy else 75
+
+        # Speed: ML models are generally faster than traditional analysis
+        ml_speed = 90  # ML models are very fast at making predictions
+
+        # Adaptability: ML models can adapt to new data when retrained
+        ml_adaptability = 70  # Good but requires retraining
+
+        # Robustness: Derive from RMSE (lower RMSE = higher robustness)
+        # Normalize RMSE to a 0-100 scale (inverted, since lower RMSE is better)
+        if latest_metric.rmse:
+            # Assuming RMSE typically ranges from 0 to 0.2
+            normalized_rmse = max(0, min(100, (1 - (latest_metric.rmse * 5)) * 100))
+            ml_robustness = round(normalized_rmse, 2)
+        else:
+            ml_robustness = 65  # Default value
+
+        ml_metrics = [ml_accuracy, ml_return, ml_speed, ml_adaptability, ml_robustness]
+    else:
+        # Default values if no metrics are available
+        ml_metrics = [70, 75, 90, 70, 65]
+
+    # Calculate ML final score using the same weights as traditional
+    if ml_metrics:
+        ml_final = round(
+            ml_metrics[0] * 0.3 +  # Accuracy
+            ml_metrics[1] * 0.25 +  # Return
+            ml_metrics[2] * 0.2 +   # Speed
+            ml_metrics[3] * 0.15 +  # Adaptability
+            ml_metrics[4] * 0.1,    # Robustness
+            1
+        )
+    else:
+        ml_final = 75  # Default value
+
     performance_data = {
         'symbols': json.dumps(symbols),
         'accuracy': json.dumps(accuracies),
+        'ml': json.dumps(ml_metrics),  # Add ML metrics for radar chart
+        'ml_final': ml_final,  # Add ML final score
         'traditional': json.dumps([
             traditional['accuracy'], traditional['return'], traditional['speed'],
             traditional['adaptability'], traditional['robustness']
@@ -2247,6 +2154,54 @@ def ml_batch_backtest(request):
 
     return render(request, 'stock_analyzer/ml_batch_backtest_form.html', context)
 
+
+def api_ml_metrics(request, symbol):
+    """API endpoint for ML metrics (adaptive thresholds and feature importance)"""
+    try:
+        # Get the stock
+        stock = get_object_or_404(Stock, symbol=symbol.upper())
+
+        # Get the latest ML prediction
+        latest_ml_prediction = MLPrediction.objects.filter(stock=stock).order_by('-date').first()
+
+        if not latest_ml_prediction:
+            return JsonResponse({
+                'status': 'error',
+                'message': 'Keine ML-Vorhersage für diese Aktie verfügbar'
+            })
+
+        # Generate a new prediction to get the latest adaptive thresholds and feature importance
+        predictor = MLPredictor(symbol)
+        prediction = predictor.predict(
+            use_feature_importance=True,
+            feature_importance_threshold=0.01
+        )
+
+        if not prediction:
+            return JsonResponse({
+                'status': 'error',
+                'message': 'Konnte keine ML-Vorhersage generieren'
+            })
+
+        # Extract adaptive thresholds and feature importance
+        adaptive_thresholds = prediction.get('adaptive_thresholds', {})
+        feature_importance = prediction.get('feature_importance', {})
+
+        return JsonResponse({
+            'status': 'success',
+            'symbol': symbol,
+            'adaptive_thresholds': adaptive_thresholds,
+            'feature_importance': feature_importance
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({
+            'status': 'error',
+            'symbol': symbol,
+            'message': str(e)
+        })
 
 def api_ml_backtest(request, symbol):
     """API endpoint for ML backtesting (for AJAX requests)"""
