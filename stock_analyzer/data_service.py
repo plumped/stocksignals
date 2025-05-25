@@ -1,5 +1,6 @@
 # stock_analyzer/data_service.py
 import pandas as pd
+import numpy as np
 from twelvedata import TDClient
 from datetime import datetime, timedelta
 import time
@@ -20,6 +21,112 @@ class StockDataService:
     _last_request_time = 0
     _request_count = 0
     _td_client = None
+
+    @staticmethod
+    def _detect_outliers(df, columns=None, z_threshold=3.0, iqr_multiplier=1.5):
+        """
+        Detect outliers in stock data using multiple methods.
+
+        Args:
+            df (pandas.DataFrame): DataFrame containing stock data
+            columns (list): List of columns to check for outliers. If None, checks all numeric columns.
+            z_threshold (float): Threshold for Z-score method. Values with absolute Z-score above this are outliers.
+            iqr_multiplier (float): Multiplier for IQR method. Values outside Q1-multiplier*IQR and Q3+multiplier*IQR are outliers.
+
+        Returns:
+            pandas.DataFrame: DataFrame with additional columns indicating outliers
+        """
+        if df.empty:
+            return df
+
+        # If no columns specified, use all numeric columns
+        if columns is None:
+            columns = df.select_dtypes(include=[np.number]).columns.tolist()
+
+        # Create a copy to avoid modifying the original
+        result_df = df.copy()
+
+        # Add a column to track if any outliers were detected
+        result_df['has_outliers'] = False
+
+        for col in columns:
+            if col not in df.columns:
+                continue
+
+            # Skip columns with all NaN values
+            if df[col].isna().all():
+                continue
+
+            # Z-score method
+            z_scores = np.abs((df[col] - df[col].mean()) / df[col].std())
+            z_outliers = z_scores > z_threshold
+
+            # IQR method
+            Q1 = df[col].quantile(0.25)
+            Q3 = df[col].quantile(0.75)
+            IQR = Q3 - Q1
+            iqr_outliers = (df[col] < (Q1 - iqr_multiplier * IQR)) | (df[col] > (Q3 + iqr_multiplier * IQR))
+
+            # Combine methods - a point is an outlier if detected by either method
+            outliers = z_outliers | iqr_outliers
+
+            # Add outlier indicator column
+            result_df[f'{col}_outlier'] = outliers
+
+            # Update the overall outlier flag
+            result_df['has_outliers'] = result_df['has_outliers'] | outliers
+
+        return result_df
+
+    @staticmethod
+    def _handle_outliers(df, method='winsorize', columns=None, winsorize_limits=(0.05, 0.05)):
+        """
+        Handle outliers in stock data using the specified method.
+
+        Args:
+            df (pandas.DataFrame): DataFrame containing stock data with outlier indicators
+            method (str): Method to handle outliers. Options: 'winsorize', 'remove', 'impute'
+            columns (list): List of columns to handle outliers for. If None, handles all columns with outlier indicators.
+            winsorize_limits (tuple): Limits for winsorization (lower, upper) as fractions of data to replace
+
+        Returns:
+            pandas.DataFrame: DataFrame with outliers handled
+        """
+        if df.empty or 'has_outliers' not in df.columns:
+            return df
+
+        # Create a copy to avoid modifying the original
+        result_df = df.copy()
+
+        # If no columns specified, find all columns with outlier indicators
+        if columns is None:
+            columns = [col.replace('_outlier', '') for col in df.columns if col.endswith('_outlier')]
+
+        for col in columns:
+            outlier_col = f'{col}_outlier'
+            if outlier_col not in df.columns or col not in df.columns:
+                continue
+
+            # Skip columns with all NaN values
+            if df[col].isna().all():
+                continue
+
+            if method == 'winsorize':
+                # Winsorize: cap extreme values at specified percentiles
+                lower_limit = df[col].quantile(winsorize_limits[0])
+                upper_limit = df[col].quantile(1 - winsorize_limits[1])
+                result_df.loc[df[outlier_col], col] = df.loc[df[outlier_col], col].clip(lower=lower_limit, upper=upper_limit)
+
+            elif method == 'remove':
+                # Remove: set outliers to NaN (they'll be handled later)
+                result_df.loc[df[outlier_col], col] = np.nan
+
+            elif method == 'impute':
+                # Impute: replace outliers with the median of non-outlier values
+                median_value = df.loc[~df[outlier_col], col].median()
+                result_df.loc[df[outlier_col], col] = median_value
+
+        return result_df
 
     @classmethod
     def get_client(cls):
@@ -158,8 +265,45 @@ class StockDataService:
                 cache.set(cache_key, result, CACHE_DURATION)
                 return result
 
+            # Outlier-Erkennung und -Behandlung
+            price_columns = ['open', 'high', 'low', 'close']
+
+            # Detect outliers in price data
+            hist_data_with_outliers = StockDataService._detect_outliers(
+                hist_data, 
+                columns=price_columns,
+                z_threshold=3.5,  # Etwas höherer Schwellenwert für Finanzdaten
+                iqr_multiplier=2.0  # Etwas höherer Multiplikator für Finanzdaten
+            )
+
+            # Count and log outliers
+            outlier_count = hist_data_with_outliers['has_outliers'].sum()
+            if outlier_count > 0:
+                print(f"WARNUNG: {outlier_count} Ausreißer in den Daten für {symbol} gefunden.")
+
+                # Log details about outliers
+                for col in price_columns:
+                    col_outliers = hist_data_with_outliers[f'{col}_outlier'].sum()
+                    if col_outliers > 0:
+                        print(f"  - {col_outliers} Ausreißer in {col}-Preisen")
+
+                        # Show some examples of outliers
+                        outlier_examples = hist_data_with_outliers[hist_data_with_outliers[f'{col}_outlier']]
+                        if not outlier_examples.empty:
+                            for idx, row in outlier_examples.head(3).iterrows():
+                                date_str = idx if isinstance(idx, str) else idx.strftime('%Y-%m-%d')
+                                print(f"    * {date_str}: {row[col]} (Z-Score: {abs((row[col] - hist_data[col].mean()) / hist_data[col].std()):.2f})")
+
+            # Handle outliers using winsorization (cap extreme values)
+            hist_data_cleaned = StockDataService._handle_outliers(
+                hist_data_with_outliers,
+                method='winsorize',
+                columns=price_columns,
+                winsorize_limits=(0.01, 0.01)  # Cap at 1st and 99th percentiles
+            )
+
             # Kursdaten in die Datenbank speichern
-            for index, row in hist_data.iterrows():
+            for index, row in hist_data_cleaned.iterrows():
                 date = datetime.strptime(index, '%Y-%m-%d').date() if isinstance(index, str) else index.date()
 
                 # Überprüfen, ob das Datum in der Zukunft liegt
@@ -171,6 +315,16 @@ class StockDataService:
                 volume = int(row['volume']) if not pd.isna(row['volume']) else 0
                 if volume < 1000:  # Annahme: Volumen unter 1000 ist verdächtig niedrig
                     print(f"Warnung: Niedriges Volumen ({volume}) für {stock.symbol} am {date}")
+
+                # Check if this data point was an outlier
+                was_outlier = False
+                if 'has_outliers' in row and row['has_outliers']:
+                    was_outlier = True
+                    outlier_fields = []
+                    for col in price_columns:
+                        if f'{col}_outlier' in row and row[f'{col}_outlier']:
+                            outlier_fields.append(col)
+                    print(f"Korrigierter Ausreißer für {stock.symbol} am {date} in Feldern: {', '.join(outlier_fields)}")
 
                 StockData.objects.update_or_create(
                     stock=stock,

@@ -206,480 +206,553 @@ class MLPredictor:
             if col in df_features.columns:
                 df_features[col] = pd.to_numeric(df_features[col], errors='coerce')
 
-        # 1. BASIS-FEATURES - immer berechnen
-        # ------------------------------
+        # Feature calculation configuration
+        feature_config = {
+            'windows': {
+                'short': SHORT_WINDOW,
+                'medium': MEDIUM_WINDOW,
+                'standard': STANDARD_WINDOW,
+                'extended': EXTENDED_WINDOW,
+                'long': LONG_WINDOW
+            },
+            'can_calculate': {
+                'short': can_calculate_short,
+                'medium': can_calculate_medium,
+                'standard': can_calculate_standard,
+                'extended': can_calculate_extended,
+                'long': can_calculate_long
+            },
+            'data_length': data_length
+        }
+
+        # Calculate features by category
+        df_features = self._calculate_basic_features(df_features)
+
+        # Continue with the rest of the feature calculations
+        if feature_config['can_calculate']['short']:
+            df_features = self._calculate_short_term_features(df_features, feature_config)
+
+        if feature_config['can_calculate']['medium']:
+            df_features = self._calculate_medium_term_features(df_features, feature_config)
+
+        if feature_config['can_calculate']['standard']:
+            df_features = self._calculate_standard_features(df_features, feature_config)
+
+        if 'spy_close' in df_features.columns:
+            df_features = self._calculate_spy_correlation_features(df_features, feature_config)
+
+        if feature_config['can_calculate']['extended']:
+            df_features = self._calculate_extended_features(df_features, feature_config)
+
+        if feature_config['can_calculate']['long']:
+            df_features = self._calculate_long_term_features(df_features, feature_config)
+
+        # Calculate volatility categories
+        df_features = self._calculate_volatility_categories(df_features, feature_config)
+
+        # Clean data and handle NaN values
+        df_features = self._clean_and_handle_nan(df_features, feature_config)
+
+        return df_features
+
+    def _calculate_basic_features(self, df):
+        """Calculate basic price and candle features that don't depend on window sizes."""
         # Preis- und Kerzen-Features
-        df_features['hl_ratio'] = df_features['high_price'] / df_features['low_price']
-        df_features['co_ratio'] = df_features['close_price'] / df_features['open_price']
-        df_features['candle_body'] = df_features['close_price'] - df_features['open_price']
-        df_features['upper_shadow'] = df_features['high_price'] - np.maximum(df_features['close_price'],
-                                                                             df_features['open_price'])
-        df_features['lower_shadow'] = np.minimum(df_features['close_price'], df_features['open_price']) - df_features[
-            'low_price']
-        df_features['is_bullish'] = (df_features['close_price'] > df_features['open_price']).astype(int)
-        df_features['is_doji'] = (abs(df_features['candle_body']) < 0.1 * (
-                df_features['high_price'] - df_features['low_price'])).astype(int)
+        df['hl_ratio'] = df['high_price'] / df['low_price']
+        df['co_ratio'] = df['close_price'] / df['open_price']
+        df['candle_body'] = df['close_price'] - df['open_price']
+        df['upper_shadow'] = df['high_price'] - np.maximum(df['close_price'], df['open_price'])
+        df['lower_shadow'] = np.minimum(df['close_price'], df['open_price']) - df['low_price']
+        df['is_bullish'] = (df['close_price'] > df['open_price']).astype(int)
+        df['is_doji'] = (abs(df['candle_body']) < 0.1 * (df['high_price'] - df['low_price'])).astype(int)
 
         # Heikin-Ashi Kerzen - reduzieren Rauschen und zeigen Trends deutlicher
         try:
             # Heikin-Ashi Berechnung
-            ha_close = (df_features['open_price'] + df_features['high_price'] + 
-                        df_features['low_price'] + df_features['close_price']) / 4
+            ha_close = (df['open_price'] + df['high_price'] + df['low_price'] + df['close_price']) / 4
 
             # Ersten Wert für HA Open setzen
-            ha_open = df_features['open_price'].copy()
+            ha_open = df['open_price'].copy()
 
             # Iterativ berechnen (erfordert Schleife)
-            for i in range(1, len(df_features)):
+            for i in range(1, len(df)):
                 ha_open.iloc[i] = (ha_open.iloc[i-1] + ha_close.iloc[i-1]) / 2
 
             # HA High und Low
-            ha_high = df_features[['high_price', 'open_price', 'close_price']].max(axis=1)
-            ha_low = df_features[['low_price', 'open_price', 'close_price']].min(axis=1)
+            ha_high = df[['high_price', 'open_price', 'close_price']].max(axis=1)
+            ha_low = df[['low_price', 'open_price', 'close_price']].min(axis=1)
 
             # Als Features speichern
-            df_features['ha_open'] = ha_open
-            df_features['ha_close'] = ha_close
-            df_features['ha_high'] = ha_high
-            df_features['ha_low'] = ha_low
+            df['ha_open'] = ha_open
+            df['ha_close'] = ha_close
+            df['ha_high'] = ha_high
+            df['ha_low'] = ha_low
 
             # Heikin-Ashi Kerzen-Features
-            df_features['ha_body'] = ha_close - ha_open
-            df_features['ha_is_bullish'] = (ha_close > ha_open).astype(int)
+            df['ha_body'] = ha_close - ha_open
+            df['ha_is_bullish'] = (ha_close > ha_open).astype(int)
 
             # Trendstärke basierend auf Heikin-Ashi
             # Mehrere aufeinanderfolgende gleichfarbige Kerzen deuten auf starken Trend hin
-            df_features['ha_trend_strength'] = df_features['ha_is_bullish'].rolling(window=3).sum()
-            df_features.loc[df_features['ha_trend_strength'] == 0, 'ha_trend_strength'] = -3  # Alle 3 bearish
+            df['ha_trend_strength'] = df['ha_is_bullish'].rolling(window=3).sum()
+            df.loc[df['ha_trend_strength'] == 0, 'ha_trend_strength'] = -3  # Alle 3 bearish
 
             # Trendwechsel-Signale
-            df_features['ha_trend_change'] = df_features['ha_is_bullish'].diff().fillna(0)
-            df_features['ha_bullish_reversal'] = (df_features['ha_trend_change'] > 0).astype(int)
-            df_features['ha_bearish_reversal'] = (df_features['ha_trend_change'] < 0).astype(int)
+            df['ha_trend_change'] = df['ha_is_bullish'].diff().fillna(0)
+            df['ha_bullish_reversal'] = (df['ha_trend_change'] > 0).astype(int)
+            df['ha_bearish_reversal'] = (df['ha_trend_change'] < 0).astype(int)
 
         except Exception as e:
             print(f"Fehler bei Heikin-Ashi-Berechnung: {str(e)}")
 
         # Kurzfristige Renditen - maximal 1-Tages-Lag
-        df_features['daily_return'] = df_features['close_price'].pct_change(fill_method=None).fillna(0)
+        df['daily_return'] = df['close_price'].pct_change(fill_method=None).fillna(0)
 
-        # 2. KURZFRISTIGE FEATURES - mindestens 10 Datenpunkte
-        # ------------------------------
-        if can_calculate_short:
-            df_features[f'ma_{SHORT_WINDOW}'] = df_features['close_price'].rolling(window=SHORT_WINDOW,
-                                                                                   min_periods=3).mean()
-            if 'ma_5' in df_features.columns:  # Sicherheitsprüfung
-                df_features[f'ma_{SHORT_WINDOW}_dist'] = (df_features['close_price'] - df_features[
-                    f'ma_{SHORT_WINDOW}']) / df_features[f'ma_{SHORT_WINDOW}'].replace(0, np.nan)
+        return df
 
-            df_features['volatility_5'] = df_features['daily_return'].rolling(window=SHORT_WINDOW, min_periods=3).std()
-            df_features['volume_ma_5'] = df_features['volume'].rolling(window=SHORT_WINDOW, min_periods=3).mean()
+    def _calculate_short_term_features(self, df, config):
+        """Calculate short-term features that require a small amount of data."""
+        SHORT_WINDOW = config['windows']['short']
+        data_length = config['data_length']
 
-            # EMA für MACD (kurze Komponente)
-            df_features['ema_12'] = df_features['close_price'].ewm(span=12, min_periods=5, adjust=False).mean()
+        # Moving average
+        df[f'ma_{SHORT_WINDOW}'] = df['close_price'].rolling(window=SHORT_WINDOW, min_periods=3).mean()
+        if 'ma_5' in df.columns:  # Sicherheitsprüfung
+            df[f'ma_{SHORT_WINDOW}_dist'] = (df['close_price'] - df[f'ma_{SHORT_WINDOW}']) / df[f'ma_{SHORT_WINDOW}'].replace(0, np.nan)
 
-            # Kurzfristige Momentum-Features
-            df_features[f'momentum_{SHORT_WINDOW}'] = df_features['close_price'] / df_features['close_price'].shift(
-                SHORT_WINDOW).replace(0, np.nan) - 1
+        # Volatility and volume
+        df['volatility_5'] = df['daily_return'].rolling(window=SHORT_WINDOW, min_periods=3).std()
+        df['volume_ma_5'] = df['volume'].rolling(window=SHORT_WINDOW, min_periods=3).mean()
 
-            # RSI mit kleinerem Fenster
-            delta = df_features['close_price'].diff()
-            up = delta.clip(lower=0)
-            down = -delta.clip(upper=0)
-            ema_up = up.ewm(com=SHORT_WINDOW, min_periods=3, adjust=False).mean()
-            ema_down = down.ewm(com=SHORT_WINDOW, min_periods=3, adjust=False).mean()
-            rs = ema_up / (ema_down.replace(0, np.nan))  # Vermeidung von Division durch Null
-            df_features['rsi'] = 100 - (100 / (1 + rs))
+        # EMA für MACD (kurze Komponente)
+        df['ema_12'] = df['close_price'].ewm(span=12, min_periods=5, adjust=False).mean()
 
-            # Close-Lags für kurzfristige Vergleiche
-            df_features['close_lag_1'] = df_features['close_price'].shift(1)
+        # Kurzfristige Momentum-Features
+        df[f'momentum_{SHORT_WINDOW}'] = df['close_price'] / df['close_price'].shift(SHORT_WINDOW).replace(0, np.nan) - 1
 
-            # Preis-Geschwindigkeit über kurze Perioden
-            df_features['price_velocity_3'] = df_features['close_price'].diff(min(3, data_length - 1)) / min(3,
-                                                                                                             data_length - 1)
+        # RSI mit kleinerem Fenster
+        delta = df['close_price'].diff()
+        up = delta.clip(lower=0)
+        down = -delta.clip(upper=0)
+        ema_up = up.ewm(com=SHORT_WINDOW, min_periods=3, adjust=False).mean()
+        ema_down = down.ewm(com=SHORT_WINDOW, min_periods=3, adjust=False).mean()
+        rs = ema_up / (ema_down.replace(0, np.nan))  # Vermeidung von Division durch Null
+        df['rsi'] = 100 - (100 / (1 + rs))
 
-        # 3. MITTELFRISTIGE FEATURES - mindestens 15 Datenpunkte
-        # ------------------------------
+        # Close-Lags für kurzfristige Vergleiche
+        df['close_lag_1'] = df['close_price'].shift(1)
+
+        # Preis-Geschwindigkeit über kurze Perioden
+        df['price_velocity_3'] = df['close_price'].diff(min(3, data_length - 1)) / min(3, data_length - 1)
+
+        return df
+
+    def _calculate_medium_term_features(self, df, config):
+        """Calculate medium-term features that require a moderate amount of data."""
+        MEDIUM_WINDOW = config['windows']['medium']
+        data_length = config['data_length']
+
+        # Moving average
+        df[f'ma_{MEDIUM_WINDOW}'] = df['close_price'].rolling(window=MEDIUM_WINDOW, min_periods=5).mean()
+        if f'ma_{MEDIUM_WINDOW}' in df.columns:  # Sicherheitsprüfung
+            df[f'ma_{MEDIUM_WINDOW}_dist'] = (df['close_price'] - df[f'ma_{MEDIUM_WINDOW}']) / df[f'ma_{MEDIUM_WINDOW}'].replace(0, np.nan)
+
+        # Mittelfristige Renditen
+        df['weekly_return'] = df['close_price'].pct_change(min(5, data_length - 1), fill_method=None).fillna(0)
+
+        # Mittelfristige Momentum-Features
+        df[f'momentum_{MEDIUM_WINDOW}'] = df['close_price'] / df['close_price'].shift(MEDIUM_WINDOW).replace(0, np.nan) - 1
+
+        # MACD-Komponenten (wenn möglich)
+        if 'ema_12' in df.columns:
+            df['ema_26'] = df['close_price'].ewm(span=26, min_periods=10, adjust=False).mean()
+            df['macd'] = df['ema_12'] - df['ema_26']
+            df['macd_signal'] = df['macd'].ewm(span=9, min_periods=4, adjust=False).mean()
+            df['macd_hist'] = df['macd'] - df['macd_signal']
+
+        # SMA-Kreuzungen (falls möglich)
+        if 'ma_5' in df.columns and f'ma_{MEDIUM_WINDOW}' in df.columns:
+            df['ma_5_10_cross'] = df['ma_5'] - df[f'ma_{MEDIUM_WINDOW}']
+
+        # Weitere Close-Lags
+        df['close_lag_2'] = df['close_price'].shift(2)
+        if 'rsi' in df.columns:
+            df['rsi_lag_1'] = df['rsi'].shift(1)
+
+        # Mittelfristige Trendstärke
+        df['trend_strength_10'] = df['close_price'].diff(min(MEDIUM_WINDOW, data_length - 1))
+
+        # Beschleunigung der Rendite
+        if 'daily_return' in df.columns:
+            df['return_acceleration'] = df['daily_return'].diff()
+
+        return df
+
+    def _calculate_standard_features(self, df, config):
+        """Calculate standard features that require a moderate amount of data."""
+        STANDARD_WINDOW = config['windows']['standard']
+        MEDIUM_WINDOW = config['windows']['medium']
+        data_length = config['data_length']
+        can_calculate_medium = config['can_calculate']['medium']
+
+        # Moving average
+        df[f'ma_{STANDARD_WINDOW}'] = df['close_price'].rolling(window=STANDARD_WINDOW, min_periods=10).mean()
+        if f'ma_{STANDARD_WINDOW}' in df.columns:  # Sicherheitsprüfung
+            df[f'ma_{STANDARD_WINDOW}_dist'] = (df['close_price'] - df[f'ma_{STANDARD_WINDOW}']) / df[f'ma_{STANDARD_WINDOW}'].replace(0, np.nan)
+
+        # Längerfristige Renditen
+        df['monthly_return'] = df['close_price'].pct_change(min(STANDARD_WINDOW, data_length - 1), fill_method=None).fillna(0)
+
+        # Volatilitätsfeatures
+        df['volatility_20'] = df['daily_return'].rolling(window=STANDARD_WINDOW, min_periods=10).std()
+
+        # Volume-Features
+        df['volume_ma_20'] = df['volume'].rolling(window=STANDARD_WINDOW, min_periods=10).mean()
+        if 'volume_ma_20' in df.columns and df['volume_ma_20'].max() > 0:
+            df['volume_ratio'] = df['volume'] / df['volume_ma_20'].replace(0, np.nan)
+
+        # Bollinger Bands
+        if f'ma_{STANDARD_WINDOW}' in df.columns:
+            std = df['close_price'].rolling(window=STANDARD_WINDOW, min_periods=10).std()
+            df['bb_middle'] = df[f'ma_{STANDARD_WINDOW}']
+            df['bb_upper'] = df['bb_middle'] + 2 * std
+            df['bb_lower'] = df['bb_middle'] - 2 * std
+
+            # Vermeidung von Division durch Null
+            bb_width_divisor = df['bb_middle'].replace(0, np.nan)
+            df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / bb_width_divisor
+
+            # BB Position nur berechnen, wenn nicht durch Null geteilt wird
+            bb_denominator = (df['bb_upper'] - df['bb_lower'])
+            bb_position_valid = bb_denominator > 0
+            df['bb_position'] = np.nan  # Default-Wert
+            if bb_position_valid.any():
+                df.loc[bb_position_valid, 'bb_position'] = (
+                        (df.loc[bb_position_valid, 'close_price'] -
+                         df.loc[bb_position_valid, 'bb_lower']) /
+                        bb_denominator[bb_position_valid]
+                )
+            # Fallback für ungültige Positionen
+            df['bb_position'] = df['bb_position'].fillna(0.5)
+
+        # Z-Score
+        if f'ma_{STANDARD_WINDOW}' in df.columns:
+            std20 = df['close_price'].rolling(window=STANDARD_WINDOW, min_periods=10).std()
+            std20_valid = std20 > 0
+            df['zscore_20'] = np.nan
+            if std20_valid.any():
+                df.loc[std20_valid, 'zscore_20'] = (
+                        (df.loc[std20_valid, 'close_price'] -
+                         df.loc[std20_valid, f'ma_{STANDARD_WINDOW}']) /
+                        std20[std20_valid]
+                )
+
+        # Standardfeatures für längerfristige Momentum-Features
+        df[f'momentum_{STANDARD_WINDOW}'] = df['close_price'] / df['close_price'].shift(STANDARD_WINDOW).replace(0, np.nan) - 1
+
+        # Bullish Signal Count basierend auf verfügbaren Indikatoren
+        bullish_indicators = []
+        if 'macd' in df.columns and 'macd_signal' in df.columns:
+            bullish_indicators.append((df['macd'] > df['macd_signal']).astype(int))
+        if 'rsi' in df.columns:
+            bullish_indicators.append((df['rsi'] < 30).astype(int))
+        if f'ma_{STANDARD_WINDOW}' in df.columns:
+            bullish_indicators.append((df['close_price'] > df[f'ma_{STANDARD_WINDOW}']).astype(int))
+
+        if bullish_indicators:
+            df['bullish_signals'] = sum(bullish_indicators)
+
+        # Close Lag 3 für längere Trends
+        df['close_lag_3'] = df['close_price'].shift(3)
+
+        # MACD Lags für Trendveränderungen
+        if 'macd' in df.columns:
+            df['macd_lag_1'] = df['macd'].shift(1)
+
+        # SMA-Kreuzungen und Veränderungen
+        if f'ma_{STANDARD_WINDOW}' in df.columns and can_calculate_medium and f'ma_{MEDIUM_WINDOW}' in df.columns:
+            df[f'ma_{MEDIUM_WINDOW}_{STANDARD_WINDOW}_cross'] = df[f'ma_{MEDIUM_WINDOW}'] - df[f'ma_{STANDARD_WINDOW}']
+
+        # Bullish Engulfing Muster
+        if 'is_bullish' in df.columns and 'candle_body' in df.columns:
+            df['is_bullish_engulfing'] = ((df['is_bullish'] == 1) &
+                                           (df['candle_body'] > df['candle_body'].shift())).astype(int)
+
+        # ADX (Average Directional Index) - Trendstärke-Indikator
+        try:
+            # Berechnung der Richtungsbewegungen
+            plus_dm = df['high_price'].diff()
+            minus_dm = df['low_price'].diff(-1).abs()
+
+            # Positive/Negative Richtungsbewegung
+            plus_dm = plus_dm.where((plus_dm > 0) & (plus_dm > minus_dm), 0)
+            minus_dm = minus_dm.where((minus_dm > 0) & (minus_dm > plus_dm), 0)
+
+            # True Range
+            high_low = df['high_price'] - df['low_price']
+            high_close = (df['high_price'] - df['close_price'].shift()).abs()
+            low_close = (df['low_price'] - df['close_price'].shift()).abs()
+            tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+
+            # Smoothed Werte (14-Perioden)
+            window = min(14, data_length - 5)
+            if window >= 5:  # Mindestens 5 Perioden für sinnvolle Berechnung
+                smoothed_tr = tr.rolling(window=window, min_periods=5).sum()
+                smoothed_plus_dm = plus_dm.rolling(window=window, min_periods=5).sum()
+                smoothed_minus_dm = minus_dm.rolling(window=window, min_periods=5).sum()
+
+                # Direktionale Indikatoren
+                plus_di = 100 * smoothed_plus_dm / smoothed_tr.replace(0, np.nan)
+                minus_di = 100 * smoothed_minus_dm / smoothed_tr.replace(0, np.nan)
+
+                # Direktionaler Index
+                di_diff = (plus_di - minus_di).abs()
+                di_sum = plus_di + minus_di
+                dx = 100 * di_diff / di_sum.replace(0, np.nan)
+
+                # ADX (Average Directional Index) - geglätteter DX
+                df['adx'] = dx.rolling(window=window, min_periods=5).mean()
+                df['+di'] = plus_di
+                df['-di'] = minus_di
+
+                # ADX Interpretation als Features
+                df['strong_trend'] = (df['adx'] > 25).astype(int)
+                df['very_strong_trend'] = (df['adx'] > 50).astype(int)
+                df['bullish_trend'] = ((df['+di'] > df['-di']) & (df['adx'] > 20)).astype(int)
+                df['bearish_trend'] = ((df['+di'] < df['-di']) & (df['adx'] > 20)).astype(int)
+        except Exception as e:
+            print(f"Fehler bei ADX-Berechnung: {str(e)}")
+
+        return df
+
+    def _calculate_spy_correlation_features(self, df, config):
+        """Calculate features related to SPY correlation and market beta."""
+        MEDIUM_WINDOW = config['windows']['medium']
+        STANDARD_WINDOW = config['windows']['standard']
+        data_length = config['data_length']
+        can_calculate_medium = config['can_calculate']['medium']
+        can_calculate_standard = config['can_calculate']['standard']
+
+        # Grundlegende SPY-Renditen berechnen
+        df['spy_daily_return'] = df['spy_close'].pct_change(fill_method=None).fillna(0)
+
+        # Kurzfristige relative Stärke
+        if 'daily_return' in df.columns:
+            df['rel_strength_daily'] = df['daily_return'] - df['spy_daily_return']
+
+        # Medium-Term SPY Features
         if can_calculate_medium:
-            df_features[f'ma_{MEDIUM_WINDOW}'] = df_features['close_price'].rolling(window=MEDIUM_WINDOW,
-                                                                                    min_periods=5).mean()
-            if 'ma_10' in df_features.columns:  # Sicherheitsprüfung
-                df_features[f'ma_{MEDIUM_WINDOW}_dist'] = (df_features['close_price'] - df_features[
-                    f'ma_{MEDIUM_WINDOW}']) / df_features[f'ma_{MEDIUM_WINDOW}'].replace(0, np.nan)
+            df['spy_return_10d'] = df['spy_close'].pct_change(MEDIUM_WINDOW, fill_method=None).fillna(0)
+            if 'weekly_return' in df.columns:
+                df['rel_strength_10d'] = df['weekly_return'] - df['spy_return_10d']
 
-            # Mittelfristige Renditen
-            df_features['weekly_return'] = df_features['close_price'].pct_change(min(5, data_length - 1), fill_method=None).fillna(0)
-
-            # Mittelfristige Momentum-Features
-            df_features[f'momentum_{MEDIUM_WINDOW}'] = df_features['close_price'] / df_features['close_price'].shift(
-                MEDIUM_WINDOW).replace(0, np.nan) - 1
-
-            # MACD-Komponenten (wenn möglich)
-            if 'ema_12' in df_features.columns:
-                df_features['ema_26'] = df_features['close_price'].ewm(span=26, min_periods=10, adjust=False).mean()
-                df_features['macd'] = df_features['ema_12'] - df_features['ema_26']
-                df_features['macd_signal'] = df_features['macd'].ewm(span=9, min_periods=4, adjust=False).mean()
-                df_features['macd_hist'] = df_features['macd'] - df_features['macd_signal']
-
-            # SMA-Kreuzungen (falls möglich)
-            if 'ma_5' in df_features.columns and 'ma_10' in df_features.columns:
-                df_features['ma_5_10_cross'] = df_features['ma_5'] - df_features['ma_10']
-
-            # Weitere Close-Lags
-            df_features['close_lag_2'] = df_features['close_price'].shift(2)
-            if 'rsi' in df_features.columns:
-                df_features['rsi_lag_1'] = df_features['rsi'].shift(1)
-
-            # Mittelfristige Trendstärke
-            df_features['trend_strength_10'] = df_features['close_price'].diff(min(MEDIUM_WINDOW, data_length - 1))
-
-            # Beschleunigung der Rendite
-            if 'daily_return' in df_features.columns:
-                df_features['return_acceleration'] = df_features['daily_return'].diff()
-
-        # 4. STANDARD-FEATURES - mindestens 25 Datenpunkte
-        # ------------------------------
+        # Standard SPY Features
         if can_calculate_standard:
-            df_features[f'ma_{STANDARD_WINDOW}'] = df_features['close_price'].rolling(window=STANDARD_WINDOW,
-                                                                                      min_periods=10).mean()
-            if 'ma_20' in df_features.columns:  # Sicherheitsprüfung
-                df_features[f'ma_{STANDARD_WINDOW}_dist'] = (df_features['close_price'] - df_features[
-                    f'ma_{STANDARD_WINDOW}']) / df_features[f'ma_{STANDARD_WINDOW}'].replace(0, np.nan)
+            # 20-Tage Korrelation - kritisch, dass genügend Datenpunkte vorhanden sind
+            min_corr_periods = min(15, data_length - 5)
+            if min_corr_periods >= 10:  # Mindestens 10 Punkte für sinnvolle Korrelation
+                df['corr_with_spy_20d'] = df['close_price'].rolling(STANDARD_WINDOW,
+                                                                    min_periods=min_corr_periods).corr(
+                    df['spy_close'])
 
-            # Längerfristige Renditen
-            df_features['monthly_return'] = df_features['close_price'].pct_change(min(STANDARD_WINDOW, data_length - 1), fill_method=None).fillna(0)
+            # SPY und Stock Rolling Return
+            min_periods_spy = min(15, data_length - 5)
+            if can_calculate_standard and min_periods_spy >= 10:
+                spy_ret_window = min(30, data_length - 5)
+                df['spy_return_30d'] = df['spy_close'].pct_change(fill_method=None).fillna(0).rolling(window=spy_ret_window,
+                                                                                          min_periods=min_periods_spy).sum()
+                df['stock_return_30d'] = df['close_price'].pct_change(fill_method=None).fillna(0).rolling(
+                    window=spy_ret_window, min_periods=min_periods_spy).sum()
 
-            # Volatilitätsfeatures
-            df_features['volatility_20'] = df_features['daily_return'].rolling(window=STANDARD_WINDOW,
-                                                                               min_periods=10).std()
+                # Alpha und Beta nur berechnen, wenn genügend nicht-NaN Werte vorhanden sind
+                df['rolling_alpha'] = np.nan
+                df['rolling_beta'] = np.nan
 
-            # Volume-Features
-            df_features['volume_ma_20'] = df_features['volume'].rolling(window=STANDARD_WINDOW, min_periods=10).mean()
-            if 'volume_ma_20' in df_features.columns and df_features['volume_ma_20'].max() > 0:
-                df_features['volume_ratio'] = df_features['volume'] / df_features['volume_ma_20'].replace(0, np.nan)
+                valid_indices = ~(df['spy_return_30d'].isna() | df['stock_return_30d'].isna())
 
-            # Bollinger Bands
-            if 'ma_20' in df_features.columns:
-                std = df_features['close_price'].rolling(window=STANDARD_WINDOW, min_periods=10).std()
-                df_features['bb_middle'] = df_features['ma_20']
-                df_features['bb_upper'] = df_features['bb_middle'] + 2 * std
-                df_features['bb_lower'] = df_features['bb_middle'] - 2 * std
+                # Nur Alpha/Beta für einzelne Datenpunkte berechnen, wenn genug Vergangenheitsdaten verfügbar sind
+                if valid_indices.sum() >= spy_ret_window:
+                    window = min(30, valid_indices.sum() - 5)
 
-                # Vermeidung von Division durch Null
-                bb_width_divisor = df_features['bb_middle'].replace(0, np.nan)
-                df_features['bb_width'] = (df_features['bb_upper'] - df_features['bb_lower']) / bb_width_divisor
+                    for i in range(window, len(df)):
+                        # Prüfe, ob genügend Daten für eine Regression vorhanden sind
+                        valid_window = ~(df['spy_return_30d'].iloc[i - window:i].isna() |
+                                         df['stock_return_30d'].iloc[i - window:i].isna())
 
-                # BB Position nur berechnen, wenn nicht durch Null geteilt wird
-                bb_denominator = (df_features['bb_upper'] - df_features['bb_lower'])
-                bb_position_valid = bb_denominator > 0
-                df_features['bb_position'] = np.nan  # Default-Wert
-                if bb_position_valid.any():
-                    df_features.loc[bb_position_valid, 'bb_position'] = (
-                            (df_features.loc[bb_position_valid, 'close_price'] -
-                             df_features.loc[bb_position_valid, 'bb_lower']) /
-                            bb_denominator[bb_position_valid]
-                    )
-                # Fallback für ungültige Positionen
-                df_features['bb_position'] = df_features['bb_position'].fillna(0.5)
+                        if valid_window.sum() >= 10:  # Mindestens 10 Punkte für Regression
+                            x = df['spy_return_30d'].iloc[i - window:i][valid_window].values.reshape(-1, 1)
+                            y = df['stock_return_30d'].iloc[i - window:i][valid_window].values
 
-            # Z-Score
-            if 'ma_20' in df_features.columns:
-                std20 = df_features['close_price'].rolling(window=STANDARD_WINDOW, min_periods=10).std()
-                std20_valid = std20 > 0
-                df_features['zscore_20'] = np.nan
-                if std20_valid.any():
-                    df_features.loc[std20_valid, 'zscore_20'] = (
-                            (df_features.loc[std20_valid, 'close_price'] -
-                             df_features.loc[std20_valid, 'ma_20']) /
-                            std20[std20_valid]
-                    )
+                            try:
+                                from sklearn.linear_model import LinearRegression
+                                model = LinearRegression()
+                                model.fit(x, y)
+                                df.loc[df.index[i], 'rolling_alpha'] = model.intercept_
+                                df.loc[df.index[i], 'rolling_beta'] = model.coef_[0]
+                            except:
+                                # Fallback bei Fehlern in der Regression
+                                pass
 
-            # Standardfeatures für längerfristige Momentum-Features
-            df_features[f'momentum_{STANDARD_WINDOW}'] = df_features['close_price'] / df_features['close_price'].shift(
-                STANDARD_WINDOW).replace(0, np.nan) - 1
+        return df
 
-            # Bullish Signal Count basierend auf verfügbaren Indikatoren
-            bullish_indicators = []
-            if 'macd' in df_features.columns and 'macd_signal' in df_features.columns:
-                bullish_indicators.append((df_features['macd'] > df_features['macd_signal']).astype(int))
-            if 'rsi' in df_features.columns:
-                bullish_indicators.append((df_features['rsi'] < 30).astype(int))
-            if 'ma_20' in df_features.columns:
-                bullish_indicators.append((df_features['close_price'] > df_features['ma_20']).astype(int))
+    def _calculate_extended_features(self, df, config):
+        """Calculate extended features that require a larger amount of data."""
+        EXTENDED_WINDOW = config['windows']['extended']
+        STANDARD_WINDOW = config['windows']['standard']
+        data_length = config['data_length']
 
-            if bullish_indicators:
-                df_features['bullish_signals'] = sum(bullish_indicators)
+        # Extended moving average
+        df[f'ma_{EXTENDED_WINDOW}'] = df['close_price'].rolling(window=EXTENDED_WINDOW, min_periods=30).mean()
 
-            # Close Lag 3 für längere Trends
-            df_features['close_lag_3'] = df_features['close_price'].shift(3)
+        # SMA Kreuzungen mit Extended Windows
+        if f'ma_{STANDARD_WINDOW}' in df.columns and f'ma_{EXTENDED_WINDOW}' in df.columns:
+            df[f'ma_{STANDARD_WINDOW}_{EXTENDED_WINDOW}_cross'] = np.sign(df[f'ma_{STANDARD_WINDOW}'] - df[f'ma_{EXTENDED_WINDOW}'])
+            df['sma_cross_change'] = df[f'ma_{STANDARD_WINDOW}_{EXTENDED_WINDOW}_cross'].diff().fillna(0)
+            df['sma_bullish_cross'] = (df['sma_cross_change'] > 0).astype(int)
+            df['sma_bearish_cross'] = (df['sma_cross_change'] < 0).astype(int)
 
-            # MACD Lags für Trendveränderungen
-            if 'macd' in df_features.columns:
-                df_features['macd_lag_1'] = df_features['macd'].shift(1)
+        # EMA Kreuzungen
+        if 'ema_12' in df.columns and 'ema_26' in df.columns:
+            df['ema_12_26_cross'] = np.sign(df['ema_12'] - df['ema_26'])
+            df['ema_cross_change'] = df['ema_12_26_cross'].diff().fillna(0)
+            df['ema_bullish_cross'] = (df['ema_cross_change'] > 0).astype(int)
+            df['ema_bearish_cross'] = (df['ema_cross_change'] < 0).astype(int)
 
-            # SMA-Kreuzungen und Veränderungen
-            if 'ma_20' in df_features.columns and can_calculate_medium and 'ma_10' in df_features.columns:
-                df_features['ma_10_20_cross'] = df_features['ma_10'] - df_features['ma_20']
+        # Ichimoku Cloud - umfassendes Indikator-System
+        try:
+            # Parameter für Ichimoku (angepasst an verfügbare Datenmenge)
+            tenkan_period = min(9, data_length // 5)  # Conversion Line
+            kijun_period = min(26, data_length // 3)  # Base Line
+            senkou_b_period = min(52, data_length // 2)  # Leading Span B
 
-            # Bullish Engulfing Muster
-            if 'is_bullish' in df_features.columns and 'candle_body' in df_features.columns:
-                df_features['is_bullish_engulfing'] = ((df_features['is_bullish'] == 1) &
-                                                       (df_features['candle_body'] > df_features[
-                                                           'candle_body'].shift())).astype(int)
+            if tenkan_period >= 3 and kijun_period >= 5 and senkou_b_period >= 10:
+                # Tenkan-sen (Conversion Line): (n-period high + n-period low) / 2
+                period_high = df['high_price'].rolling(window=tenkan_period).max()
+                period_low = df['low_price'].rolling(window=tenkan_period).min()
+                df['tenkan_sen'] = (period_high + period_low) / 2
 
-            # ADX (Average Directional Index) - Trendstärke-Indikator
-            try:
-                # Berechnung der Richtungsbewegungen
-                plus_dm = df_features['high_price'].diff()
-                minus_dm = df_features['low_price'].diff(-1).abs()
+                # Kijun-sen (Base Line): (n-period high + n-period low) / 2
+                period_high = df['high_price'].rolling(window=kijun_period).max()
+                period_low = df['low_price'].rolling(window=kijun_period).min()
+                df['kijun_sen'] = (period_high + period_low) / 2
 
-                # Positive/Negative Richtungsbewegung
-                plus_dm = plus_dm.where((plus_dm > 0) & (plus_dm > minus_dm), 0)
-                minus_dm = minus_dm.where((minus_dm > 0) & (minus_dm > plus_dm), 0)
+                # Senkou Span A (Leading Span A): (Tenkan-sen + Kijun-sen) / 2
+                df['senkou_span_a'] = ((df['tenkan_sen'] + df['kijun_sen']) / 2)
 
-                # True Range
-                high_low = df_features['high_price'] - df_features['low_price']
-                high_close = (df_features['high_price'] - df_features['close_price'].shift()).abs()
-                low_close = (df_features['low_price'] - df_features['close_price'].shift()).abs()
-                tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+                # Senkou Span B (Leading Span B): (n-period high + n-period low) / 2
+                period_high = df['high_price'].rolling(window=senkou_b_period).max()
+                period_low = df['low_price'].rolling(window=senkou_b_period).min()
+                df['senkou_span_b'] = (period_high + period_low) / 2
 
-                # Smoothed Werte (14-Perioden)
-                window = min(14, data_length - 5)
-                if window >= 5:  # Mindestens 5 Perioden für sinnvolle Berechnung
-                    smoothed_tr = tr.rolling(window=window, min_periods=5).sum()
-                    smoothed_plus_dm = plus_dm.rolling(window=window, min_periods=5).sum()
-                    smoothed_minus_dm = minus_dm.rolling(window=window, min_periods=5).sum()
+                # Chikou Span (Lagging Span): Aktuelle Schlusskurse
+                df['chikou_span'] = df['close_price']
 
-                    # Direktionale Indikatoren
-                    plus_di = 100 * smoothed_plus_dm / smoothed_tr.replace(0, np.nan)
-                    minus_di = 100 * smoothed_minus_dm / smoothed_tr.replace(0, np.nan)
+                # Ichimoku-Signale als Features
+                # Preis über der Cloud (bullish)
+                df['price_above_cloud'] = (df['close_price'] > df['senkou_span_a']) & \
+                                          (df['close_price'] > df['senkou_span_b'])
+                df['price_above_cloud'] = df['price_above_cloud'].astype(int)
 
-                    # Direktionaler Index
-                    di_diff = (plus_di - minus_di).abs()
-                    di_sum = plus_di + minus_di
-                    dx = 100 * di_diff / di_sum.replace(0, np.nan)
+                # Preis unter der Cloud (bearish)
+                df['price_below_cloud'] = (df['close_price'] < df['senkou_span_a']) & \
+                                          (df['close_price'] < df['senkou_span_b'])
+                df['price_below_cloud'] = df['price_below_cloud'].astype(int)
 
-                    # ADX (Average Directional Index) - geglätteter DX
-                    df_features['adx'] = dx.rolling(window=window, min_periods=5).mean()
-                    df_features['+di'] = plus_di
-                    df_features['-di'] = minus_di
+                # Collect all new columns in a dictionary
+                new_columns = {
+                    'price_in_cloud': (~(df['price_above_cloud'] | df['price_below_cloud'])).astype(int),
 
-                    # ADX Interpretation als Features
-                    df_features['strong_trend'] = (df_features['adx'] > 25).astype(int)
-                    df_features['very_strong_trend'] = (df_features['adx'] > 50).astype(int)
-                    df_features['bullish_trend'] = ((df_features['+di'] > df_features['-di']) & 
-                                                   (df_features['adx'] > 20)).astype(int)
-                    df_features['bearish_trend'] = ((df_features['+di'] < df_features['-di']) & 
-                                                   (df_features['adx'] > 20)).astype(int)
-            except Exception as e:
-                print(f"Fehler bei ADX-Berechnung: {str(e)}")
+                    # TK Cross (Tenkan kreuzt Kijun) - starkes Signal
+                    'tk_cross': np.sign(df['tenkan_sen'] - df['kijun_sen']),
+                }
 
-        # 5. SPY-KORRELATIONS-FEATURES - nur wenn SPY Daten vorhanden sind
-        # ------------------------------
-        if 'spy_close' in df_features.columns:
-            # Grundlegende SPY-Renditen berechnen
-            df_features['spy_daily_return'] = df_features['spy_close'].pct_change(fill_method=None).fillna(0)
+                # Add tk_cross_change after tk_cross is calculated
+                new_columns['tk_cross_change'] = new_columns['tk_cross'].diff().fillna(0)
+                new_columns['bullish_tk_cross'] = (new_columns['tk_cross_change'] > 0).astype(int)
+                new_columns['bearish_tk_cross'] = (new_columns['tk_cross_change'] < 0).astype(int)
 
-            # Kurzfristige relative Stärke
-            if 'daily_return' in df_features.columns:
-                df_features['rel_strength_daily'] = df_features['daily_return'] - df_features['spy_daily_return']
+                # Kijun Cross (Preis kreuzt Kijun) - wichtiges Signal
+                new_columns['kijun_cross'] = np.sign(df['close_price'] - df['kijun_sen'])
+                new_columns['kijun_cross_change'] = new_columns['kijun_cross'].diff().fillna(0)
+                new_columns['bullish_kijun_cross'] = (new_columns['kijun_cross_change'] > 0).astype(int)
+                new_columns['bearish_kijun_cross'] = (new_columns['kijun_cross_change'] < 0).astype(int)
 
-            # Medium-Term SPY Features
-            if can_calculate_medium:
-                df_features['spy_return_10d'] = df_features['spy_close'].pct_change(MEDIUM_WINDOW, fill_method=None).fillna(0)
-                if 'weekly_return' in df_features.columns:
-                    df_features['rel_strength_10d'] = df_features['weekly_return'] - df_features['spy_return_10d']
+                # Cloud-Twist (Senkou Span A kreuzt Senkou Span B) - langfristiges Signal
+                new_columns['cloud_twist'] = np.sign(df['senkou_span_a'] - df['senkou_span_b'])
+                new_columns['cloud_twist_change'] = new_columns['cloud_twist'].diff().fillna(0)
+                new_columns['bullish_cloud_twist'] = (new_columns['cloud_twist_change'] > 0).astype(int)
+                new_columns['bearish_cloud_twist'] = (new_columns['cloud_twist_change'] < 0).astype(int)
 
-            # Standard SPY Features
-            if can_calculate_standard:
-                # 20-Tage Korrelation - kritisch, dass genügend Datenpunkte vorhanden sind
-                min_corr_periods = min(15, data_length - 5)
-                if min_corr_periods >= 10:  # Mindestens 10 Punkte für sinnvolle Korrelation
-                    df_features['corr_with_spy_20d'] = df_features['close_price'].rolling(STANDARD_WINDOW,
-                                                                                          min_periods=min_corr_periods).corr(
-                        df_features['spy_close'])
+                # Add all new columns at once
+                df = pd.concat([df, pd.DataFrame(new_columns, index=df.index)], axis=1)
+        except Exception as e:
+            print(f"Fehler bei Ichimoku-Berechnung: {str(e)}")
 
-                # SPY und Stock Rolling Return
-                min_periods_spy = min(15, data_length - 5)
-                if can_calculate_standard and min_periods_spy >= 10:
-                    spy_ret_window = min(30, data_length - 5)
-                    df_features['spy_return_30d'] = df_features['spy_close'].pct_change(fill_method=None).fillna(0).rolling(window=spy_ret_window,
-                                                                                                  min_periods=min_periods_spy).sum()
-                    df_features['stock_return_30d'] = df_features['close_price'].pct_change(fill_method=None).fillna(0).rolling(
-                        window=spy_ret_window, min_periods=min_periods_spy).sum()
+        return df
 
-                    # Alpha und Beta nur berechnen, wenn genügend nicht-NaN Werte vorhanden sind
-                    df_features['rolling_alpha'] = np.nan
-                    df_features['rolling_beta'] = np.nan
+    def _calculate_long_term_features(self, df, config):
+        """Calculate long-term features that require a very large amount of data."""
+        LONG_WINDOW = config['windows']['long']
+        EXTENDED_WINDOW = config['windows']['extended']
 
-                    valid_indices = ~(df_features['spy_return_30d'].isna() | df_features['stock_return_30d'].isna())
+        # Collect long-term features in a dictionary
+        long_term_columns = {
+            f'ma_{LONG_WINDOW}': df['close_price'].rolling(window=LONG_WINDOW, min_periods=120).mean()
+        }
 
-                    # Nur Alpha/Beta für einzelne Datenpunkte berechnen, wenn genug Vergangenheitsdaten verfügbar sind
-                    if valid_indices.sum() >= spy_ret_window:
-                        window = min(30, valid_indices.sum() - 5)
+        # SMA Kreuzungen mit Long Windows
+        if f'ma_{EXTENDED_WINDOW}' in df.columns and f'ma_{LONG_WINDOW}' in df.columns:
+            long_term_columns[f'ma_{EXTENDED_WINDOW}_{LONG_WINDOW}_cross'] = df[f'ma_{EXTENDED_WINDOW}'] - df[f'ma_{LONG_WINDOW}']
 
-                        for i in range(window, len(df_features)):
-                            # Prüfe, ob genügend Daten für eine Regression vorhanden sind
-                            valid_window = ~(df_features['spy_return_30d'].iloc[i - window:i].isna() |
-                                             df_features['stock_return_30d'].iloc[i - window:i].isna())
+        # Add all long-term columns at once
+        df = pd.concat([df, pd.DataFrame(long_term_columns, index=df.index)], axis=1)
 
-                            if valid_window.sum() >= 10:  # Mindestens 10 Punkte für Regression
-                                x = df_features['spy_return_30d'].iloc[i - window:i][valid_window].values.reshape(-1, 1)
-                                y = df_features['stock_return_30d'].iloc[i - window:i][valid_window].values
+        return df
 
-                                try:
-                                    from sklearn.linear_model import LinearRegression
-                                    model = LinearRegression()
-                                    model.fit(x, y)
-                                    df_features.loc[df_features.index[i], 'rolling_alpha'] = model.intercept_
-                                    df_features.loc[df_features.index[i], 'rolling_beta'] = model.coef_[0]
-                                except:
-                                    # Fallback bei Fehlern in der Regression
-                                    pass
-
-        # 6. ERWEITERTE FEATURES - nur wenn genügend Daten vorhanden sind (50+ Datenpunkte)
-        # ------------------------------
-        if can_calculate_extended:
-            df_features[f'ma_{EXTENDED_WINDOW}'] = df_features['close_price'].rolling(window=EXTENDED_WINDOW,
-                                                                                      min_periods=30).mean()
-
-            # SMA Kreuzungen mit Extended Windows
-            if 'ma_20' in df_features.columns and 'ma_50' in df_features.columns:
-                df_features['ma_20_50_cross'] = np.sign(df_features['ma_20'] - df_features['ma_50'])
-                df_features['sma_cross_change'] = df_features['ma_20_50_cross'].diff().fillna(0)
-                df_features['sma_bullish_cross'] = (df_features['sma_cross_change'] > 0).astype(int)
-                df_features['sma_bearish_cross'] = (df_features['sma_cross_change'] < 0).astype(int)
-
-            # EMA Kreuzungen
-            if 'ema_12' in df_features.columns and 'ema_26' in df_features.columns:
-                df_features['ema_12_26_cross'] = np.sign(df_features['ema_12'] - df_features['ema_26'])
-                df_features['ema_cross_change'] = df_features['ema_12_26_cross'].diff().fillna(0)
-                df_features['ema_bullish_cross'] = (df_features['ema_cross_change'] > 0).astype(int)
-                df_features['ema_bearish_cross'] = (df_features['ema_cross_change'] < 0).astype(int)
-
-            # Ichimoku Cloud - umfassendes Indikator-System
-            try:
-                # Parameter für Ichimoku (angepasst an verfügbare Datenmenge)
-                tenkan_period = min(9, data_length // 5)  # Conversion Line
-                kijun_period = min(26, data_length // 3)  # Base Line
-                senkou_b_period = min(52, data_length // 2)  # Leading Span B
-
-                if tenkan_period >= 3 and kijun_period >= 5 and senkou_b_period >= 10:
-                    # Tenkan-sen (Conversion Line): (n-period high + n-period low) / 2
-                    period_high = df_features['high_price'].rolling(window=tenkan_period).max()
-                    period_low = df_features['low_price'].rolling(window=tenkan_period).min()
-                    df_features['tenkan_sen'] = (period_high + period_low) / 2
-
-                    # Kijun-sen (Base Line): (n-period high + n-period low) / 2
-                    period_high = df_features['high_price'].rolling(window=kijun_period).max()
-                    period_low = df_features['low_price'].rolling(window=kijun_period).min()
-                    df_features['kijun_sen'] = (period_high + period_low) / 2
-
-                    # Senkou Span A (Leading Span A): (Tenkan-sen + Kijun-sen) / 2
-                    df_features['senkou_span_a'] = ((df_features['tenkan_sen'] + df_features['kijun_sen']) / 2)
-
-                    # Senkou Span B (Leading Span B): (n-period high + n-period low) / 2
-                    period_high = df_features['high_price'].rolling(window=senkou_b_period).max()
-                    period_low = df_features['low_price'].rolling(window=senkou_b_period).min()
-                    df_features['senkou_span_b'] = (period_high + period_low) / 2
-
-                    # Chikou Span (Lagging Span): Aktuelle Schlusskurse
-                    df_features['chikou_span'] = df_features['close_price']
-
-                    # Ichimoku-Signale als Features
-                    # Preis über der Cloud (bullish)
-                    df_features['price_above_cloud'] = (df_features['close_price'] > df_features['senkou_span_a']) & \
-                                                      (df_features['close_price'] > df_features['senkou_span_b'])
-                    df_features['price_above_cloud'] = df_features['price_above_cloud'].astype(int)
-
-                    # Preis unter der Cloud (bearish)
-                    df_features['price_below_cloud'] = (df_features['close_price'] < df_features['senkou_span_a']) & \
-                                                      (df_features['close_price'] < df_features['senkou_span_b'])
-                    df_features['price_below_cloud'] = df_features['price_below_cloud'].astype(int)
-
-                    # Collect all new columns in a dictionary
-                    new_columns = {
-                        'price_in_cloud': (~(df_features['price_above_cloud'] | df_features['price_below_cloud'])).astype(int),
-
-                        # TK Cross (Tenkan kreuzt Kijun) - starkes Signal
-                        'tk_cross': np.sign(df_features['tenkan_sen'] - df_features['kijun_sen']),
-                    }
-
-                    # Add tk_cross_change after tk_cross is calculated
-                    new_columns['tk_cross_change'] = new_columns['tk_cross'].diff().fillna(0)
-                    new_columns['bullish_tk_cross'] = (new_columns['tk_cross_change'] > 0).astype(int)
-                    new_columns['bearish_tk_cross'] = (new_columns['tk_cross_change'] < 0).astype(int)
-
-                    # Kijun Cross (Preis kreuzt Kijun) - wichtiges Signal
-                    new_columns['kijun_cross'] = np.sign(df_features['close_price'] - df_features['kijun_sen'])
-                    new_columns['kijun_cross_change'] = new_columns['kijun_cross'].diff().fillna(0)
-                    new_columns['bullish_kijun_cross'] = (new_columns['kijun_cross_change'] > 0).astype(int)
-                    new_columns['bearish_kijun_cross'] = (new_columns['kijun_cross_change'] < 0).astype(int)
-
-                    # Cloud-Twist (Senkou Span A kreuzt Senkou Span B) - langfristiges Signal
-                    new_columns['cloud_twist'] = np.sign(df_features['senkou_span_a'] - df_features['senkou_span_b'])
-                    new_columns['cloud_twist_change'] = new_columns['cloud_twist'].diff().fillna(0)
-                    new_columns['bullish_cloud_twist'] = (new_columns['cloud_twist_change'] > 0).astype(int)
-                    new_columns['bearish_cloud_twist'] = (new_columns['cloud_twist_change'] < 0).astype(int)
-
-                    # Add all new columns at once
-                    df_features = pd.concat([df_features, pd.DataFrame(new_columns, index=df_features.index)], axis=1)
-            except Exception as e:
-                print(f"Fehler bei Ichimoku-Berechnung: {str(e)}")
-
-        # 7. LANGFRISTIGE FEATURES - nur wenn genügend Daten vorhanden sind (200+ Datenpunkte)
-        # ------------------------------
-        if can_calculate_long:
-            # Collect long-term features in a dictionary
-            long_term_columns = {
-                f'ma_{LONG_WINDOW}': df_features['close_price'].rolling(window=LONG_WINDOW, min_periods=120).mean()
-            }
-
-            # SMA Kreuzungen mit Long Windows
-            if 'ma_50' in df_features.columns and 'ma_200' in df_features.columns:
-                long_term_columns['ma_50_200_cross'] = df_features['ma_50'] - df_features['ma_200']
-
-            # Add all long-term columns at once
-            df_features = pd.concat([df_features, pd.DataFrame(long_term_columns, index=df_features.index)], axis=1)
-
+    def _calculate_volatility_categories(self, df, config):
+        """Calculate volatility categories and flags."""
         # Volatilitäts-Kategorisierung (nur wenn vorhanden)
         new_columns = {}
 
-        if 'volatility_20' in df_features.columns and df_features['volatility_20'].count() >= 10:
+        if 'volatility_20' in df.columns and df['volatility_20'].count() >= 10:
             try:
                 # Quantile-Berechnung könnte fehlschlagen bei zu wenigen Werten
                 new_columns['volatility_category'] = pd.qcut(
-                    df_features['volatility_20'].rank(method='first'),  # Ranking für gleiche Werte
+                    df['volatility_20'].rank(method='first'),  # Ranking für gleiche Werte
                     q=3,
                     labels=[0, 1, 2]
                 ).astype(int)
             except:
                 # Fallback: Manuelle Kategorisierung
-                if df_features['volatility_20'].max() > 0:
+                if df['volatility_20'].max() > 0:
                     thresholds = [
-                        df_features['volatility_20'].quantile(0.33, interpolation='nearest'),
-                        df_features['volatility_20'].quantile(0.67, interpolation='nearest')
+                        df['volatility_20'].quantile(0.33, interpolation='nearest'),
+                        df['volatility_20'].quantile(0.67, interpolation='nearest')
                     ]
 
                     # Create a Series with default value 1
-                    volatility_category = pd.Series(1, index=df_features.index)
+                    volatility_category = pd.Series(1, index=df.index)
                     # Update values based on thresholds
-                    volatility_category[df_features['volatility_20'] <= thresholds[0]] = 0
-                    volatility_category[df_features['volatility_20'] > thresholds[1]] = 2
+                    volatility_category[df['volatility_20'] <= thresholds[0]] = 0
+                    volatility_category[df['volatility_20'] > thresholds[1]] = 2
                     new_columns['volatility_category'] = volatility_category
 
         # Bei High Volatility Feature, ein einfacheres Fallback verwenden
-        if 'volatility_20' in df_features.columns and df_features['volatility_20'].count() >= 5:
+        if 'volatility_20' in df.columns and df['volatility_20'].count() >= 5:
             # Verwende Median statt Quantil bei wenigen Datenpunkten
-            vol_thresh = df_features['volatility_20'].median() * 1.5
-            new_columns['high_volatility_flag'] = (df_features['volatility_20'] > vol_thresh).astype(int)
+            vol_thresh = df['volatility_20'].median() * 1.5
+            new_columns['high_volatility_flag'] = (df['volatility_20'] > vol_thresh).astype(int)
 
         # Add all new columns at once if there are any
         if new_columns:
-            df_features = pd.concat([df_features, pd.DataFrame(new_columns, index=df_features.index)], axis=1)
+            df = pd.concat([df, pd.DataFrame(new_columns, index=df.index)], axis=1)
 
+        return df
+
+    def _clean_and_handle_nan(self, df, config):
+        """Clean data and handle NaN values."""
         # Bereinigen der Daten
-        df_features = df_features.replace([np.inf, -np.inf], np.nan)
+        df = df.replace([np.inf, -np.inf], np.nan)
 
         # Bestimme wichtige Feature-Spalten die komplett sein müssen (keine NaN erlaubt)
         critical_features = ['close_price', 'open_price', 'high_price', 'low_price']
@@ -687,59 +760,59 @@ class MLPredictor:
         # Wichtige Features, die berechnet werden sollten, aber NaN haben dürfen
         useful_features = []
 
-        if can_calculate_short:
-            useful_features.extend(['daily_return', 'ma_5', 'ema_12', 'rsi'])
+        if config['can_calculate']['short']:
+            useful_features.extend(['daily_return', f'ma_{config["windows"]["short"]}', 'ema_12', 'rsi'])
 
-        if can_calculate_medium:
-            useful_features.extend(['weekly_return', 'ma_10', 'macd', 'macd_signal'])
+        if config['can_calculate']['medium']:
+            useful_features.extend(['weekly_return', f'ma_{config["windows"]["medium"]}', 'macd', 'macd_signal'])
 
-        if can_calculate_standard:
-            useful_features.extend(['monthly_return', 'ma_20', 'bb_middle', 'bb_upper', 'bb_lower'])
+        if config['can_calculate']['standard']:
+            useful_features.extend(['monthly_return', f'ma_{config["windows"]["standard"]}', 'bb_middle', 'bb_upper', 'bb_lower'])
 
         # Prüfe, ob kritische Features NaN-Werte enthalten
         missing_critical = [col for col in critical_features if
-                            col in df_features.columns and df_features[col].isna().any()]
+                            col in df.columns and df[col].isna().any()]
         if missing_critical:
             print(f"DEBUG: Kritische Features mit NaN: {missing_critical}")
 
         # NaN-Werte in nicht-kritischen Features mit Durchschnittswerten füllen
-        for col in df_features.columns:
-            if col not in critical_features and df_features[col].isna().any():
+        for col in df.columns:
+            if col not in critical_features and df[col].isna().any():
                 # Für Features mit signifikanten NaN-Werten, aber ausreichend Nicht-NaN-Werten
-                non_nan_count = df_features[col].count()
-                if non_nan_count >= 5 and non_nan_count >= len(df_features) * 0.3:
-                    df_features[col] = df_features[col].fillna(df_features[col].mean())
+                non_nan_count = df[col].count()
+                if non_nan_count >= 5 and non_nan_count >= len(df) * 0.3:
+                    df[col] = df[col].fillna(df[col].mean())
 
         # Fallback: Wenn nach all diesen Berechnungen immer noch alle Zeilen NaN-Werte enthalten
-        original_len = len(df_features)
-        df_no_nan = df_features.dropna()
+        original_len = len(df)
+        df_no_nan = df.dropna()
 
         if len(df_no_nan) == 0:
             print(f"DEBUG: Nach allen Berechnungen immer noch keine vollständigen Zeilen! Führe Minimal-Fallback aus.")
 
             # Nur minimale kritische Features behalten
             min_features = critical_features.copy()
-            if 'daily_return' in df_features.columns:
+            if 'daily_return' in df.columns:
                 min_features.append('daily_return')
 
             # Auch nützliche Features hinzufügen, die berechnet wurden
             available_useful = []
             for f in useful_features:
-                if f in df_features.columns:
-                    non_nan_ratio = df_features[f].count() / len(df_features)
+                if f in df.columns:
+                    non_nan_ratio = df[f].count() / len(df)
                     if non_nan_ratio > 0.8:  # If at least 80% of values are not NaN
                         available_useful.append(f)
 
             min_features.extend(available_useful)
 
             # Reduziertes DataFrame erstellen
-            available_min_features = [col for col in min_features if col in df_features.columns]
+            available_min_features = [col for col in min_features if col in df.columns]
             if not available_min_features:
                 # If no features are available, at least keep the price columns
                 available_min_features = [col for col in ['open_price', 'high_price', 'low_price', 'close_price']
-                                          if col in df_features.columns]
+                                          if col in df.columns]
 
-            df_minimal = df_features[available_min_features].copy()
+            df_minimal = df[available_min_features].copy()
 
             # Verbleibende NaN-Werte auffüllen
             for col in df_minimal.columns:
