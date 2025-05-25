@@ -104,6 +104,7 @@ class MLModelMetrics(models.Model):
     confusion_matrix = models.JSONField(null=True, blank=True, help_text="Confusion Matrix als JSON")
     directional_accuracy = models.FloatField(null=True, blank=True,
                                              help_text="Genauigkeit der Richtungsvorhersage (0-1)")
+    market_regimes = models.JSONField(null=True, blank=True, help_text="Marktregime-Informationen als JSON")
     model_version = models.CharField(max_length=50, default="v1", help_text="Version des Modells")
 
     class Meta:

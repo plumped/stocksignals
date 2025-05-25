@@ -82,6 +82,35 @@
                 </div>
             </div>
 
+            <!-- Market Regime Section -->
+            <div class="mt-2">
+                <button class="btn btn-sm btn-outline-secondary w-100 mb-2" type="button" data-bs-toggle="collapse" data-bs-target="#marketRegime" aria-expanded="false" aria-controls="marketRegime">
+                    <i class="bi bi-graph-up"></i> Marktregime anzeigen
+                </button>
+                <div class="collapse" id="marketRegime">
+                    <div class="card card-body bg-light">
+                        <h6 class="card-subtitle mb-2 text-muted">Marktregime-Erkennung</h6>
+                        <div id="market-regime-container">
+                            <div class="d-flex justify-content-between mb-1">
+                                <span>Aktuelles Regime:</span>
+                                <span id="regime-name" class="fw-bold">
+                                    <!-- Will be filled by JavaScript -->
+                                </span>
+                            </div>
+                            <div class="d-flex justify-content-between mb-1">
+                                <span>Regime-Typ:</span>
+                                <span id="regime-type" class="fw-bold">
+                                    <!-- Will be filled by JavaScript -->
+                                </span>
+                            </div>
+                            <div class="mt-2" id="regime-visualization">
+                                <!-- Will be filled by JavaScript if visualization is available -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Feature Importance Section -->
             <div class="mt-2">
                 <button class="btn btn-sm btn-outline-secondary w-100 mb-2" type="button" data-bs-toggle="collapse" data-bs-target="#featureImportance" aria-expanded="false" aria-controls="featureImportance">
@@ -250,13 +279,42 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+    // Function to update market regime display
+    function updateMarketRegime(marketRegime) {
+        if (!marketRegime || Object.keys(marketRegime).length === 0) {
+            // Hide the market regime section if no data is available
+            const marketRegimeButton = document.querySelector('[data-bs-target="#marketRegime"]');
+            if (marketRegimeButton) {
+                marketRegimeButton.style.display = 'none';
+            }
+            return;
+        }
+
+        // Update regime name and type
+        document.getElementById('regime-name').textContent = marketRegime.regime_name || 'Unbekannt';
+        document.getElementById('regime-type').textContent = marketRegime.regime_type || 'Unbekannt';
+
+        // Add visualization if available
+        const visualizationContainer = document.getElementById('regime-visualization');
+        if (marketRegime.visualization_path) {
+            visualizationContainer.innerHTML = `
+                <div class="text-center">
+                    <img src="${marketRegime.visualization_path}" class="img-fluid" alt="Marktregime-Visualisierung">
+                    <div class="mt-1 small text-muted">Marktregime-Visualisierung</div>
+                </div>
+            `;
+        } else {
+            visualizationContainer.innerHTML = '<div class="alert alert-info small">Keine Visualisierung verfügbar</div>';
+        }
+    }
+
     // Add event listener to the generate ML prediction button
     const generateButton = document.getElementById('generate-ml-prediction');
     if (generateButton) {
         generateButton.addEventListener('click', loadMLPredictionData);
     }
 
-    // If we already have a prediction, load the adaptive thresholds and feature importance
+    // If we already have a prediction, load the adaptive thresholds, feature importance, and market regime
     if (document.getElementById('adaptiveThresholds')) {
         const symbol = document.querySelector('h2').textContent.split(' - ')[0].trim();
 
@@ -266,6 +324,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (data.status === 'success') {
                     updateAdaptiveThresholds(data.adaptive_thresholds);
                     updateFeatureImportance(data.feature_importance);
+                    updateMarketRegime(data.market_regime);
                     console.log('Successfully loaded ML metrics:', data);
                 } else {
                     console.error('Error in ML metrics response:', data.message);

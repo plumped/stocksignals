@@ -3,11 +3,15 @@ import numpy as np
 import pandas as pd
 from django.db.models import Count
 from sklearn.calibration import CalibratedClassifierCV, calibration_curve
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingRegressor, VotingClassifier, VotingRegressor
 from sklearn.model_selection import train_test_split, TimeSeriesSplit, RandomizedSearchCV, StratifiedKFold, cross_val_score
-from sklearn.metrics import accuracy_score, mean_squared_error, classification_report, r2_score, precision_score, recall_score, f1_score, roc_auc_score, mean_absolute_error, mean_absolute_percentage_error
+from sklearn.metrics import accuracy_score, mean_squared_error, classification_report, r2_score, precision_score, recall_score, f1_score, roc_auc_score, mean_absolute_error, mean_absolute_percentage_error, silhouette_score
 from sklearn.linear_model import LinearRegression, LogisticRegression, Ridge
+from sklearn.base import BaseEstimator, RegressorMixin, ClassifierMixin
+from sklearn.cluster import KMeans, DBSCAN
+from sklearn.mixture import GaussianMixture
+from sklearn.decomposition import PCA
 import xgboost as xgb
 from sklearn.inspection import permutation_importance
 import shap
@@ -19,12 +23,1862 @@ import logging
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend to avoid tkinter issues
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+from matplotlib.colors import ListedColormap
 from imblearn.over_sampling import SMOTE, ADASYN
 from imblearn.pipeline import Pipeline as ImbPipeline
 import warnings
+import gym
+from gym import spaces
+import tensorflow as tf
+from tensorflow.keras.models import Sequential, Model
+from tensorflow.keras.layers import Dense, LSTM, Dropout, Input, Attention, MultiHeadAttention, LayerNormalization, Embedding, Flatten, Concatenate
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.utils import to_categorical
 from .models import Stock, StockData, AnalysisResult, MLPrediction, MLModelMetrics
 
 logger = logging.getLogger(__name__)
+
+
+class MarketRegimeDetector:
+    """
+    Detects market regimes using unsupervised learning algorithms.
+
+    This class implements various clustering algorithms to identify different market regimes
+    based on price, volatility, volume, and other technical indicators.
+    """
+
+    def __init__(self, stock_symbol, lookback_period=252, n_regimes=4, algorithm='kmeans'):
+        """
+        Initialize the market regime detector.
+
+        Args:
+            stock_symbol (str): The stock symbol to analyze
+            lookback_period (int): Number of days to look back for regime detection
+            n_regimes (int): Number of regimes to identify
+            algorithm (str): Clustering algorithm to use ('kmeans', 'gmm', or 'dbscan')
+        """
+        self.stock_symbol = stock_symbol
+        self.lookback_period = lookback_period
+        self.n_regimes = n_regimes
+        self.algorithm = algorithm
+        self.model = None
+        self.scaler = StandardScaler()
+        self.pca = None
+        self.feature_names = []
+        self.regime_characteristics = {}
+        self.regime_transitions = []
+
+    def prepare_data(self):
+        """
+        Prepare data for regime detection.
+
+        Returns:
+            tuple: (X, dates) where X is the feature matrix and dates are the corresponding dates
+        """
+        try:
+            # Get stock data
+            stock = Stock.objects.get(symbol=self.stock_symbol)
+            data = pd.DataFrame(list(StockData.objects.filter(stock=stock).order_by('date').values()))
+
+            if len(data) < 30:
+                logger.warning(f"Insufficient data for regime detection for {self.stock_symbol}")
+                return None, None
+
+            # Ensure numeric conversion
+            for col in ['open_price', 'high_price', 'low_price', 'close_price', 'volume']:
+                data[col] = data[col].astype(float)
+
+            # Calculate features for regime detection
+            data = self._calculate_regime_features(data)
+
+            # Limit to lookback period
+            if len(data) > self.lookback_period:
+                data = data.iloc[-self.lookback_period:]
+
+            # Store dates for reference
+            dates = data['date'].values
+
+            # Select features for clustering
+            feature_cols = [col for col in data.columns if col not in ['date', 'stock_id', 'id']]
+            self.feature_names = feature_cols
+
+            # Create feature matrix
+            X = data[feature_cols].values
+
+            # Handle NaN values
+            X = np.nan_to_num(X, nan=0.0)
+
+            return X, dates
+
+        except Exception as e:
+            logger.error(f"Error preparing data for regime detection: {str(e)}")
+            return None, None
+
+    def _calculate_regime_features(self, data):
+        """
+        Calculate features for regime detection.
+
+        Args:
+            data (pd.DataFrame): Stock data
+
+        Returns:
+            pd.DataFrame: Data with additional features for regime detection
+        """
+        # Returns
+        data['daily_return'] = data['close_price'].pct_change().fillna(0)
+        data['weekly_return'] = data['close_price'].pct_change(5).fillna(0)
+        data['monthly_return'] = data['close_price'].pct_change(21).fillna(0)
+
+        # Volatility
+        data['volatility_5d'] = data['daily_return'].rolling(window=5).std().fillna(0)
+        data['volatility_21d'] = data['daily_return'].rolling(window=21).std().fillna(0)
+
+        # Moving averages
+        data['sma_10'] = data['close_price'].rolling(window=10).mean().fillna(0)
+        data['sma_50'] = data['close_price'].rolling(window=50).mean().fillna(0)
+
+        # Moving average ratios
+        data['sma_ratio'] = (data['sma_10'] / data['sma_50']).fillna(1)
+
+        # Price relative to moving averages
+        data['price_to_sma_10'] = (data['close_price'] / data['sma_10']).fillna(1)
+        data['price_to_sma_50'] = (data['close_price'] / data['sma_50']).fillna(1)
+
+        # Volume features
+        data['volume_sma_10'] = data['volume'].rolling(window=10).mean().fillna(0)
+        data['volume_ratio'] = (data['volume'] / data['volume_sma_10']).fillna(1)
+
+        # Trend features
+        data['trend_10d'] = (data['close_price'] - data['close_price'].shift(10)) / data['close_price'].shift(10)
+        data['trend_10d'] = data['trend_10d'].fillna(0)
+
+        # RSI (simplified)
+        delta = data['close_price'].diff().fillna(0)
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean().fillna(0)
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean().fillna(0)
+        rs = gain / loss.replace(0, np.nan)
+        data['rsi_14'] = 100 - (100 / (1 + rs))
+        data['rsi_14'] = data['rsi_14'].fillna(50)
+
+        # Bollinger Bands
+        data['bb_middle'] = data['close_price'].rolling(window=20).mean().fillna(0)
+        data['bb_std'] = data['close_price'].rolling(window=20).std().fillna(0)
+        data['bb_upper'] = data['bb_middle'] + 2 * data['bb_std']
+        data['bb_lower'] = data['bb_middle'] - 2 * data['bb_std']
+        data['bb_width'] = ((data['bb_upper'] - data['bb_lower']) / data['bb_middle']).fillna(0)
+
+        # Price position within Bollinger Bands
+        data['bb_position'] = ((data['close_price'] - data['bb_lower']) / 
+                              (data['bb_upper'] - data['bb_lower'])).fillna(0.5)
+
+        # Drop rows with NaN values
+        data = data.dropna()
+
+        return data
+
+    def detect_regimes(self):
+        """
+        Detect market regimes using the specified clustering algorithm.
+
+        Returns:
+            dict: Dictionary containing regime information
+        """
+        X, dates = self.prepare_data()
+
+        if X is None or len(X) < 10:
+            logger.warning(f"Insufficient data for regime detection for {self.stock_symbol}")
+            return None
+
+        # Scale the data
+        X_scaled = self.scaler.fit_transform(X)
+
+        # Apply PCA for dimensionality reduction and visualization
+        self.pca = PCA(n_components=min(5, X.shape[1]))
+        X_pca = self.pca.fit_transform(X_scaled)
+
+        # Detect regimes using the specified algorithm
+        labels, model = self._apply_clustering(X_scaled)
+        self.model = model
+
+        # Analyze regime characteristics
+        regime_characteristics = self._analyze_regime_characteristics(X, labels)
+
+        # Detect regime transitions
+        regime_transitions = self._detect_regime_transitions(labels, dates)
+
+        # Create regime visualization
+        visualization_path = self._create_regime_visualization(X_pca, labels, dates)
+
+        # Determine current regime
+        current_regime = int(labels[-1]) if len(labels) > 0 else None
+        current_regime_name = self._get_regime_name(current_regime, regime_characteristics)
+
+        # Prepare result
+        result = {
+            'current_regime': current_regime,
+            'current_regime_name': current_regime_name,
+            'regime_labels': labels.tolist(),
+            'regime_dates': [d.strftime('%Y-%m-%d') if isinstance(d, datetime) else str(d) for d in dates],
+            'regime_characteristics': regime_characteristics,
+            'regime_transitions': regime_transitions,
+            'visualization_path': visualization_path,
+            'n_regimes': self.n_regimes,
+            'algorithm': self.algorithm
+        }
+
+        return result
+
+    def _apply_clustering(self, X):
+        """
+        Apply the specified clustering algorithm.
+
+        Args:
+            X (numpy.ndarray): Scaled feature matrix
+
+        Returns:
+            tuple: (labels, model) where labels are the cluster assignments and model is the fitted model
+        """
+        if self.algorithm == 'kmeans':
+            model = KMeans(n_clusters=self.n_regimes, random_state=42, n_init=10)
+            labels = model.fit_predict(X)
+
+        elif self.algorithm == 'gmm':
+            model = GaussianMixture(n_components=self.n_regimes, random_state=42, n_init=10)
+            labels = model.fit_predict(X)
+
+        elif self.algorithm == 'dbscan':
+            # DBSCAN doesn't require a predefined number of clusters
+            # We'll estimate a reasonable eps value based on the data
+            from sklearn.neighbors import NearestNeighbors
+            nn = NearestNeighbors(n_neighbors=min(10, len(X)-1))
+            nn.fit(X)
+            distances, _ = nn.kneighbors(X)
+            distances = np.sort(distances[:, -1])
+            knee_point = np.argmax(distances[1:] - distances[:-1]) + 1
+            eps = distances[knee_point]
+
+            model = DBSCAN(eps=eps, min_samples=5)
+            labels = model.fit_predict(X)
+
+            # Handle noise points (label -1) by assigning them to the nearest cluster
+            if -1 in labels:
+                noise_indices = np.where(labels == -1)[0]
+                non_noise_indices = np.where(labels != -1)[0]
+
+                if len(non_noise_indices) > 0:
+                    from sklearn.neighbors import NearestNeighbors
+                    nn = NearestNeighbors(n_neighbors=1)
+                    nn.fit(X[non_noise_indices])
+                    _, indices = nn.kneighbors(X[noise_indices])
+
+                    for i, idx in enumerate(noise_indices):
+                        labels[idx] = labels[non_noise_indices[indices[i, 0]]]
+                else:
+                    # If all points are noise, assign them to a single cluster
+                    labels = np.zeros_like(labels)
+        else:
+            # Default to KMeans
+            model = KMeans(n_clusters=self.n_regimes, random_state=42, n_init=10)
+            labels = model.fit_predict(X)
+
+        # Ensure labels are consecutive integers starting from 0
+        unique_labels = np.unique(labels)
+        label_map = {label: i for i, label in enumerate(unique_labels)}
+        labels = np.array([label_map[label] for label in labels])
+
+        return labels, model
+
+    def _analyze_regime_characteristics(self, X, labels):
+        """
+        Analyze the characteristics of each regime.
+
+        Args:
+            X (numpy.ndarray): Feature matrix
+            labels (numpy.ndarray): Cluster labels
+
+        Returns:
+            dict: Dictionary containing regime characteristics
+        """
+        regime_characteristics = {}
+
+        # Get unique regimes
+        unique_regimes = np.unique(labels)
+
+        for regime in unique_regimes:
+            # Get data points for this regime
+            regime_data = X[labels == regime]
+
+            # Calculate mean values for each feature
+            feature_means = np.mean(regime_data, axis=0)
+
+            # Calculate standard deviations for each feature
+            feature_stds = np.std(regime_data, axis=0)
+
+            # Calculate min and max values for each feature
+            feature_mins = np.min(regime_data, axis=0)
+            feature_maxs = np.max(regime_data, axis=0)
+
+            # Store characteristics
+            regime_characteristics[int(regime)] = {
+                'size': int(np.sum(labels == regime)),
+                'percentage': float(np.mean(labels == regime) * 100),
+                'features': {
+                    self.feature_names[i]: {
+                        'mean': float(feature_means[i]),
+                        'std': float(feature_stds[i]),
+                        'min': float(feature_mins[i]),
+                        'max': float(feature_maxs[i])
+                    } for i in range(len(self.feature_names))
+                }
+            }
+
+            # Determine regime type based on characteristics
+            regime_characteristics[int(regime)]['type'] = self._determine_regime_type(
+                regime_characteristics[int(regime)]
+            )
+
+        self.regime_characteristics = regime_characteristics
+        return regime_characteristics
+
+    def _determine_regime_type(self, regime_data):
+        """
+        Determine the type of market regime based on its characteristics.
+
+        Args:
+            regime_data (dict): Characteristics of the regime
+
+        Returns:
+            str: Regime type (e.g., 'bull', 'bear', 'sideways', 'volatile')
+        """
+        features = regime_data['features']
+
+        # Check for key features that determine regime type
+        daily_return = features.get('daily_return', {}).get('mean', 0)
+        volatility = features.get('volatility_21d', {}).get('mean', 0)
+        trend = features.get('trend_10d', {}).get('mean', 0)
+        volume_ratio = features.get('volume_ratio', {}).get('mean', 1)
+
+        # Determine regime type based on features
+        if trend > 0.02:
+            if volatility > 0.02:
+                return 'volatile_bull'
+            else:
+                return 'steady_bull'
+        elif trend < -0.02:
+            if volatility > 0.02:
+                return 'volatile_bear'
+            else:
+                return 'steady_bear'
+        elif volatility > 0.02:
+            return 'volatile_sideways'
+        else:
+            return 'low_volatility_sideways'
+
+    def _get_regime_name(self, regime_id, regime_characteristics):
+        """
+        Get a descriptive name for a regime.
+
+        Args:
+            regime_id (int): Regime ID
+            regime_characteristics (dict): Characteristics of all regimes
+
+        Returns:
+            str: Descriptive name for the regime
+        """
+        if regime_id is None or regime_id not in regime_characteristics:
+            return "Unknown"
+
+        regime_type = regime_characteristics[regime_id]['type']
+
+        # Map regime types to descriptive names
+        regime_names = {
+            'steady_bull': 'Stabiler Aufwärtstrend',
+            'volatile_bull': 'Volatiler Aufwärtstrend',
+            'steady_bear': 'Stabiler Abwärtstrend',
+            'volatile_bear': 'Volatiler Abwärtstrend',
+            'volatile_sideways': 'Volatile Seitwärtsbewegung',
+            'low_volatility_sideways': 'Ruhige Seitwärtsbewegung'
+        }
+
+        return regime_names.get(regime_type, regime_type)
+
+    def _detect_regime_transitions(self, labels, dates):
+        """
+        Detect transitions between regimes.
+
+        Args:
+            labels (numpy.ndarray): Cluster labels
+            dates (numpy.ndarray): Corresponding dates
+
+        Returns:
+            list: List of regime transitions
+        """
+        transitions = []
+
+        for i in range(1, len(labels)):
+            if labels[i] != labels[i-1]:
+                transition = {
+                    'date': dates[i].strftime('%Y-%m-%d') if isinstance(dates[i], datetime) else str(dates[i]),
+                    'from_regime': int(labels[i-1]),
+                    'to_regime': int(labels[i])
+                }
+                transitions.append(transition)
+
+        self.regime_transitions = transitions
+        return transitions
+
+    def _create_regime_visualization(self, X_pca, labels, dates):
+        """
+        Create visualization of market regimes.
+
+        Args:
+            X_pca (numpy.ndarray): PCA-transformed feature matrix
+            labels (numpy.ndarray): Cluster labels
+            dates (numpy.ndarray): Corresponding dates
+
+        Returns:
+            str: Path to the saved visualization
+        """
+        try:
+            # Create directory for regime visualizations if it doesn't exist
+            regime_plot_path = os.path.join('static', 'images', 'regimes')
+            os.makedirs(regime_plot_path, exist_ok=True)
+
+            # Create a figure with two subplots
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), gridspec_kw={'height_ratios': [2, 1]})
+
+            # 1. Scatter plot of regimes in PCA space
+            if X_pca.shape[1] >= 2:
+                # Create a colormap with distinct colors for each regime
+                n_regimes = len(np.unique(labels))
+                colors = cm.rainbow(np.linspace(0, 1, n_regimes))
+                cmap = ListedColormap(colors)
+
+                scatter = ax1.scatter(X_pca[:, 0], X_pca[:, 1], c=labels, cmap=cmap, 
+                                     alpha=0.7, s=50, edgecolors='k')
+
+                # Add labels for the last 5 points to show the trajectory
+                for i in range(max(0, len(X_pca)-5), len(X_pca)):
+                    ax1.annotate(
+                        dates[i].strftime('%Y-%m-%d') if isinstance(dates[i], datetime) else str(dates[i]),
+                        (X_pca[i, 0], X_pca[i, 1]),
+                        xytext=(5, 5),
+                        textcoords='offset points'
+                    )
+
+                # Connect points with a line to show the trajectory
+                ax1.plot(X_pca[:, 0], X_pca[:, 1], 'k-', alpha=0.3)
+
+                # Add a legend
+                legend_elements = [plt.Line2D([0], [0], marker='o', color='w', 
+                                             markerfacecolor=colors[i], markersize=10,
+                                             label=f'Regime {i}: {self._get_regime_name(i, self.regime_characteristics)}')
+                                  for i in range(n_regimes)]
+                ax1.legend(handles=legend_elements, loc='upper right')
+
+                ax1.set_title(f'Market Regimes for {self.stock_symbol} (PCA Visualization)')
+                ax1.set_xlabel('Principal Component 1')
+                ax1.set_ylabel('Principal Component 2')
+                ax1.grid(True, alpha=0.3)
+
+            # 2. Time series plot of regime changes
+            # Convert dates to datetime if they're not already
+            if not isinstance(dates[0], datetime):
+                date_objects = [datetime.strptime(d, '%Y-%m-%d') if isinstance(d, str) else d for d in dates]
+            else:
+                date_objects = dates
+
+            # Get stock price data for the same period
+            stock = Stock.objects.get(symbol=self.stock_symbol)
+            price_data = pd.DataFrame(list(StockData.objects.filter(
+                stock=stock, 
+                date__in=dates
+            ).order_by('date').values()))
+
+            if not price_data.empty:
+                # Ensure numeric conversion
+                price_data['close_price'] = price_data['close_price'].astype(float)
+
+                # Plot stock price
+                ax2.plot(date_objects, price_data['close_price'], 'k-', alpha=0.7, label='Close Price')
+
+                # Color the background based on regime
+                for regime in np.unique(labels):
+                    regime_indices = np.where(labels == regime)[0]
+                    if len(regime_indices) > 0:
+                        regime_dates = [date_objects[i] for i in regime_indices]
+                        regime_prices = [price_data['close_price'].iloc[i] if i < len(price_data) else None for i in regime_indices]
+                        regime_prices = [p for p in regime_prices if p is not None]
+
+                        if regime_prices:
+                            ax2.scatter(regime_dates[:len(regime_prices)], regime_prices, 
+                                       color=colors[regime], alpha=0.7, s=30, 
+                                       label=f'Regime {regime}')
+
+                # Add vertical lines for regime transitions
+                for transition in self.regime_transitions:
+                    transition_date = datetime.strptime(transition['date'], '%Y-%m-%d')
+                    ax2.axvline(x=transition_date, color='r', linestyle='--', alpha=0.5)
+
+                ax2.set_title(f'Stock Price and Regime Changes for {self.stock_symbol}')
+                ax2.set_xlabel('Date')
+                ax2.set_ylabel('Price')
+                ax2.grid(True, alpha=0.3)
+                ax2.legend(loc='upper left')
+
+            plt.tight_layout()
+
+            # Save the figure
+            filename = f'{self.stock_symbol}_market_regimes.png'
+            filepath = os.path.join(regime_plot_path, filename)
+            plt.savefig(filepath)
+            plt.close(fig)
+
+            return f'/static/images/regimes/{filename}'
+
+        except Exception as e:
+            logger.error(f"Error creating regime visualization: {str(e)}")
+            return None
+
+    def predict_current_regime(self, X=None):
+        """
+        Predict the current market regime.
+
+        Args:
+            X (numpy.ndarray, optional): Feature matrix for prediction. If None, uses the latest data.
+
+        Returns:
+            dict: Dictionary containing the predicted regime
+        """
+        if self.model is None:
+            # If model hasn't been trained, detect regimes first
+            self.detect_regimes()
+
+        if self.model is None:
+            logger.error(f"Failed to train regime detection model for {self.stock_symbol}")
+            return None
+
+        if X is None:
+            # Get the latest data
+            X, _ = self.prepare_data()
+
+            if X is None or len(X) == 0:
+                logger.error(f"No data available for regime prediction for {self.stock_symbol}")
+                return None
+
+            # Use the last data point
+            X = X[-1:].reshape(1, -1)
+
+        # Scale the data
+        X_scaled = self.scaler.transform(X)
+
+        # Predict regime
+        if self.algorithm == 'kmeans':
+            regime = self.model.predict(X_scaled)[0]
+        elif self.algorithm == 'gmm':
+            regime = self.model.predict(X_scaled)[0]
+        elif self.algorithm == 'dbscan':
+            # For DBSCAN, find the nearest cluster
+            from sklearn.neighbors import NearestNeighbors
+            nn = NearestNeighbors(n_neighbors=1)
+            nn.fit(self.model.components_)
+            _, indices = nn.kneighbors(X_scaled)
+            regime = self.model.labels_[indices[0, 0]]
+        else:
+            regime = self.model.predict(X_scaled)[0]
+
+        # Get regime name
+        regime_name = self._get_regime_name(regime, self.regime_characteristics)
+
+        return {
+            'regime': int(regime),
+            'regime_name': regime_name,
+            'regime_type': self.regime_characteristics.get(int(regime), {}).get('type', 'unknown')
+        }
+
+    def save_regime_data(self):
+        """
+        Save regime data to the database.
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # Detect regimes if not already done
+            if not hasattr(self, 'regime_characteristics') or not self.regime_characteristics:
+                self.detect_regimes()
+
+            # Get the stock
+            stock = Stock.objects.get(symbol=self.stock_symbol)
+
+            # Get or create MLModelMetrics for today
+            metrics, created = MLModelMetrics.objects.get_or_create(
+                stock=stock,
+                date=datetime.now().date(),
+                defaults={
+                    'accuracy': 0.0,
+                    'rmse': 0.0
+                }
+            )
+
+            # Prepare regime data
+            regime_data = {
+                'current_regime': self.predict_current_regime(),
+                'regimes': self.regime_characteristics,
+                'transitions': self.regime_transitions,
+                'algorithm': self.algorithm,
+                'n_regimes': self.n_regimes,
+                'visualization_path': self._create_regime_visualization(
+                    self.pca.transform(self.scaler.transform(self.prepare_data()[0])),
+                    self._apply_clustering(self.scaler.transform(self.prepare_data()[0]))[0],
+                    self.prepare_data()[1]
+                )
+            }
+
+            # Save regime data to the database
+            metrics.market_regimes = regime_data
+            metrics.save()
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error saving regime data: {str(e)}")
+            return False
+
+
+class LSTMModel(BaseEstimator, RegressorMixin):
+    """LSTM model for sequence prediction, compatible with scikit-learn"""
+
+    def __init__(self, sequence_length=10, units=50, dropout=0.2, learning_rate=0.001, epochs=50, batch_size=32):
+        """Initialize the LSTM model with parameters"""
+        self.sequence_length = sequence_length
+        self.units = units
+        self.dropout = dropout
+        self.learning_rate = learning_rate
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.model = None
+        self.n_features_in_ = None
+        self.scaler = MinMaxScaler()
+
+    def _create_model(self, input_shape):
+        """Create the LSTM model architecture"""
+        model = Sequential()
+        model.add(LSTM(units=self.units, return_sequences=True, input_shape=input_shape))
+        model.add(Dropout(self.dropout))
+        model.add(LSTM(units=self.units))
+        model.add(Dropout(self.dropout))
+        model.add(Dense(units=1))
+        model.compile(optimizer=Adam(learning_rate=self.learning_rate), loss='mean_squared_error')
+        return model
+
+    def _prepare_sequences(self, X):
+        """Prepare input data as sequences for LSTM"""
+        # Reshape data into 3D format: [samples, time steps, features]
+        n_samples = X.shape[0] - self.sequence_length
+        n_features = X.shape[1]
+
+        sequences = np.zeros((n_samples, self.sequence_length, n_features))
+        for i in range(n_samples):
+            sequences[i] = X[i:i+self.sequence_length]
+
+        return sequences
+
+    def fit(self, X, y):
+        """Fit the LSTM model to the data"""
+        # Store number of features for prediction
+        self.n_features_in_ = X.shape[1]
+
+        # Scale the data
+        X_scaled = self.scaler.fit_transform(X)
+
+        # Prepare sequences
+        X_seq = self._prepare_sequences(X_scaled)
+        y_seq = y[self.sequence_length:]
+
+        # Create and compile the model
+        self.model = self._create_model((self.sequence_length, self.n_features_in_))
+
+        # Early stopping to prevent overfitting
+        early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+
+        # Train the model
+        self.model.fit(
+            X_seq, y_seq,
+            epochs=self.epochs,
+            batch_size=self.batch_size,
+            validation_split=0.2,
+            callbacks=[early_stopping],
+            verbose=0
+        )
+
+        return self
+
+    def predict(self, X):
+        """Make predictions with the LSTM model"""
+        if self.model is None:
+            raise ValueError("Model has not been trained yet")
+
+        # Scale the data
+        X_scaled = self.scaler.transform(X)
+
+        # For prediction, we need to handle the case where X has fewer samples than sequence_length
+        if X.shape[0] < self.sequence_length:
+            # Pad with zeros to reach sequence_length
+            padding = np.zeros((self.sequence_length - X.shape[0], X.shape[1]))
+            X_padded = np.vstack((padding, X_scaled))
+            X_seq = X_padded.reshape(1, self.sequence_length, self.n_features_in_)
+        else:
+            # Use the last sequence_length samples
+            X_seq = X_scaled[-self.sequence_length:].reshape(1, self.sequence_length, self.n_features_in_)
+
+        # Make prediction
+        return self.model.predict(X_seq, verbose=0).flatten()
+
+
+class TransformerModel(BaseEstimator, RegressorMixin):
+    """Transformer model with attention mechanisms for sequence prediction"""
+
+    def __init__(self, sequence_length=10, embed_dim=32, num_heads=2, ff_dim=32, dropout=0.2, 
+                 learning_rate=0.001, epochs=50, batch_size=32):
+        """Initialize the Transformer model with parameters"""
+        self.sequence_length = sequence_length
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.ff_dim = ff_dim
+        self.dropout = dropout
+        self.learning_rate = learning_rate
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.model = None
+        self.n_features_in_ = None
+        self.scaler = MinMaxScaler()
+
+    def _create_model(self, input_shape):
+        """Create the Transformer model architecture with attention mechanisms"""
+        inputs = Input(shape=input_shape)
+
+        # Embedding layer to project input features to embed_dim
+        x = Dense(self.embed_dim)(inputs)
+
+        # Add positional information
+        positions = tf.range(start=0, limit=self.sequence_length, delta=1)
+        position_embedding = Embedding(input_dim=self.sequence_length, output_dim=self.embed_dim)(positions)
+        x = x + position_embedding
+
+        # Transformer block with multi-head attention
+        attention_output = MultiHeadAttention(
+            num_heads=self.num_heads, key_dim=self.embed_dim
+        )(x, x)
+        x = LayerNormalization(epsilon=1e-6)(attention_output + x)
+
+        # Feed-forward network
+        ff = Dense(self.ff_dim, activation="relu")(x)
+        ff = Dense(self.embed_dim)(ff)
+        ff = Dropout(self.dropout)(ff)
+        x = LayerNormalization(epsilon=1e-6)(ff + x)
+
+        # Global average pooling and output layer
+        x = tf.keras.layers.GlobalAveragePooling1D()(x)
+        outputs = Dense(1)(x)
+
+        model = Model(inputs=inputs, outputs=outputs)
+        model.compile(optimizer=Adam(learning_rate=self.learning_rate), loss='mean_squared_error')
+
+        return model
+
+    def _prepare_sequences(self, X):
+        """Prepare input data as sequences for Transformer"""
+        # Reshape data into 3D format: [samples, time steps, features]
+        n_samples = X.shape[0] - self.sequence_length
+        n_features = X.shape[1]
+
+        sequences = np.zeros((n_samples, self.sequence_length, n_features))
+        for i in range(n_samples):
+            sequences[i] = X[i:i+self.sequence_length]
+
+        return sequences
+
+    def fit(self, X, y):
+        """Fit the Transformer model to the data"""
+        # Store number of features for prediction
+        self.n_features_in_ = X.shape[1]
+
+        # Scale the data
+        X_scaled = self.scaler.fit_transform(X)
+
+        # Prepare sequences
+        X_seq = self._prepare_sequences(X_scaled)
+        y_seq = y[self.sequence_length:]
+
+        # Create and compile the model
+        self.model = self._create_model((self.sequence_length, self.n_features_in_))
+
+        # Early stopping to prevent overfitting
+        early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+
+        # Train the model
+        self.model.fit(
+            X_seq, y_seq,
+            epochs=self.epochs,
+            batch_size=self.batch_size,
+            validation_split=0.2,
+            callbacks=[early_stopping],
+            verbose=0
+        )
+
+        return self
+
+    def predict(self, X):
+        """Make predictions with the Transformer model"""
+        if self.model is None:
+            raise ValueError("Model has not been trained yet")
+
+        # Scale the data
+        X_scaled = self.scaler.transform(X)
+
+        # For prediction, we need to handle the case where X has fewer samples than sequence_length
+        if X.shape[0] < self.sequence_length:
+            # Pad with zeros to reach sequence_length
+            padding = np.zeros((self.sequence_length - X.shape[0], X.shape[1]))
+            X_padded = np.vstack((padding, X_scaled))
+            X_seq = X_padded.reshape(1, self.sequence_length, self.n_features_in_)
+        else:
+            # Use the last sequence_length samples
+            X_seq = X_scaled[-self.sequence_length:].reshape(1, self.sequence_length, self.n_features_in_)
+
+        # Make prediction
+        return self.model.predict(X_seq, verbose=0).flatten()
+
+
+class HybridModel(BaseEstimator, RegressorMixin):
+    """Hybrid model combining technical and fundamental analysis"""
+
+    def __init__(self, technical_model='lstm', fundamental_weight=0.3, sequence_length=10, 
+                 units=50, embed_dim=32, num_heads=2, dropout=0.2, learning_rate=0.001, 
+                 epochs=50, batch_size=32):
+        """Initialize the hybrid model with parameters"""
+        self.technical_model = technical_model
+        self.fundamental_weight = fundamental_weight
+        self.sequence_length = sequence_length
+        self.units = units
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.dropout = dropout
+        self.learning_rate = learning_rate
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.model = None
+        self.n_features_in_ = None
+        self.scaler_technical = MinMaxScaler()
+        self.scaler_fundamental = MinMaxScaler()
+
+    def _create_model(self, technical_shape, fundamental_shape):
+        """Create the hybrid model architecture"""
+        # Technical analysis branch (sequence data)
+        technical_input = Input(shape=technical_shape, name='technical_input')
+
+        # Choose the technical model type
+        if self.technical_model == 'transformer':
+            # Embedding layer for transformer
+            x_technical = Dense(self.embed_dim)(technical_input)
+
+            # Add positional information
+            positions = tf.range(start=0, limit=self.sequence_length, delta=1)
+            position_embedding = Embedding(input_dim=self.sequence_length, output_dim=self.embed_dim)(positions)
+            x_technical = x_technical + position_embedding
+
+            # Transformer block with multi-head attention
+            attention_output = MultiHeadAttention(
+                num_heads=self.num_heads, key_dim=self.embed_dim
+            )(x_technical, x_technical)
+            x_technical = LayerNormalization(epsilon=1e-6)(attention_output + x_technical)
+
+            # Feed-forward network
+            ff = Dense(self.embed_dim * 2, activation="relu")(x_technical)
+            ff = Dense(self.embed_dim)(ff)
+            ff = Dropout(self.dropout)(ff)
+            x_technical = LayerNormalization(epsilon=1e-6)(ff + x_technical)
+
+            # Global average pooling
+            x_technical = tf.keras.layers.GlobalAveragePooling1D()(x_technical)
+
+        else:  # Default to LSTM
+            # LSTM layers
+            x_technical = LSTM(units=self.units, return_sequences=True)(technical_input)
+            x_technical = Dropout(self.dropout)(x_technical)
+            x_technical = LSTM(units=self.units)(x_technical)
+            x_technical = Dropout(self.dropout)(x_technical)
+
+        # Fundamental analysis branch (static data)
+        fundamental_input = Input(shape=fundamental_shape, name='fundamental_input')
+        x_fundamental = Dense(32, activation='relu')(fundamental_input)
+        x_fundamental = Dropout(self.dropout)(x_fundamental)
+        x_fundamental = Dense(16, activation='relu')(x_fundamental)
+
+        # Combine technical and fundamental branches
+        combined = Concatenate()([x_technical, x_fundamental])
+
+        # Final layers
+        x = Dense(32, activation='relu')(combined)
+        x = Dropout(self.dropout)(x)
+        outputs = Dense(1)(x)
+
+        # Create model with multiple inputs
+        model = Model(inputs=[technical_input, fundamental_input], outputs=outputs)
+        model.compile(optimizer=Adam(learning_rate=self.learning_rate), loss='mean_squared_error')
+
+        return model
+
+    def _split_features(self, X):
+        """Split features into technical and fundamental groups"""
+        # For demonstration, we'll consider the first 70% of features as technical
+        # and the remaining 30% as fundamental. In a real implementation, this would
+        # be based on actual feature types.
+        n_features = X.shape[1]
+        n_technical = int(n_features * 0.7)
+
+        technical_features = X[:, :n_technical]
+        fundamental_features = X[:, n_technical:]
+
+        return technical_features, fundamental_features
+
+    def _prepare_sequences(self, X):
+        """Prepare technical data as sequences"""
+        # Reshape data into 3D format: [samples, time steps, features]
+        n_samples = X.shape[0] - self.sequence_length
+        n_features = X.shape[1]
+
+        sequences = np.zeros((n_samples, self.sequence_length, n_features))
+        for i in range(n_samples):
+            sequences[i] = X[i:i+self.sequence_length]
+
+        return sequences
+
+    def fit(self, X, y):
+        """Fit the hybrid model to the data"""
+        # Store number of features for prediction
+        self.n_features_in_ = X.shape[1]
+
+        # Split features into technical and fundamental
+        technical_features, fundamental_features = self._split_features(X)
+
+        # Scale the data
+        technical_scaled = self.scaler_technical.fit_transform(technical_features)
+        fundamental_scaled = self.scaler_fundamental.fit_transform(fundamental_features)
+
+        # Prepare sequences for technical data
+        technical_seq = self._prepare_sequences(technical_scaled)
+
+        # For fundamental data, use the values at the end of each sequence
+        fundamental_seq = fundamental_scaled[self.sequence_length:]
+
+        # Target values
+        y_seq = y[self.sequence_length:]
+
+        # Create and compile the model
+        self.model = self._create_model(
+            (self.sequence_length, technical_features.shape[1]),
+            (fundamental_features.shape[1],)
+        )
+
+        # Early stopping to prevent overfitting
+        early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+
+        # Train the model
+        self.model.fit(
+            [technical_seq, fundamental_seq], y_seq,
+            epochs=self.epochs,
+            batch_size=self.batch_size,
+            validation_split=0.2,
+            callbacks=[early_stopping],
+            verbose=0
+        )
+
+        return self
+
+    def predict(self, X):
+        """Make predictions with the hybrid model"""
+        if self.model is None:
+            raise ValueError("Model has not been trained yet")
+
+        # Split features into technical and fundamental
+        technical_features, fundamental_features = self._split_features(X)
+
+        # Scale the data
+        technical_scaled = self.scaler_technical.transform(technical_features)
+        fundamental_scaled = self.scaler_fundamental.transform(fundamental_features)
+
+        # For prediction with a single sample or few samples
+        if technical_scaled.shape[0] < self.sequence_length:
+            # Pad with zeros to reach sequence_length
+            padding = np.zeros((self.sequence_length - technical_scaled.shape[0], technical_scaled.shape[1]))
+            technical_padded = np.vstack((padding, technical_scaled))
+            technical_seq = technical_padded.reshape(1, self.sequence_length, technical_scaled.shape[1])
+            fundamental_seq = fundamental_scaled.reshape(1, fundamental_scaled.shape[1])
+        else:
+            # Use the last sequence_length samples for technical
+            technical_seq = technical_scaled[-self.sequence_length:].reshape(1, self.sequence_length, technical_scaled.shape[1])
+            # Use the last sample for fundamental
+            fundamental_seq = fundamental_scaled[-1:].reshape(1, fundamental_scaled.shape[1])
+
+        # Make prediction
+        return self.model.predict([technical_seq, fundamental_seq], verbose=0).flatten()
+
+
+class ProphetModel(BaseEstimator, RegressorMixin):
+    """Facebook Prophet model for time series forecasting, compatible with scikit-learn"""
+
+    def __init__(self, changepoint_prior_scale=0.05, seasonality_mode='additive', 
+                 yearly_seasonality='auto', weekly_seasonality='auto', daily_seasonality='auto',
+                 uncertainty_samples=1000, prediction_horizon=5):
+        """Initialize the Prophet model with parameters"""
+        self.changepoint_prior_scale = changepoint_prior_scale
+        self.seasonality_mode = seasonality_mode
+        self.yearly_seasonality = yearly_seasonality
+        self.weekly_seasonality = weekly_seasonality
+        self.daily_seasonality = daily_seasonality
+        self.uncertainty_samples = uncertainty_samples
+        self.prediction_horizon = prediction_horizon
+        self.model = None
+        self.n_features_in_ = None
+        self.date_column = None
+        self.target_column = None
+        self.feature_columns = None
+        self.last_date = None
+        self.freq = 'D'  # Default to daily data
+
+    def fit(self, X, y):
+        """Fit the Prophet model to the data"""
+        try:
+            from prophet import Prophet
+        except ImportError:
+            raise ImportError("Prophet is not installed. Install it with: pip install prophet")
+
+        # Store number of features for prediction
+        self.n_features_in_ = X.shape[1]
+
+        # Create a DataFrame for Prophet (requires 'ds' and 'y' columns)
+        # For simplicity, we'll use the index as the date column
+        # In a real implementation, you would extract the date from X
+        df = pd.DataFrame()
+
+        # If X is a pandas DataFrame with a DatetimeIndex, use it
+        if isinstance(X, pd.DataFrame) and isinstance(X.index, pd.DatetimeIndex):
+            df['ds'] = X.index
+            self.date_column = 'index'
+        else:
+            # Create a synthetic date range
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=len(X))
+            df['ds'] = pd.date_range(start=start_date, periods=len(X), freq=self.freq)
+            self.date_column = 'synthetic'
+
+        # Add the target variable
+        df['y'] = y
+
+        # Store the last date for future predictions
+        self.last_date = df['ds'].max()
+
+        # Add regressor columns if X has more than one feature
+        self.feature_columns = []
+        if X.shape[1] > 0:
+            if isinstance(X, pd.DataFrame):
+                for col in X.columns:
+                    col_name = str(col)
+                    df[col_name] = X[col].values
+                    self.feature_columns.append(col_name)
+            else:
+                for i in range(X.shape[1]):
+                    col_name = f'feature_{i}'
+                    df[col_name] = X[:, i]
+                    self.feature_columns.append(col_name)
+
+        # Initialize and fit the Prophet model
+        self.model = Prophet(
+            changepoint_prior_scale=self.changepoint_prior_scale,
+            seasonality_mode=self.seasonality_mode,
+            yearly_seasonality=self.yearly_seasonality,
+            weekly_seasonality=self.weekly_seasonality,
+            daily_seasonality=self.daily_seasonality
+        )
+
+        # Add regressors
+        for col in self.feature_columns:
+            self.model.add_regressor(col)
+
+        # Fit the model
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            self.model.fit(df)
+
+        return self
+
+    def predict(self, X, horizon=None):
+        """Make predictions with the Prophet model"""
+        if self.model is None:
+            raise ValueError("Model has not been trained yet")
+
+        # Use specified horizon or default
+        pred_horizon = horizon if horizon is not None else self.prediction_horizon
+
+        # Create future DataFrame for prediction
+        if isinstance(X, pd.DataFrame) and len(X) >= pred_horizon:
+            # If X contains the future data points
+            future = pd.DataFrame()
+
+            if self.date_column == 'index' and isinstance(X.index, pd.DatetimeIndex):
+                future['ds'] = X.index
+            else:
+                # Create a date range starting from the day after the last training date
+                future['ds'] = pd.date_range(
+                    start=self.last_date + pd.Timedelta(days=1),
+                    periods=pred_horizon,
+                    freq=self.freq
+                )
+
+            # Add regressor values if available
+            if self.feature_columns and len(self.feature_columns) > 0:
+                if isinstance(X, pd.DataFrame):
+                    for col in self.feature_columns:
+                        if col in X.columns:
+                            future[col] = X[col].values[:pred_horizon]
+                        else:
+                            # Use zeros if column not found
+                            future[col] = np.zeros(pred_horizon)
+                else:
+                    for i, col in enumerate(self.feature_columns):
+                        if i < X.shape[1]:
+                            future[col] = X[:pred_horizon, i]
+                        else:
+                            future[col] = np.zeros(pred_horizon)
+        else:
+            # Create a future DataFrame with the specified horizon
+            future = self.model.make_future_dataframe(periods=pred_horizon, freq=self.freq)
+
+            # Add regressor values (use the last values from training if not provided)
+            if self.feature_columns and len(self.feature_columns) > 0:
+                for col in self.feature_columns:
+                    future[col] = future[col].fillna(method='ffill')
+
+        # Make predictions
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            forecast = self.model.predict(future)
+
+        # Return the predicted values
+        return forecast['yhat'].values[-pred_horizon:]
+
+    def predict_with_intervals(self, X, horizon=None):
+        """Make predictions with uncertainty intervals"""
+        if self.model is None:
+            raise ValueError("Model has not been trained yet")
+
+        # Use specified horizon or default
+        pred_horizon = horizon if horizon is not None else self.prediction_horizon
+
+        # Create future DataFrame for prediction (similar to predict method)
+        if isinstance(X, pd.DataFrame) and len(X) >= pred_horizon:
+            future = pd.DataFrame()
+
+            if self.date_column == 'index' and isinstance(X.index, pd.DatetimeIndex):
+                future['ds'] = X.index
+            else:
+                future['ds'] = pd.date_range(
+                    start=self.last_date + pd.Timedelta(days=1),
+                    periods=pred_horizon,
+                    freq=self.freq
+                )
+
+            # Add regressor values if available
+            if self.feature_columns and len(self.feature_columns) > 0:
+                if isinstance(X, pd.DataFrame):
+                    for col in self.feature_columns:
+                        if col in X.columns:
+                            future[col] = X[col].values[:pred_horizon]
+                        else:
+                            future[col] = np.zeros(pred_horizon)
+                else:
+                    for i, col in enumerate(self.feature_columns):
+                        if i < X.shape[1]:
+                            future[col] = X[:pred_horizon, i]
+                        else:
+                            future[col] = np.zeros(pred_horizon)
+        else:
+            future = self.model.make_future_dataframe(periods=pred_horizon, freq=self.freq)
+
+            if self.feature_columns and len(self.feature_columns) > 0:
+                for col in self.feature_columns:
+                    future[col] = future[col].fillna(method='ffill')
+
+        # Make predictions with uncertainty intervals
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            forecast = self.model.predict(future)
+
+        # Extract the relevant part of the forecast
+        forecast = forecast.iloc[-pred_horizon:]
+
+        # Return a dictionary with predictions and intervals
+        return {
+            'predictions': forecast['yhat'].values,
+            'lower_bound': forecast['yhat_lower'].values,
+            'upper_bound': forecast['yhat_upper'].values,
+            'dates': forecast['ds'].values
+        }
+
+    def get_components(self):
+        """Get the trend and seasonal components of the time series"""
+        if self.model is None:
+            raise ValueError("Model has not been trained yet")
+
+        # Create a DataFrame covering the historical period
+        historical = self.model.history
+
+        # Make predictions for the historical period
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            components = self.model.predict(historical)
+
+        # Extract components
+        trend = components['trend']
+        seasonality = components['yearly'] if 'yearly' in components else None
+        weekly = components['weekly'] if 'weekly' in components else None
+
+        return {
+            'trend': trend.values,
+            'seasonality': seasonality.values if seasonality is not None else None,
+            'weekly': weekly.values if weekly is not None else None,
+            'dates': components['ds'].values
+        }
+
+
+class HierarchicalTimeSeriesModel:
+    """Hierarchical time series forecasting model"""
+
+    def __init__(self, base_model_class=ProphetModel, reconciliation_method='bottom_up'):
+        """
+        Initialize the hierarchical time series model
+
+        Args:
+            base_model_class: The model class to use for individual time series
+            reconciliation_method: Method for reconciling forecasts ('bottom_up', 'top_down', or 'middle_out')
+        """
+        self.base_model_class = base_model_class
+        self.reconciliation_method = reconciliation_method
+        self.models = {}
+        self.hierarchy = {}
+        self.n_features_in_ = None
+
+    def add_time_series(self, name, parent=None):
+        """
+        Add a time series to the hierarchy
+
+        Args:
+            name (str): Name of the time series
+            parent (str): Name of the parent time series (None for top level)
+        """
+        if parent is not None and parent not in self.hierarchy:
+            raise ValueError(f"Parent time series '{parent}' not found in hierarchy")
+
+        self.hierarchy[name] = {
+            'parent': parent,
+            'children': []
+        }
+
+        # Update parent's children list
+        if parent is not None:
+            self.hierarchy[parent]['children'].append(name)
+
+    def fit(self, data_dict, y_dict):
+        """
+        Fit models for all time series in the hierarchy
+
+        Args:
+            data_dict (dict): Dictionary of DataFrames with features for each time series
+            y_dict (dict): Dictionary of target values for each time series
+        """
+        for name in self.hierarchy:
+            if name in data_dict and name in y_dict:
+                X = data_dict[name]
+                y = y_dict[name]
+
+                # Create and fit model for this time series
+                model = self.base_model_class()
+                model.fit(X, y)
+
+                # Store the model
+                self.models[name] = model
+
+                # Store number of features
+                if self.n_features_in_ is None:
+                    self.n_features_in_ = X.shape[1]
+
+        return self
+
+    def predict(self, data_dict, horizon=5):
+        """
+        Make hierarchically reconciled predictions
+
+        Args:
+            data_dict (dict): Dictionary of DataFrames with features for each time series
+            horizon (int): Prediction horizon
+
+        Returns:
+            dict: Dictionary of reconciled predictions for each time series
+        """
+        # Make individual predictions
+        individual_predictions = {}
+        for name, model in self.models.items():
+            if name in data_dict:
+                X = data_dict[name]
+                individual_predictions[name] = model.predict(X, horizon=horizon)
+
+        # Reconcile predictions based on the selected method
+        if self.reconciliation_method == 'bottom_up':
+            return self._reconcile_bottom_up(individual_predictions, horizon)
+        elif self.reconciliation_method == 'top_down':
+            return self._reconcile_top_down(individual_predictions, horizon)
+        elif self.reconciliation_method == 'middle_out':
+            return self._reconcile_middle_out(individual_predictions, horizon)
+        else:
+            return individual_predictions
+
+    def _reconcile_bottom_up(self, predictions, horizon):
+        """Reconcile predictions using the bottom-up approach"""
+        reconciled = predictions.copy()
+
+        # Find leaf nodes (time series with no children)
+        leaf_nodes = [name for name in self.hierarchy if not self.hierarchy[name]['children']]
+
+        # Process nodes from bottom to top
+        processed = set(leaf_nodes)
+        while len(processed) < len(self.hierarchy):
+            for name in self.hierarchy:
+                if name in processed:
+                    continue
+
+                # Check if all children have been processed
+                children = self.hierarchy[name]['children']
+                if all(child in processed for child in children):
+                    # Aggregate children's predictions
+                    if children:
+                        child_sum = np.zeros(horizon)
+                        for child in children:
+                            if child in reconciled:
+                                child_sum += reconciled[child]
+
+                        # Replace this node's prediction with the sum of its children
+                        reconciled[name] = child_sum
+
+                    processed.add(name)
+
+        return reconciled
+
+    def _reconcile_top_down(self, predictions, horizon):
+        """Reconcile predictions using the top-down approach"""
+        reconciled = predictions.copy()
+
+        # Find the root node (time series with no parent)
+        root_nodes = [name for name in self.hierarchy if self.hierarchy[name]['parent'] is None]
+
+        # Process nodes from top to bottom
+        for root in root_nodes:
+            if root not in reconciled:
+                continue
+
+            # Process this subtree
+            self._distribute_top_down(root, reconciled, horizon)
+
+        return reconciled
+
+    def _distribute_top_down(self, node, reconciled, horizon):
+        """Distribute forecasts from a node to its children"""
+        children = self.hierarchy[node]['children']
+        if not children:
+            return
+
+        # Calculate proportions based on historical data
+        total_children = np.zeros(horizon)
+        for child in children:
+            if child in reconciled:
+                total_children += reconciled[child]
+
+        # Distribute the parent's forecast to children based on proportions
+        if np.sum(total_children) > 0:
+            for child in children:
+                if child in reconciled:
+                    proportion = reconciled[child] / total_children
+                    reconciled[child] = reconciled[node] * proportion
+
+                    # Recursively distribute to this child's children
+                    self._distribute_top_down(child, reconciled, horizon)
+
+    def _reconcile_middle_out(self, predictions, horizon):
+        """Reconcile predictions using the middle-out approach"""
+        # For simplicity, we'll implement a basic version that combines bottom-up and top-down
+        # First, identify middle level nodes (e.g., nodes with both parents and children)
+        middle_nodes = [
+            name for name in self.hierarchy 
+            if self.hierarchy[name]['parent'] is not None and self.hierarchy[name]['children']
+        ]
+
+        reconciled = predictions.copy()
+
+        # Apply bottom-up from leaf nodes to middle nodes
+        leaf_nodes = [name for name in self.hierarchy if not self.hierarchy[name]['children']]
+        processed = set(leaf_nodes)
+
+        while not all(node in processed for node in middle_nodes):
+            for name in self.hierarchy:
+                if name in processed or name not in middle_nodes:
+                    continue
+
+                # Check if all children have been processed
+                children = self.hierarchy[name]['children']
+                if all(child in processed for child in children):
+                    # Aggregate children's predictions
+                    if children:
+                        child_sum = np.zeros(horizon)
+                        for child in children:
+                            if child in reconciled:
+                                child_sum += reconciled[child]
+
+                        # Replace this node's prediction with the sum of its children
+                        reconciled[name] = child_sum
+
+                    processed.add(name)
+
+        # Apply top-down from middle nodes to their parents
+        for middle_node in middle_nodes:
+            current = middle_node
+            parent = self.hierarchy[current]['parent']
+
+            while parent is not None:
+                # Update parent based on this node and its siblings
+                siblings = self.hierarchy[parent]['children']
+                sibling_sum = np.zeros(horizon)
+
+                for sibling in siblings:
+                    if sibling in reconciled:
+                        sibling_sum += reconciled[sibling]
+
+                reconciled[parent] = sibling_sum
+
+                # Move up the hierarchy
+                current = parent
+                parent = self.hierarchy[current]['parent'] if current in self.hierarchy else None
+
+        return reconciled
+
+
+class NeuralProphetModel(BaseEstimator, RegressorMixin):
+    """NeuralProphet model for time series forecasting, compatible with scikit-learn"""
+
+    def __init__(self, n_changepoints=10, yearly_seasonality=True, weekly_seasonality=True,
+                 daily_seasonality=False, batch_size=64, epochs=100, learning_rate=0.001,
+                 prediction_horizon=5):
+        """Initialize the NeuralProphet model with parameters"""
+        self.n_changepoints = n_changepoints
+        self.yearly_seasonality = yearly_seasonality
+        self.weekly_seasonality = weekly_seasonality
+        self.daily_seasonality = daily_seasonality
+        self.batch_size = batch_size
+        self.epochs = epochs
+        self.learning_rate = learning_rate
+        self.prediction_horizon = prediction_horizon
+        self.model = None
+        self.n_features_in_ = None
+        self.date_column = None
+        self.feature_columns = None
+        self.last_date = None
+        self.freq = 'D'  # Default to daily data
+
+    def fit(self, X, y):
+        """Fit the NeuralProphet model to the data"""
+        try:
+            from neuralprophet import NeuralProphet
+        except ImportError:
+            raise ImportError("NeuralProphet is not installed. Install it with: pip install neuralprophet")
+
+        # Store number of features for prediction
+        self.n_features_in_ = X.shape[1]
+
+        # Create a DataFrame for NeuralProphet (requires 'ds' and 'y' columns)
+        df = pd.DataFrame()
+
+        # If X is a pandas DataFrame with a DatetimeIndex, use it
+        if isinstance(X, pd.DataFrame) and isinstance(X.index, pd.DatetimeIndex):
+            df['ds'] = X.index
+            self.date_column = 'index'
+        else:
+            # Create a synthetic date range
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=len(X))
+            df['ds'] = pd.date_range(start=start_date, periods=len(X), freq=self.freq)
+            self.date_column = 'synthetic'
+
+        # Add the target variable
+        df['y'] = y
+
+        # Store the last date for future predictions
+        self.last_date = df['ds'].max()
+
+        # Add regressor columns if X has more than one feature
+        self.feature_columns = []
+        if X.shape[1] > 0:
+            if isinstance(X, pd.DataFrame):
+                for col in X.columns:
+                    col_name = str(col)
+                    df[col_name] = X[col].values
+                    self.feature_columns.append(col_name)
+            else:
+                for i in range(X.shape[1]):
+                    col_name = f'feature_{i}'
+                    df[col_name] = X[:, i]
+                    self.feature_columns.append(col_name)
+
+        # Initialize the NeuralProphet model
+        self.model = NeuralProphet(
+            n_changepoints=self.n_changepoints,
+            yearly_seasonality=self.yearly_seasonality,
+            weekly_seasonality=self.weekly_seasonality,
+            daily_seasonality=self.daily_seasonality,
+            batch_size=self.batch_size,
+            epochs=self.epochs,
+            learning_rate=self.learning_rate
+        )
+
+        # Add regressors
+        for col in self.feature_columns:
+            self.model.add_regressor(col)
+
+        # Fit the model
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            self.model.fit(df, freq=self.freq)
+
+        return self
+
+    def predict(self, X, horizon=None):
+        """Make predictions with the NeuralProphet model"""
+        if self.model is None:
+            raise ValueError("Model has not been trained yet")
+
+        # Use specified horizon or default
+        pred_horizon = horizon if horizon is not None else self.prediction_horizon
+
+        # Create future DataFrame for prediction
+        future = self.model.make_future_dataframe(
+            df=pd.DataFrame({'ds': [self.last_date]}),
+            periods=pred_horizon,
+            n_historic_predictions=False
+        )
+
+        # Add regressor values if available
+        if self.feature_columns and len(self.feature_columns) > 0:
+            if isinstance(X, pd.DataFrame) and len(X) >= pred_horizon:
+                for col in self.feature_columns:
+                    if col in X.columns:
+                        future[col] = X[col].values[:pred_horizon]
+                    else:
+                        future[col] = np.zeros(pred_horizon)
+            elif X.shape[0] >= pred_horizon and X.shape[1] >= len(self.feature_columns):
+                for i, col in enumerate(self.feature_columns):
+                    future[col] = X[:pred_horizon, i]
+            else:
+                # Use the last known values if not enough data provided
+                for col in self.feature_columns:
+                    future[col] = future[col].fillna(method='ffill')
+
+        # Make predictions
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            forecast = self.model.predict(future)
+
+        # Return the predicted values
+        return forecast['yhat1'].values
+
+    def predict_with_intervals(self, X, horizon=None):
+        """Make predictions with uncertainty intervals"""
+        if self.model is None:
+            raise ValueError("Model has not been trained yet")
+
+        # Use specified horizon or default
+        pred_horizon = horizon if horizon is not None else self.prediction_horizon
+
+        # Create future DataFrame for prediction
+        future = self.model.make_future_dataframe(
+            df=pd.DataFrame({'ds': [self.last_date]}),
+            periods=pred_horizon,
+            n_historic_predictions=False
+        )
+
+        # Add regressor values if available (similar to predict method)
+        if self.feature_columns and len(self.feature_columns) > 0:
+            if isinstance(X, pd.DataFrame) and len(X) >= pred_horizon:
+                for col in self.feature_columns:
+                    if col in X.columns:
+                        future[col] = X[col].values[:pred_horizon]
+                    else:
+                        future[col] = np.zeros(pred_horizon)
+            elif X.shape[0] >= pred_horizon and X.shape[1] >= len(self.feature_columns):
+                for i, col in enumerate(self.feature_columns):
+                    future[col] = X[:pred_horizon, i]
+            else:
+                for col in self.feature_columns:
+                    future[col] = future[col].fillna(method='ffill')
+
+        # Make predictions with uncertainty intervals
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            forecast = self.model.predict(future)
+
+        # Return a dictionary with predictions and intervals
+        return {
+            'predictions': forecast['yhat1'].values,
+            'lower_bound': forecast['yhat1_lower'].values if 'yhat1_lower' in forecast.columns else None,
+            'upper_bound': forecast['yhat1_upper'].values if 'yhat1_upper' in forecast.columns else None,
+            'dates': forecast['ds'].values
+        }
+
+    def get_components(self):
+        """Get the trend and seasonal components of the time series"""
+        if self.model is None:
+            raise ValueError("Model has not been trained yet")
+
+        # Create a DataFrame covering the historical period
+        historical = pd.DataFrame({'ds': pd.date_range(
+            start=self.last_date - pd.Timedelta(days=365),
+            end=self.last_date,
+            freq=self.freq
+        )})
+
+        # Add regressor values (use the last values from training)
+        if self.feature_columns and len(self.feature_columns) > 0:
+            for col in self.feature_columns:
+                historical[col] = 0  # Simplified for demonstration
+
+        # Make predictions for the historical period
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            components = self.model.predict(historical)
+            components_dict = self.model.get_components(components)
+
+        # Extract components (structure depends on NeuralProphet implementation)
+        return components_dict
+
+
+class RLTradingModel(BaseEstimator, ClassifierMixin):
+    """Reinforcement Learning model for adaptive trading strategies"""
+
+    def __init__(self, state_size=10, action_size=3, gamma=0.95, epsilon=1.0, 
+                 epsilon_decay=0.995, epsilon_min=0.01, learning_rate=0.001,
+                 batch_size=32, memory_size=1000, train_episodes=100):
+        """Initialize the RL model with parameters"""
+        self.state_size = state_size
+        self.action_size = action_size  # 0: SELL, 1: HOLD, 2: BUY
+        self.gamma = gamma  # discount factor
+        self.epsilon = epsilon  # exploration rate
+        self.epsilon_decay = epsilon_decay
+        self.epsilon_min = epsilon_min
+        self.learning_rate = learning_rate
+        self.batch_size = batch_size
+        self.memory_size = memory_size
+        self.train_episodes = train_episodes
+
+        self.memory = []
+        self.model = None
+        self.target_model = None
+        self.n_features_in_ = None
+        self.scaler = MinMaxScaler()
+        self.classes_ = np.array([0, 1, 2])  # SELL, HOLD, BUY
+
+    def _build_model(self):
+        """Build a neural network model for Q-learning"""
+        model = Sequential()
+        model.add(Dense(24, input_dim=self.state_size, activation='relu'))
+        model.add(Dense(24, activation='relu'))
+        model.add(Dense(self.action_size, activation='linear'))
+        model.compile(loss='mse', optimizer=Adam(learning_rate=self.learning_rate))
+        return model
+
+    def _remember(self, state, action, reward, next_state, done):
+        """Store experience in memory"""
+        if len(self.memory) >= self.memory_size:
+            self.memory.pop(0)
+        self.memory.append((state, action, reward, next_state, done))
+
+    def _act(self, state):
+        """Choose action based on epsilon-greedy policy"""
+        if np.random.rand() <= self.epsilon:
+            return np.random.choice(self.action_size)
+        act_values = self.model.predict(state, verbose=0)
+        return np.argmax(act_values[0])
+
+    def _replay(self):
+        """Train the model with experiences from memory"""
+        if len(self.memory) < self.batch_size:
+            return
+
+        minibatch = np.random.choice(self.memory, self.batch_size, replace=False)
+        for state, action, reward, next_state, done in minibatch:
+            target = reward
+            if not done:
+                target = reward + self.gamma * np.amax(self.target_model.predict(next_state, verbose=0)[0])
+            target_f = self.model.predict(state, verbose=0)
+            target_f[0][action] = target
+            self.model.fit(state, target_f, epochs=1, verbose=0)
+
+        if self.epsilon > self.epsilon_min:
+            self.epsilon *= self.epsilon_decay
+
+    def _update_target_model(self):
+        """Update the target model with weights from the main model"""
+        self.target_model.set_weights(self.model.get_weights())
+
+    def _create_environment(self, X, y):
+        """Create a simple trading environment for training"""
+        class TradingEnv:
+            def __init__(self, data, targets, window_size):
+                self.data = data
+                self.targets = targets
+                self.window_size = window_size
+                self.reset()
+
+            def reset(self):
+                self.position = self.window_size
+                self.done = False
+                self.profit = 0
+                return self._get_state()
+
+            def _get_state(self):
+                return self.data[self.position-self.window_size:self.position]
+
+            def step(self, action):
+                # Move to the next position
+                self.position += 1
+
+                # Check if episode is done
+                if self.position >= len(self.data) - 1:
+                    self.done = True
+
+                # Calculate reward based on action and actual price movement
+                actual_movement = np.sign(self.targets[self.position])
+
+                # Convert action to direction: 0 (SELL) -> -1, 1 (HOLD) -> 0, 2 (BUY) -> 1
+                action_direction = action - 1
+
+                # Reward is positive if action matches actual movement, negative otherwise
+                if action_direction == actual_movement:
+                    reward = 1.0
+                elif action_direction == 0 or actual_movement == 0:  # HOLD or no movement
+                    reward = 0.1
+                else:
+                    reward = -1.0
+
+                # Update profit (simplified)
+                self.profit += reward
+
+                return self._get_state(), reward, self.done, {"profit": self.profit}
+
+        return TradingEnv(X, y, self.state_size)
+
+    def fit(self, X, y):
+        """Train the RL model using the data"""
+        # Store number of features for prediction
+        self.n_features_in_ = X.shape[1]
+
+        # Scale the data
+        X_scaled = self.scaler.fit_transform(X)
+
+        # Convert y to direction: -1 (down), 0 (no change), 1 (up)
+        y_direction = np.sign(y)
+
+        # Create environment
+        env = self._create_environment(X_scaled, y_direction)
+
+        # Initialize models
+        self.model = self._build_model()
+        self.target_model = self._build_model()
+        self._update_target_model()
+
+        # Training loop
+        for episode in range(self.train_episodes):
+            state = env.reset()
+            state = np.reshape(state, [1, self.state_size])
+
+            while True:
+                action = self._act(state)
+                next_state, reward, done, _ = env.step(action)
+                next_state = np.reshape(next_state, [1, self.state_size])
+
+                self._remember(state, action, reward, next_state, done)
+                state = next_state
+
+                if done:
+                    break
+
+            self._replay()
+
+            # Update target model periodically
+            if episode % 10 == 0:
+                self._update_target_model()
+
+        return self
+
+    def predict(self, X):
+        """Predict the action (SELL, HOLD, BUY) for the given data"""
+        if self.model is None:
+            raise ValueError("Model has not been trained yet")
+
+        # Scale the data
+        X_scaled = self.scaler.transform(X)
+
+        # For prediction with a single sample
+        if X_scaled.shape[0] < self.state_size:
+            # Pad with zeros to reach state_size
+            padding = np.zeros((self.state_size - X_scaled.shape[0], X_scaled.shape[1]))
+            X_padded = np.vstack((padding, X_scaled))
+            state = X_padded.reshape(1, self.state_size)
+        else:
+            # Use the last state_size samples
+            state = X_scaled[-self.state_size:].reshape(1, self.state_size)
+
+        # Get Q-values
+        q_values = self.model.predict(state, verbose=0)
+
+        # Return the action with the highest Q-value
+        return np.argmax(q_values, axis=1)
+
+    def predict_proba(self, X):
+        """Predict class probabilities for the given data"""
+        if self.model is None:
+            raise ValueError("Model has not been trained yet")
+
+        # Scale the data
+        X_scaled = self.scaler.transform(X)
+
+        # For prediction with a single sample
+        if X_scaled.shape[0] < self.state_size:
+            # Pad with zeros to reach state_size
+            padding = np.zeros((self.state_size - X_scaled.shape[0], X_scaled.shape[1]))
+            X_padded = np.vstack((padding, X_scaled))
+            state = X_padded.reshape(1, self.state_size)
+        else:
+            # Use the last state_size samples
+            state = X_scaled[-self.state_size:].reshape(1, self.state_size)
+
+        # Get Q-values
+        q_values = self.model.predict(state, verbose=0)
+
+        # Convert Q-values to probabilities using softmax
+        exp_q = np.exp(q_values - np.max(q_values, axis=1, keepdims=True))
+        probabilities = exp_q / np.sum(exp_q, axis=1, keepdims=True)
+
+        return probabilities
 
 
 class MLPredictor:
@@ -133,6 +1987,35 @@ class MLPredictor:
         except Exception as e:
             logger.error(f"Error preparing data for {self.stock_symbol}: {str(e)}")
             return None, None, None
+
+    def detect_market_regime(self):
+        """
+        Detect the current market regime using the MarketRegimeDetector.
+
+        Returns:
+            dict: Dictionary containing the current regime information
+        """
+        try:
+            # Create a MarketRegimeDetector instance
+            regime_detector = MarketRegimeDetector(
+                stock_symbol=self.stock_symbol,
+                lookback_period=252,  # Use 1 year of data for regime detection
+                n_regimes=4,
+                algorithm='kmeans'
+            )
+
+            # Detect the current regime
+            regime_detector.detect_regimes()
+
+            # Get the current regime
+            current_regime = regime_detector.predict_current_regime()
+
+            logger.info(f"Detected market regime for {self.stock_symbol}: {current_regime}")
+
+            return current_regime
+        except Exception as e:
+            logger.error(f"Error detecting market regime for {self.stock_symbol}: {str(e)}")
+            return None
 
     def _adjust_training_window(self, base_window):
         """Dynamically adjust training window based on stock volatility"""
@@ -922,7 +2805,7 @@ class MLPredictor:
 
     def select_model_based_on_characteristics(self, model_type):
         """
-        Select the best model type based on stock characteristics
+        Select the best model type based on stock characteristics and market regime
 
         Args:
             model_type (str): 'price' or 'signal'
@@ -954,57 +2837,297 @@ class MLPredictor:
             else:
                 trend_strength = 0
 
+            # Calculate seasonality and cyclicality
+            if len(df) > 60:  # Need enough data to detect patterns
+                # Simple seasonality detection using autocorrelation
+                price_series = df['close_price'].values
+                autocorr = np.correlate(price_series, price_series, mode='full')
+                autocorr = autocorr[len(autocorr)//2:]  # Take only the positive lags
+                # Normalize
+                autocorr = autocorr / autocorr[0]
+                # Check for peaks in autocorrelation (excluding lag 0)
+                peaks = []
+                for i in range(2, min(len(autocorr)-1, 30)):  # Look for peaks in first 30 lags
+                    if autocorr[i] > autocorr[i-1] and autocorr[i] > autocorr[i+1] and autocorr[i] > 0.2:
+                        peaks.append((i, autocorr[i]))
+
+                has_seasonality = len(peaks) > 0
+                seasonality_strength = max([p[1] for p in peaks]) if peaks else 0
+            else:
+                has_seasonality = False
+                seasonality_strength = 0
+
+            # Detect market regime
+            current_regime = self.detect_market_regime()
+            regime_type = current_regime.get('regime_type', 'unknown') if current_regime else 'unknown'
+
             logger.info(f"Stock characteristics for {self.stock_symbol}: "
                        f"data_size={data_size}, volatility={volatility:.4f}, "
-                       f"volume_volatility={volume_volatility:.4f}, trend_strength={trend_strength:.4f}")
+                       f"volume_volatility={volume_volatility:.4f}, trend_strength={trend_strength:.4f}, "
+                       f"seasonality_strength={seasonality_strength:.4f}, "
+                       f"market_regime={regime_type}")
 
+            # Select regime-specific models
+            if regime_type in ['volatile_bull', 'volatile_bear', 'volatile_sideways']:
+                # For volatile regimes, use models that handle volatility well
+                if model_type == 'price':
+                    # For price prediction in volatile regimes, ensemble methods work well
+                    base_model = VotingRegressor([
+                        ('gbr', GradientBoostingRegressor(n_estimators=100, learning_rate=0.1, max_depth=3)),
+                        ('ridge', Ridge(alpha=1.0)),
+                        ('lr', LinearRegression())
+                    ])
+                    param_grid = {
+                        'gbr__n_estimators': [50, 100, 200],
+                        'gbr__learning_rate': [0.05, 0.1, 0.2],
+                        'gbr__max_depth': [2, 3, 4],
+                        'ridge__alpha': [0.5, 1.0, 2.0]
+                    }
+                    logger.info(f"Selected VotingRegressor for {self.stock_symbol} (volatile regime)")
+                    return base_model, param_grid, 'neg_mean_squared_error'
+                else:  # signal model
+                    # For signal prediction in volatile regimes, use a robust classifier
+                    base_model = VotingClassifier([
+                        ('rf', RandomForestClassifier(n_estimators=100, max_depth=5)),
+                        ('xgb', xgb.XGBClassifier(n_estimators=100, learning_rate=0.1, max_depth=3)),
+                        ('lr', LogisticRegression(C=1.0))
+                    ], voting='soft')
+                    param_grid = {
+                        'rf__n_estimators': [50, 100, 200],
+                        'rf__max_depth': [3, 5, 7],
+                        'xgb__n_estimators': [50, 100, 200],
+                        'xgb__learning_rate': [0.05, 0.1, 0.2],
+                        'lr__C': [0.5, 1.0, 2.0]
+                    }
+                    logger.info(f"Selected VotingClassifier for {self.stock_symbol} (volatile regime)")
+                    return base_model, param_grid, 'f1_weighted'
+
+            elif regime_type in ['steady_bull', 'steady_bear']:
+                # For steady trend regimes, use models that capture trends well
+                if model_type == 'price':
+                    # For price prediction in steady trend regimes, LSTM works well
+                    base_model = LSTMModel(
+                        sequence_length=10,
+                        units=50,
+                        dropout=0.2
+                    )
+                    param_grid = {
+                        'sequence_length': [5, 10, 15],
+                        'units': [30, 50, 70],
+                        'dropout': [0.1, 0.2, 0.3]
+                    }
+                    logger.info(f"Selected LSTMModel for {self.stock_symbol} (steady trend regime)")
+                    return base_model, param_grid, 'neg_mean_squared_error'
+                else:  # signal model
+                    # For signal prediction in steady trend regimes, gradient boosting works well
+                    base_model = xgb.XGBClassifier(
+                        n_estimators=100,
+                        learning_rate=0.1,
+                        max_depth=3
+                    )
+                    param_grid = {
+                        'n_estimators': [50, 100, 200],
+                        'learning_rate': [0.05, 0.1, 0.2],
+                        'max_depth': [2, 3, 4]
+                    }
+                    logger.info(f"Selected XGBClassifier for {self.stock_symbol} (steady trend regime)")
+                    return base_model, param_grid, 'f1_weighted'
+
+            elif regime_type == 'low_volatility_sideways':
+                # For low volatility sideways regimes, use simpler models
+                if model_type == 'price':
+                    # For price prediction in low volatility sideways regimes, linear models work well
+                    base_model = LinearRegression()
+                    param_grid = {}  # Linear regression doesn't have hyperparameters to tune
+                    logger.info(f"Selected LinearRegression for {self.stock_symbol} (low volatility sideways regime)")
+                    return base_model, param_grid, 'neg_mean_squared_error'
+                else:  # signal model
+                    # For signal prediction in low volatility sideways regimes, logistic regression works well
+                    base_model = LogisticRegression(C=1.0)
+                    param_grid = {
+                        'C': [0.1, 0.5, 1.0, 2.0, 5.0]
+                    }
+                    logger.info(f"Selected LogisticRegression for {self.stock_symbol} (low volatility sideways regime)")
+                    return base_model, param_grid, 'f1_weighted'
+
+            # If regime-specific model selection didn't return a model, fall back to the default selection
             if model_type == 'price':
                 # For price prediction
-                if data_size < 100:
-                    # For small datasets, simpler models work better
-                    base_model = LinearRegression()
-                    param_grid = {}
-                    logger.info(f"Selected LinearRegression for {self.stock_symbol} (small dataset)")
-                elif volatility > 0.4:  # High volatility
-                    # For high volatility stocks, gradient boosting works well
-                    base_model = GradientBoostingRegressor(random_state=42)
-                    param_grid = {
-                        'n_estimators': [100, 200, 300],
-                        'learning_rate': [0.01, 0.05, 0.1],
-                        'max_depth': [3, 4, 5],
-                        'subsample': [0.8, 0.9, 1.0]
-                    }
-                    logger.info(f"Selected GradientBoostingRegressor for {self.stock_symbol} (high volatility)")
-                elif trend_strength > 0.01:  # Strong trend
-                    # For trending stocks, XGBoost works well
-                    base_model = xgb.XGBRegressor(random_state=42, objective='reg:squarederror')
-                    param_grid = {
-                        'n_estimators': [100, 200, 300],
-                        'learning_rate': [0.01, 0.05, 0.1, 0.2],
-                        'max_depth': [3, 4, 5, 6],
-                        'subsample': [0.8, 0.9, 1.0],
-                        'colsample_bytree': [0.8, 0.9, 1.0]
-                    }
-                    logger.info(f"Selected XGBRegressor for {self.stock_symbol} (strong trend)")
-                else:
-                    # Default case - ensemble of models
-                    lr = LinearRegression()
-                    gbr = GradientBoostingRegressor(random_state=42, n_estimators=100)
-                    xgbr = xgb.XGBRegressor(random_state=42, objective='reg:squarederror', n_estimators=100)
 
-                    base_model = VotingRegressor([
-                        ('lr', lr),
-                        ('gbr', gbr),
-                        ('xgbr', xgbr)
-                    ])
-                    param_grid = {}  # No hyperparameter tuning for ensemble
-                    logger.info(f"Selected VotingRegressor ensemble for {self.stock_symbol}")
+                # Check if we have enough data for deep learning models
+                if data_size >= 500:
+                    # For stocks with strong seasonality, Prophet works well
+                    if has_seasonality and seasonality_strength > 0.3:
+                        base_model = ProphetModel(
+                            changepoint_prior_scale=0.05,
+                            seasonality_mode='additive',
+                            prediction_horizon=self.prediction_days
+                        )
+                        param_grid = {
+                            'changepoint_prior_scale': [0.01, 0.05, 0.1],
+                            'seasonality_mode': ['additive', 'multiplicative']
+                        }
+                        logger.info(f"Selected ProphetModel for {self.stock_symbol} (seasonal patterns)")
+
+                    # For stocks with complex patterns and enough data, NeuralProphet works well
+                    elif data_size >= 500 and (has_seasonality or volatility > 0.25):
+                        base_model = NeuralProphetModel(
+                            n_changepoints=10,
+                            yearly_seasonality=True,
+                            weekly_seasonality=True,
+                            prediction_horizon=self.prediction_days
+                        )
+                        param_grid = {
+                            'n_changepoints': [5, 10, 20],
+                            'yearly_seasonality': [True, False],
+                            'weekly_seasonality': [True, False]
+                        }
+                        logger.info(f"Selected NeuralProphetModel for {self.stock_symbol} (complex patterns)")
+
+                    # For stocks with strong seasonality or cyclical patterns, Transformer models work well
+                    elif has_seasonality and seasonality_strength > 0.4:
+                        base_model = TransformerModel(
+                            sequence_length=20,
+                            embed_dim=32,
+                            num_heads=2,
+                            dropout=0.2
+                        )
+                        param_grid = {
+                            'sequence_length': [10, 20, 30],
+                            'embed_dim': [16, 32, 64],
+                            'num_heads': [1, 2, 4],
+                            'dropout': [0.1, 0.2, 0.3]
+                        }
+                        logger.info(f"Selected TransformerModel for {self.stock_symbol} (seasonal patterns)")
+
+                    # For stocks with high volatility, LSTM models work well
+                    elif volatility > 0.3:
+                        base_model = LSTMModel(
+                            sequence_length=20,
+                            units=50,
+                            dropout=0.2
+                        )
+                        param_grid = {
+                            'sequence_length': [10, 20, 30],
+                            'units': [32, 50, 64],
+                            'dropout': [0.1, 0.2, 0.3]
+                        }
+                        logger.info(f"Selected LSTMModel for {self.stock_symbol} (high volatility)")
+
+                    # For stocks with both technical and fundamental factors, hybrid models work well
+                    elif data_size >= 1000:
+                        base_model = HybridModel(
+                            technical_model='lstm' if volatility > 0.2 else 'transformer',
+                            sequence_length=20
+                        )
+                        param_grid = {
+                            'sequence_length': [10, 20, 30],
+                            'technical_model': ['lstm', 'transformer'],
+                            'fundamental_weight': [0.2, 0.3, 0.4]
+                        }
+                        logger.info(f"Selected HybridModel for {self.stock_symbol} (large dataset)")
+
+                    # Default to traditional models for other cases
+                    else:
+                        if data_size < 100:
+                            # For small datasets, simpler models work better
+                            base_model = LinearRegression()
+                            param_grid = {}
+                            logger.info(f"Selected LinearRegression for {self.stock_symbol} (small dataset)")
+                        elif volatility > 0.4:  # High volatility
+                            # For high volatility stocks, gradient boosting works well
+                            base_model = GradientBoostingRegressor(random_state=42)
+                            param_grid = {
+                                'n_estimators': [100, 200, 300],
+                                'learning_rate': [0.01, 0.05, 0.1],
+                                'max_depth': [3, 4, 5],
+                                'subsample': [0.8, 0.9, 1.0]
+                            }
+                            logger.info(f"Selected GradientBoostingRegressor for {self.stock_symbol} (high volatility)")
+                        elif trend_strength > 0.01:  # Strong trend
+                            # For trending stocks, XGBoost works well
+                            base_model = xgb.XGBRegressor(random_state=42, objective='reg:squarederror')
+                            param_grid = {
+                                'n_estimators': [100, 200, 300],
+                                'learning_rate': [0.01, 0.05, 0.1, 0.2],
+                                'max_depth': [3, 4, 5, 6],
+                                'subsample': [0.8, 0.9, 1.0],
+                                'colsample_bytree': [0.8, 0.9, 1.0]
+                            }
+                            logger.info(f"Selected XGBRegressor for {self.stock_symbol} (strong trend)")
+                        else:
+                            # Default case - ensemble of models
+                            lr = LinearRegression()
+                            gbr = GradientBoostingRegressor(random_state=42, n_estimators=100)
+                            xgbr = xgb.XGBRegressor(random_state=42, objective='reg:squarederror', n_estimators=100)
+
+                            base_model = VotingRegressor([
+                                ('lr', lr),
+                                ('gbr', gbr),
+                                ('xgbr', xgbr)
+                            ])
+                            param_grid = {}  # No hyperparameter tuning for ensemble
+                            logger.info(f"Selected VotingRegressor ensemble for {self.stock_symbol}")
+                else:
+                    # For small datasets, simpler models work better
+                    if data_size < 100:
+                        base_model = LinearRegression()
+                        param_grid = {}
+                        logger.info(f"Selected LinearRegression for {self.stock_symbol} (small dataset)")
+                    elif volatility > 0.4:  # High volatility
+                        # For high volatility stocks, gradient boosting works well
+                        base_model = GradientBoostingRegressor(random_state=42)
+                        param_grid = {
+                            'n_estimators': [100, 200, 300],
+                            'learning_rate': [0.01, 0.05, 0.1],
+                            'max_depth': [3, 4, 5],
+                            'subsample': [0.8, 0.9, 1.0]
+                        }
+                        logger.info(f"Selected GradientBoostingRegressor for {self.stock_symbol} (high volatility)")
+                    elif trend_strength > 0.01:  # Strong trend
+                        # For trending stocks, XGBoost works well
+                        base_model = xgb.XGBRegressor(random_state=42, objective='reg:squarederror')
+                        param_grid = {
+                            'n_estimators': [100, 200, 300],
+                            'learning_rate': [0.01, 0.05, 0.1, 0.2],
+                            'max_depth': [3, 4, 5, 6],
+                            'subsample': [0.8, 0.9, 1.0],
+                            'colsample_bytree': [0.8, 0.9, 1.0]
+                        }
+                        logger.info(f"Selected XGBRegressor for {self.stock_symbol} (strong trend)")
+                    else:
+                        # Default case - ensemble of models
+                        lr = LinearRegression()
+                        gbr = GradientBoostingRegressor(random_state=42, n_estimators=100)
+                        xgbr = xgb.XGBRegressor(random_state=42, objective='reg:squarederror', n_estimators=100)
+
+                        base_model = VotingRegressor([
+                            ('lr', lr),
+                            ('gbr', gbr),
+                            ('xgbr', xgbr)
+                        ])
+                        param_grid = {}  # No hyperparameter tuning for ensemble
+                        logger.info(f"Selected VotingRegressor ensemble for {self.stock_symbol}")
 
                 scoring = 'neg_mean_squared_error'
 
             else:  # signal model
                 # For signal prediction
-                if data_size < 100:
+
+                # Check if we have enough data for reinforcement learning
+                if data_size >= 1000 and volatility > 0.25:
+                    # For stocks with high volatility and enough data, RL works well for trading signals
+                    base_model = RLTradingModel(
+                        state_size=20,
+                        train_episodes=100
+                    )
+                    param_grid = {
+                        'state_size': [10, 20, 30],
+                        'gamma': [0.9, 0.95, 0.99],
+                        'train_episodes': [50, 100, 150]
+                    }
+                    logger.info(f"Selected RLTradingModel for {self.stock_symbol} (large dataset with volatility)")
+                elif data_size < 100:
                     # For small datasets, logistic regression works better
                     base_model = LogisticRegression(random_state=42, class_weight='balanced')
                     param_grid = {
@@ -2099,6 +4222,24 @@ class MLPredictor:
         """
         try:
             print(f"DEBUG: Starting prediction for {self.stock_symbol}")
+
+            # Detect current market regime
+            current_regime = self.detect_market_regime()
+            regime_type = current_regime.get('regime_type', 'unknown') if current_regime else 'unknown'
+            regime_name = current_regime.get('regime_name', 'Unknown') if current_regime else 'Unknown'
+
+            logger.info(f"Current market regime for {self.stock_symbol}: {regime_name} ({regime_type})")
+
+            # Check if we need to retrain models based on the current regime
+            if hasattr(self, 'last_regime_type') and self.last_regime_type != regime_type:
+                logger.info(f"Market regime changed from {self.last_regime_type} to {regime_type}. Retraining models.")
+                # Retrain models for the new regime
+                self.price_model = self._train_model('price')
+                self.signal_model = self._train_model('signal')
+
+            # Store current regime type for future comparisons
+            self.last_regime_type = regime_type
+
             X, _, _ = self.prepare_data()
 
             if X is None:
@@ -2690,6 +4831,11 @@ class MLPredictor:
                 if os.path.exists(calibration_plot_path):
                     uncertainty_info['calibration_plot'] = f'/static/images/calibration/{self.stock_symbol}_calibration.png'
 
+            # Get regime visualization path if available
+            regime_visualization_path = None
+            if current_regime and 'visualization_path' in current_regime:
+                regime_visualization_path = current_regime['visualization_path']
+
             result = {
                 'stock_symbol': self.stock_symbol,
                 'current_price': current_price,
@@ -2700,7 +4846,13 @@ class MLPredictor:
                 'prediction_days': self.prediction_days,
                 'adaptive_thresholds': volatility_info,
                 'feature_importance': feature_importance_summary,
-                'uncertainty': uncertainty_info
+                'uncertainty': uncertainty_info,
+                'market_regime': {
+                    'regime_type': regime_type,
+                    'regime_name': regime_name,
+                    'visualization_path': regime_visualization_path,
+                    'details': current_regime
+                }
             }
 
             print(
@@ -2713,6 +4865,253 @@ class MLPredictor:
         except Exception as e:
             logger.error(f"Error making prediction for {self.stock_symbol}: {str(e)}")
             return None
+
+    def perform_seasonal_decomposition(self, data=None):
+        """
+        Perform seasonal decomposition of time series data
+
+        Args:
+            data (pd.DataFrame, optional): Data to decompose. If None, uses stock data from database.
+
+        Returns:
+            dict: Dictionary containing trend, seasonal, and residual components
+        """
+        try:
+            from statsmodels.tsa.seasonal import seasonal_decompose
+        except ImportError:
+            raise ImportError("statsmodels is not installed. Install it with: pip install statsmodels")
+
+        # Get data if not provided
+        if data is None:
+            stock = Stock.objects.get(symbol=self.stock_symbol)
+            data = pd.DataFrame(list(StockData.objects.filter(stock=stock).order_by('date').values()))
+
+            # Ensure numeric conversion
+            for col in ['open_price', 'high_price', 'low_price', 'close_price', 'volume']:
+                data[col] = data[col].astype(float)
+
+        # Convert to time series with date index
+        if 'date' in data.columns:
+            data = data.set_index('date')
+
+        # Perform decomposition on close price
+        if 'close_price' in data.columns:
+            # Determine period based on data frequency
+            if len(data) >= 365:  # Daily data with at least a year
+                period = 252  # Approximate number of trading days in a year
+            elif len(data) >= 30:  # Daily data with at least a month
+                period = 21   # Approximate number of trading days in a month
+            else:
+                period = 7    # Weekly pattern
+
+            # Perform decomposition
+            decomposition = seasonal_decompose(
+                data['close_price'], 
+                model='additive', 
+                period=period,
+                extrapolate_trend='freq'
+            )
+
+            # Create visualization
+            plt.figure(figsize=(12, 10))
+
+            plt.subplot(411)
+            plt.plot(decomposition.observed)
+            plt.title('Observed')
+            plt.grid(True)
+
+            plt.subplot(412)
+            plt.plot(decomposition.trend)
+            plt.title('Trend')
+            plt.grid(True)
+
+            plt.subplot(413)
+            plt.plot(decomposition.seasonal)
+            plt.title('Seasonal')
+            plt.grid(True)
+
+            plt.subplot(414)
+            plt.plot(decomposition.resid)
+            plt.title('Residual')
+            plt.grid(True)
+
+            plt.tight_layout()
+
+            # Save the plot
+            decomposition_plot_path = os.path.join('static', 'images', 'decomposition')
+            os.makedirs(decomposition_plot_path, exist_ok=True)
+            plt.savefig(os.path.join(decomposition_plot_path, f'{self.stock_symbol}_decomposition.png'))
+            plt.close()
+
+            return {
+                'observed': decomposition.observed.values,
+                'trend': decomposition.trend.values,
+                'seasonal': decomposition.seasonal.values,
+                'residual': decomposition.resid.values,
+                'dates': decomposition.observed.index.values,
+                'visualization_path': f'/static/images/decomposition/{self.stock_symbol}_decomposition.png'
+            }
+        else:
+            return None
+
+    def analyze_trend(self, data=None):
+        """
+        Analyze trend strength and direction
+
+        Args:
+            data (pd.DataFrame, optional): Data to analyze. If None, uses stock data from database.
+
+        Returns:
+            dict: Dictionary containing trend analysis results
+        """
+        # Get data if not provided
+        if data is None:
+            stock = Stock.objects.get(symbol=self.stock_symbol)
+            data = pd.DataFrame(list(StockData.objects.filter(stock=stock).order_by('date').values()))
+
+            # Ensure numeric conversion
+            for col in ['open_price', 'high_price', 'low_price', 'close_price', 'volume']:
+                data[col] = data[col].astype(float)
+
+        # Convert to time series with date index if needed
+        if 'date' in data.columns:
+            data = data.set_index('date')
+
+        # Analyze trend using linear regression
+        if 'close_price' in data.columns:
+            # Add time index
+            data['time_idx'] = np.arange(len(data))
+
+            # Fit linear regression to detect overall trend
+            trend_model = LinearRegression()
+            X_trend = data['time_idx'].values.reshape(-1, 1)
+            y_trend = data['close_price'].values
+            trend_model.fit(X_trend, y_trend)
+
+            # Calculate trend metrics
+            trend_slope = trend_model.coef_[0]
+            trend_direction = "upward" if trend_slope > 0 else "downward"
+            trend_strength = abs(trend_slope) / data['close_price'].mean()
+
+            # Calculate R-squared to measure trend strength
+            y_pred = trend_model.predict(X_trend)
+            r_squared = r2_score(y_trend, y_pred)
+
+            # Analyze short-term vs long-term trends
+            if len(data) >= 200:
+                # Short-term trend (last 30 days)
+                short_term_data = data.iloc[-30:]
+                short_term_data['time_idx'] = np.arange(len(short_term_data))
+
+                short_term_model = LinearRegression()
+                X_short = short_term_data['time_idx'].values.reshape(-1, 1)
+                y_short = short_term_data['close_price'].values
+                short_term_model.fit(X_short, y_short)
+
+                short_term_slope = short_term_model.coef_[0]
+                short_term_direction = "upward" if short_term_slope > 0 else "downward"
+
+                # Medium-term trend (last 90 days)
+                medium_term_data = data.iloc[-90:]
+                medium_term_data['time_idx'] = np.arange(len(medium_term_data))
+
+                medium_term_model = LinearRegression()
+                X_medium = medium_term_data['time_idx'].values.reshape(-1, 1)
+                y_medium = medium_term_data['close_price'].values
+                medium_term_model.fit(X_medium, y_medium)
+
+                medium_term_slope = medium_term_model.coef_[0]
+                medium_term_direction = "upward" if medium_term_slope > 0 else "downward"
+
+                # Trend consistency
+                trend_consistency = "consistent" if (
+                    (trend_slope > 0 and short_term_slope > 0 and medium_term_slope > 0) or
+                    (trend_slope < 0 and short_term_slope < 0 and medium_term_slope < 0)
+                ) else "inconsistent"
+
+                # Create visualization
+                plt.figure(figsize=(12, 8))
+
+                # Plot price and trends
+                plt.plot(data.index, data['close_price'], label='Close Price')
+                plt.plot(data.index, y_pred, 'r--', label='Long-term Trend')
+
+                # Plot short and medium term trends
+                short_term_pred = short_term_model.predict(X_short)
+                medium_term_pred = medium_term_model.predict(X_medium)
+
+                plt.plot(short_term_data.index, short_term_pred, 'g--', label='Short-term Trend (30 days)')
+                plt.plot(medium_term_data.index, medium_term_pred, 'b--', label='Medium-term Trend (90 days)')
+
+                plt.title(f'Trend Analysis for {self.stock_symbol}')
+                plt.xlabel('Date')
+                plt.ylabel('Price')
+                plt.legend()
+                plt.grid(True)
+
+                # Save the plot
+                trend_plot_path = os.path.join('static', 'images', 'trends')
+                os.makedirs(trend_plot_path, exist_ok=True)
+                plt.savefig(os.path.join(trend_plot_path, f'{self.stock_symbol}_trend_analysis.png'))
+                plt.close()
+
+                return {
+                    'overall_trend_direction': trend_direction,
+                    'overall_trend_strength': float(trend_strength),
+                    'overall_trend_slope': float(trend_slope),
+                    'r_squared': float(r_squared),
+                    'short_term_direction': short_term_direction,
+                    'short_term_slope': float(short_term_slope),
+                    'medium_term_direction': medium_term_direction,
+                    'medium_term_slope': float(medium_term_slope),
+                    'trend_consistency': trend_consistency,
+                    'visualization_path': f'/static/images/trends/{self.stock_symbol}_trend_analysis.png'
+                }
+            else:
+                # For shorter time series, just return the overall trend
+                return {
+                    'overall_trend_direction': trend_direction,
+                    'overall_trend_strength': float(trend_strength),
+                    'overall_trend_slope': float(trend_slope),
+                    'r_squared': float(r_squared)
+                }
+        else:
+            return None
+
+    def predict_multiple_horizons(self, horizons=[5, 10, 30], use_feature_importance=True, feature_importance_threshold=0.01):
+        """
+        Make predictions for multiple time horizons
+
+        Args:
+            horizons (list): List of time horizons (in days) to predict
+            use_feature_importance (bool): If True, analyze feature importance and use only important features
+            feature_importance_threshold (float): Threshold for feature importance analysis
+
+        Returns:
+            dict: Dictionary of predictions for each horizon
+        """
+        results = {}
+
+        for horizon in horizons:
+            # Store original prediction days
+            original_prediction_days = self.prediction_days
+
+            # Set prediction days to current horizon
+            self.prediction_days = horizon
+
+            # Make prediction for this horizon
+            prediction = self.predict(
+                use_feature_importance=use_feature_importance,
+                feature_importance_threshold=feature_importance_threshold
+            )
+
+            if prediction:
+                results[horizon] = prediction
+
+            # Restore original prediction days
+            self.prediction_days = original_prediction_days
+
+        return results
 
     def _save_prediction(self, prediction):
         """Save the prediction to the database"""

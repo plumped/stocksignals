@@ -85,6 +85,27 @@ def stock_detail(request, symbol):
     # Neueste ML-Vorhersage abrufen
     latest_ml_prediction = MLPrediction.objects.filter(stock=stock).order_by('-date').first()
 
+    # Market Regime Information hinzufügen, wenn ML-Vorhersage vorhanden ist
+    if latest_ml_prediction:
+        # Get the latest MLModelMetrics for this stock
+        latest_metrics = MLModelMetrics.objects.filter(stock=stock).order_by('-date').first()
+
+        # Add market regime information if available
+        if latest_metrics and latest_metrics.market_regimes:
+            latest_ml_prediction.market_regime = {
+                'regime_type': latest_metrics.market_regimes.get('current_regime', {}).get('regime_type', 'unknown'),
+                'regime_name': latest_metrics.market_regimes.get('current_regime', {}).get('regime_name', 'Unknown'),
+                'visualization_path': latest_metrics.market_regimes.get('visualization_path', None),
+                'details': latest_metrics.market_regimes
+            }
+        else:
+            latest_ml_prediction.market_regime = {
+                'regime_type': 'unknown',
+                'regime_name': 'Unbekannt',
+                'visualization_path': None,
+                'details': {}
+            }
+
     # Prüfen, ob die Aktie in einer der Watchlists des Benutzers ist
     in_watchlist = WatchList.objects.filter(user=request.user,
                                             stocks=stock).exists() if request.user.is_authenticated else False
@@ -145,6 +166,14 @@ def generate_ml_prediction(request, symbol):
             # Feature-Wichtigkeit hinzufügen, wenn vorhanden
             if 'feature_importance' in prediction and prediction['feature_importance']:
                 response_data['prediction']['feature_importance'] = prediction['feature_importance']
+
+            # Market Regime Information hinzufügen, wenn vorhanden
+            if 'market_regime' in prediction and prediction['market_regime']:
+                response_data['prediction']['market_regime'] = prediction['market_regime']
+
+            # Uncertainty Information hinzufügen, wenn vorhanden
+            if 'uncertainty' in prediction and prediction['uncertainty']:
+                response_data['prediction']['uncertainty'] = prediction['uncertainty']
 
             return JsonResponse(response_data)
         else:
@@ -1260,6 +1289,33 @@ def ml_dashboard(request):
         recommendation='SELL', confidence__gte=0.6
     ).order_by('predicted_return')[:10]
 
+    # Add market regime information to predictions
+    def add_market_regime_to_prediction(prediction):
+        # Get the latest MLModelMetrics for this stock
+        latest_metrics = MLModelMetrics.objects.filter(stock=prediction.stock).order_by('-date').first()
+
+        # Add market regime information if available
+        if latest_metrics and latest_metrics.market_regimes:
+            prediction.market_regime = {
+                'regime_type': latest_metrics.market_regimes.get('current_regime', {}).get('regime_type', 'unknown'),
+                'regime_name': latest_metrics.market_regimes.get('current_regime', {}).get('regime_name', 'Unknown'),
+                'visualization_path': latest_metrics.market_regimes.get('visualization_path', None),
+                'details': latest_metrics.market_regimes
+            }
+        else:
+            prediction.market_regime = {
+                'regime_type': 'unknown',
+                'regime_name': 'Unbekannt',
+                'visualization_path': None,
+                'details': {}
+            }
+        return prediction
+
+    # Convert querysets to lists and add market regime information
+    latest_predictions_list = [add_market_regime_to_prediction(prediction) for prediction in latest_predictions]
+    top_buy_predictions_list = [add_market_regime_to_prediction(prediction) for prediction in top_buy_predictions]
+    top_sell_predictions_list = [add_market_regime_to_prediction(prediction) for prediction in top_sell_predictions]
+
     # ML model metrics
     metrics = MLModelMetrics.objects.order_by('-date')[:10]
     symbols = [m.stock.symbol for m in metrics if m.accuracy is not None]
@@ -1338,11 +1394,11 @@ def ml_dashboard(request):
 
     return render(request, 'stock_analyzer/ml_dashboard.html', {
         'ml_stats': ml_stats,
-        'top_buy_predictions': top_buy_predictions,
-        'top_sell_predictions': top_sell_predictions,
+        'top_buy_predictions': top_buy_predictions_list,
+        'top_sell_predictions': top_sell_predictions_list,
         'performance_data': performance_data,
         'stocks_with_data': stocks_with_data,
-        'latest_predictions': ml_predictions  # <--- DAS FEHLTE
+        'latest_predictions': [add_market_regime_to_prediction(p) for p in ml_predictions]
     })
 
 
@@ -2180,6 +2236,7 @@ def api_ml_metrics(request, symbol):
         # Initialize empty dictionaries for the data
         adaptive_thresholds = {}
         feature_importance = {}
+        market_regime = {}
 
         # Calculate adaptive thresholds based on volatility
         try:
@@ -2272,7 +2329,21 @@ def api_ml_metrics(request, symbol):
                 'top_signal_features': {}
             }
 
-            # Extract top price features
+        # Extract market regime information from the metrics
+        if latest_metrics and hasattr(latest_metrics, 'market_regimes') and latest_metrics.market_regimes:
+            # Get the raw market regime data
+            raw_market_regime = latest_metrics.market_regimes
+
+            # Transform it into the format expected by the JavaScript
+            market_regime = {
+                'regime_type': raw_market_regime.get('current_regime', {}).get('regime_type', 'unknown'),
+                'regime_name': raw_market_regime.get('current_regime', {}).get('regime_name', 'Unknown'),
+                'visualization_path': raw_market_regime.get('visualization_path', None),
+                'details': raw_market_regime
+            }
+
+        # Extract top price features
+        if latest_metrics and latest_metrics.feature_importance:
             if 'price' in raw_feature_importance:
                 price_features = raw_feature_importance['price']
                 # Sort by importance and take top 5
@@ -2288,9 +2359,9 @@ def api_ml_metrics(request, symbol):
 
         return JsonResponse({
             'status': 'success',
-            'symbol': symbol,
             'adaptive_thresholds': adaptive_thresholds,
-            'feature_importance': feature_importance
+            'feature_importance': feature_importance,
+            'market_regime': market_regime
         })
 
     except Exception as e:

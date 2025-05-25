@@ -49,6 +49,7 @@
                                 <th>Konfidenz</th>
                                 <th>Erwartete Rendite</th>
                                 <th>Zielkurs</th>
+                                <th>Marktregime</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -59,10 +60,11 @@
                                 <td>{{ prediction.confidence|floatformat:2 }}</td>
                                 <td class="text-success">+{{ prediction.predicted_return|floatformat:2 }}%</td>
                                 <td>{{ prediction.predicted_price|floatformat:2 }}</td>
+                                <td>{{ prediction.market_regime.regime_name|default:"Unbekannt" }}</td>
                             </tr>
                             {% empty %}
                             <tr>
-                                <td colspan="5" class="text-center">Keine ML-Kaufempfehlungen verfügbar</td>
+                                <td colspan="6" class="text-center">Keine ML-Kaufempfehlungen verfügbar</td>
                             </tr>
                             {% endfor %}
                         </tbody>
@@ -89,6 +91,7 @@
                                 <th>Konfidenz</th>
                                 <th>Erwartete Rendite</th>
                                 <th>Zielkurs</th>
+                                <th>Marktregime</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -99,10 +102,11 @@
                                 <td>{{ prediction.confidence|floatformat:2 }}</td>
                                 <td class="text-danger">{{ prediction.predicted_return|floatformat:2 }}%</td>
                                 <td>{{ prediction.predicted_price|floatformat:2 }}</td>
+                                <td>{{ prediction.market_regime.regime_name|default:"Unbekannt" }}</td>
                             </tr>
                             {% empty %}
                             <tr>
-                                <td colspan="5" class="text-center">Keine ML-Verkaufsempfehlungen verfügbar</td>
+                                <td colspan="6" class="text-center">Keine ML-Verkaufsempfehlungen verfügbar</td>
                             </tr>
                             {% endfor %}
                         </tbody>
@@ -162,6 +166,7 @@
                             <th>Erwartete Rendite</th>
                             <th>Zielkurs</th>
                             <th>Konfidenz</th>
+                            <th>Marktregime</th>
                             <th>Datum</th>
                           </tr>
                         </thead>
@@ -175,6 +180,7 @@
                             </td>
                             <td>{{ p.predicted_price|floatformat:2 }}</td>
                             <td>{{ p.confidence|floatformat:2 }}</td>
+                            <td>{{ p.market_regime.regime_name|default:"Unbekannt" }}</td>
                             <td>{{ p.date }}</td>
                           </tr>
                           {% endfor %}
@@ -417,7 +423,7 @@
                     if (data.status === 'success') {
                         let html = '<div class="alert alert-success">ML-Vorhersagen erfolgreich generiert!</div>';
                         html += '<div class="table-responsive mt-3"><table class="table table-sm table-striped">';
-                        html += '<thead><tr><th>Symbol</th><th>Status</th><th>Empfehlung</th><th>Erwartete Rendite</th><th>Konfidenz</th></tr></thead>';
+                        html += '<thead><tr><th>Symbol</th><th>Status</th><th>Empfehlung</th><th>Erwartete Rendite</th><th>Konfidenz</th><th>Marktregime</th></tr></thead>';
                         html += '<tbody>';
 
                         for (const [symbol, result] of Object.entries(data.results)) {
@@ -429,12 +435,15 @@
 
                                 const icon = signalColor === 'green' ? '🟢' : signalColor === 'yellow' ? '🟡' : '🔴';
 
+                                const regimeName = prediction.market_regime && prediction.market_regime.regime_name ? prediction.market_regime.regime_name : 'Unbekannt';
+
                                 html += `<tr>
                                     <td>${symbol} <span style="margin-left: 5px;">${icon}</span></td>
                                     <td><span class="badge bg-success">Erfolgreich</span></td>
                                     <td>${prediction.recommendation}</td>
                                     <td class="${returnClass}">${returnSign}${prediction.predicted_return.toFixed(2)}%</td>
                                     <td>${prediction.confidence.toFixed(2)}</td>
+                                    <td>${regimeName}</td>
                                 </tr>`;
                             }
                         }
