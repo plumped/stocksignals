@@ -552,6 +552,8 @@
                 </div>
             </div>
             {% include 'stock_analyzer/ml_prediction_card.html' with ml_prediction=ml_prediction %}
+
+            {% include 'stock_analyzer/sentiment_analysis_card.html' with sentiment_data=sentiment_data %}
         </div>
     </div>
 </div>

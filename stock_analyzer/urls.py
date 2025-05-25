@@ -64,4 +64,7 @@ urlpatterns = [
     # Portfolio Performance
     path('portfolio/<int:portfolio_id>/performance/', views.portfolio_performance, name='portfolio_performance'),
 
+    # Sentiment Analysis
+    path('generate_sentiment_analysis/<str:symbol>/', views.generate_sentiment_analysis, name='generate_sentiment_analysis'),
+
 ]

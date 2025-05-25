@@ -1,6 +1,7 @@
 # stock_analyzer/views.py
 import json
 import os
+import logging
 from decimal import Decimal
 
 import pandas as pd
@@ -13,6 +14,7 @@ from .forms import UserProfileForm
 from .market_analysis import MarketAnalyzer, TraditionalAnalyzer
 from .ml_backtesting import MLBacktester, compare_ml_models
 from .ml_models import MLPredictor, AdaptiveAnalyzer
+from .sentiment_analyzer import SentimentAnalyzer
 from .models import Stock, StockData, AnalysisResult, WatchList, UserProfile, MLPrediction, MLModelMetrics, Portfolio, \
     Trade, Position
 from .data_service import StockDataService
@@ -22,6 +24,9 @@ from django.http import HttpResponse
 from django.contrib import messages
 from datetime import datetime, timedelta, date
 from django.db.models import OuterRef, Subquery, Avg, Count, Max, Q
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 
 def index(request):
@@ -85,11 +90,11 @@ def stock_detail(request, symbol):
     # Neueste ML-Vorhersage abrufen
     latest_ml_prediction = MLPrediction.objects.filter(stock=stock).order_by('-date').first()
 
+    # Get the latest MLModelMetrics for this stock
+    latest_metrics = MLModelMetrics.objects.filter(stock=stock).order_by('-date').first()
+
     # Market Regime Information hinzufügen, wenn ML-Vorhersage vorhanden ist
     if latest_ml_prediction:
-        # Get the latest MLModelMetrics for this stock
-        latest_metrics = MLModelMetrics.objects.filter(stock=stock).order_by('-date').first()
-
         # Add market regime information if available
         if latest_metrics and latest_metrics.market_regimes:
             latest_ml_prediction.market_regime = {
@@ -106,6 +111,11 @@ def stock_detail(request, symbol):
                 'details': {}
             }
 
+    # Sentiment-Daten abrufen, wenn verfügbar
+    sentiment_data = None
+    if latest_metrics and hasattr(latest_metrics, 'sentiment_data') and latest_metrics.sentiment_data:
+        sentiment_data = latest_metrics.sentiment_data
+
     # Prüfen, ob die Aktie in einer der Watchlists des Benutzers ist
     in_watchlist = WatchList.objects.filter(user=request.user,
                                             stocks=stock).exists() if request.user.is_authenticated else False
@@ -115,6 +125,7 @@ def stock_detail(request, symbol):
         'historical_data': historical_data,
         'latest_analysis': latest_analysis,
         'ml_prediction': latest_ml_prediction,
+        'sentiment_data': sentiment_data,
         'in_watchlist': in_watchlist
     }
 
@@ -175,6 +186,29 @@ def generate_ml_prediction(request, symbol):
             if 'uncertainty' in prediction and prediction['uncertainty']:
                 response_data['prediction']['uncertainty'] = prediction['uncertainty']
 
+            # Sentiment Information hinzufügen, wenn vorhanden
+            if 'sentiment' in prediction and prediction['sentiment']:
+                response_data['prediction']['sentiment'] = prediction['sentiment']
+
+                # Update sentiment_data in MLModelMetrics
+                try:
+                    metrics, created = MLModelMetrics.objects.get_or_create(
+                        stock=stock,
+                        date=datetime.now().date(),
+                        defaults={
+                            'accuracy': 0.0,
+                            'rmse': 0.0
+                        }
+                    )
+
+                    # Update sentiment_data if it doesn't exist or if it's being updated
+                    if not metrics.sentiment_data or not created:
+                        metrics.sentiment_data = prediction['sentiment']
+                        metrics.save()
+                        logger.info(f"Updated sentiment data for {symbol}")
+                except Exception as e:
+                    logger.error(f"Error updating sentiment data for {symbol}: {str(e)}")
+
             return JsonResponse(response_data)
         else:
             return JsonResponse({
@@ -189,6 +223,73 @@ def generate_ml_prediction(request, symbol):
             'status': 'error',
             'message': f'Fehler bei der ML-Vorhersage: {str(e)}'
         })
+
+
+def generate_sentiment_analysis(request, symbol):
+    """Generiert eine Sentiment-Analyse für eine bestimmte Aktie"""
+    try:
+        # Log the request
+        logger.info(f"Generating sentiment analysis for {symbol}")
+
+        # Versuchen, die Aktie zu laden
+        stock = get_object_or_404(Stock, symbol=symbol.upper())
+        logger.info(f"Found stock: {stock.symbol} - {stock.name}")
+
+        # Prüfen, ob die Aktie genügend Daten hat
+        data_count = StockData.objects.filter(stock=stock).count()
+        logger.info(f"Stock data count: {data_count}")
+
+        if data_count < 30:
+            logger.warning(f"Not enough data for sentiment analysis: {data_count} < 30")
+            return JsonResponse({
+                'status': 'error',
+                'message': 'Nicht genügend historische Daten für eine Sentiment-Analyse (mindestens 30 Tage erforderlich)'
+            })
+
+        # Sentiment-Analyse generieren
+        logger.info(f"Creating SentimentAnalyzer for {symbol}")
+        analyzer = SentimentAnalyzer(symbol)
+
+        logger.info(f"Analyzing sentiment for {symbol}")
+        sentiment_data = analyzer.analyze_sentiment()
+
+        if sentiment_data is None:
+            logger.error(f"Sentiment analysis returned None for {symbol}")
+            return JsonResponse({
+                'status': 'error',
+                'message': 'Sentiment-Analyse konnte nicht generiert werden'
+            })
+
+        logger.info(f"Sentiment data generated successfully for {symbol}")
+
+        # Sentiment-Daten in der Datenbank speichern
+        logger.info(f"Saving sentiment data for {symbol}")
+        success = analyzer.save_sentiment_data()
+
+        if success:
+            logger.info(f"Sentiment data saved successfully for {symbol}")
+            return JsonResponse({
+                'status': 'success',
+                'message': 'Sentiment-Analyse erfolgreich generiert'
+            })
+        else:
+            logger.error(f"Failed to save sentiment data for {symbol}")
+            return JsonResponse({
+                'status': 'error',
+                'message': 'Fehler beim Speichern der Sentiment-Analyse'
+            })
+
+    except Exception as e:
+        import traceback
+        error_traceback = traceback.format_exc()
+        logger.error(f"Error in generate_sentiment_analysis for {symbol}: {str(e)}")
+        logger.error(f"Traceback: {error_traceback}")
+
+        # Ensure we always return a JSON response
+        return JsonResponse({
+            'status': 'error',
+            'message': f'Fehler bei der Sentiment-Analyse: {str(e)}'
+        }, status=500)
 
 
 def analyze_stock(request, symbol):

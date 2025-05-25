@@ -82,6 +82,82 @@
                 </div>
             </div>
 
+            <!-- Advanced ML Models Section -->
+            <div class="mt-2">
+                <button class="btn btn-sm btn-outline-secondary w-100 mb-2" type="button" data-bs-toggle="collapse" data-bs-target="#advancedModels" aria-expanded="false" aria-controls="advancedModels">
+                    <i class="bi bi-cpu"></i> Erweiterte ML-Modelle anzeigen
+                </button>
+                <div class="collapse" id="advancedModels">
+                    <div class="card card-body bg-light">
+                        <h6 class="card-subtitle mb-2 text-muted">Erweiterte Machine Learning Modelle</h6>
+                        <div id="advanced-models-container">
+                            <div class="d-flex justify-content-between mb-1">
+                                <span>Deep Learning:</span>
+                                <span id="deep-learning-model" class="fw-bold">
+                                    LSTM & Transformer
+                                </span>
+                            </div>
+                            <div class="d-flex justify-content-between mb-1">
+                                <span>Attention Mechanismen:</span>
+                                <span id="attention-mechanism" class="fw-bold">
+                                    Aktiviert
+                                </span>
+                            </div>
+                            <div class="d-flex justify-content-between mb-1">
+                                <span>Hybrid-Modell:</span>
+                                <span id="hybrid-model" class="fw-bold">
+                                    Technisch + Fundamental
+                                </span>
+                            </div>
+                            <div class="d-flex justify-content-between mb-1">
+                                <span>Reinforcement Learning:</span>
+                                <span id="reinforcement-learning" class="fw-bold">
+                                    Adaptive Strategie
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Time Series Modeling Section -->
+            <div class="mt-2">
+                <button class="btn btn-sm btn-outline-secondary w-100 mb-2" type="button" data-bs-toggle="collapse" data-bs-target="#timeSeriesModeling" aria-expanded="false" aria-controls="timeSeriesModeling">
+                    <i class="bi bi-clock-history"></i> Zeitreihenmodellierung anzeigen
+                </button>
+                <div class="collapse" id="timeSeriesModeling">
+                    <div class="card card-body bg-light">
+                        <h6 class="card-subtitle mb-2 text-muted">Zeitreihenmodellierung</h6>
+                        <div id="time-series-container">
+                            <div class="d-flex justify-content-between mb-1">
+                                <span>Modelle:</span>
+                                <span id="time-series-models" class="fw-bold">
+                                    Prophet & NeuralProphet
+                                </span>
+                            </div>
+                            <div class="d-flex justify-content-between mb-1">
+                                <span>Zeithorizonte:</span>
+                                <span id="time-horizons" class="fw-bold">
+                                    Kurz-, Mittel- und Langfristig
+                                </span>
+                            </div>
+                            <div class="d-flex justify-content-between mb-1">
+                                <span>Hierarchische Prognose:</span>
+                                <span id="hierarchical-forecasting" class="fw-bold">
+                                    Aktiviert
+                                </span>
+                            </div>
+                            <div class="d-flex justify-content-between mb-1">
+                                <span>Saisonale Zerlegung:</span>
+                                <span id="seasonal-decomposition" class="fw-bold">
+                                    Trend + Saisonalität + Residuen
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Market Regime Section -->
             <div class="mt-2">
                 <button class="btn btn-sm btn-outline-secondary w-100 mb-2" type="button" data-bs-toggle="collapse" data-bs-target="#marketRegime" aria-expanded="false" aria-controls="marketRegime">
@@ -194,6 +270,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
                     // Update feature importance section
                     updateFeatureImportance(data.prediction.feature_importance);
+
+                    // Update advanced ML models section
+                    updateAdvancedModels(data.prediction.advanced_models);
+
+                    // Update time series modeling section
+                    updateTimeSeriesModeling(data.prediction.time_series_modeling);
 
                     // Reload the page to show the updated prediction
                     window.location.reload();
@@ -308,6 +390,56 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
+    // Function to update advanced ML models display
+    function updateAdvancedModels(advancedModels) {
+        if (!advancedModels) {
+            // Use default values if no data is provided
+            return;
+        }
+
+        // Update advanced ML models information
+        if (advancedModels.deep_learning) {
+            document.getElementById('deep-learning-model').textContent = advancedModels.deep_learning;
+        }
+
+        if (advancedModels.attention_mechanism) {
+            document.getElementById('attention-mechanism').textContent = advancedModels.attention_mechanism;
+        }
+
+        if (advancedModels.hybrid_model) {
+            document.getElementById('hybrid-model').textContent = advancedModels.hybrid_model;
+        }
+
+        if (advancedModels.reinforcement_learning) {
+            document.getElementById('reinforcement-learning').textContent = advancedModels.reinforcement_learning;
+        }
+    }
+
+    // Function to update time series modeling display
+    function updateTimeSeriesModeling(timeSeriesModeling) {
+        if (!timeSeriesModeling) {
+            // Use default values if no data is provided
+            return;
+        }
+
+        // Update time series modeling information
+        if (timeSeriesModeling.models) {
+            document.getElementById('time-series-models').textContent = timeSeriesModeling.models;
+        }
+
+        if (timeSeriesModeling.time_horizons) {
+            document.getElementById('time-horizons').textContent = timeSeriesModeling.time_horizons;
+        }
+
+        if (timeSeriesModeling.hierarchical_forecasting) {
+            document.getElementById('hierarchical-forecasting').textContent = timeSeriesModeling.hierarchical_forecasting;
+        }
+
+        if (timeSeriesModeling.seasonal_decomposition) {
+            document.getElementById('seasonal-decomposition').textContent = timeSeriesModeling.seasonal_decomposition;
+        }
+    }
+
     // Add event listener to the generate ML prediction button
     const generateButton = document.getElementById('generate-ml-prediction');
     if (generateButton) {
@@ -325,6 +457,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     updateAdaptiveThresholds(data.adaptive_thresholds);
                     updateFeatureImportance(data.feature_importance);
                     updateMarketRegime(data.market_regime);
+                    updateAdvancedModels(data.advanced_models);
+                    updateTimeSeriesModeling(data.time_series_modeling);
                     console.log('Successfully loaded ML metrics:', data);
                 } else {
                     console.error('Error in ML metrics response:', data.message);

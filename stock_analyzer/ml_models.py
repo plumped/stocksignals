@@ -2141,6 +2141,9 @@ class MLPredictor:
         # Calculate volatility categories
         df_features = self._calculate_volatility_categories(df_features, feature_config)
 
+        # Add sentiment features if available
+        df_features = self._calculate_sentiment_features(df_features)
+
         # Clean data and handle NaN values
         df_features = self._clean_and_handle_nan(df_features, feature_config)
 
@@ -2638,6 +2641,252 @@ class MLPredictor:
             df = pd.concat([df, pd.DataFrame(new_columns, index=df.index)], axis=1)
 
         return df
+
+    def _calculate_sentiment_features(self, df):
+        """
+        Calculate sentiment-based features using the SentimentAnalyzer.
+
+        Args:
+            df (pd.DataFrame): DataFrame with stock data
+
+        Returns:
+            pd.DataFrame: DataFrame with added sentiment features
+        """
+        try:
+            from .sentiment_analyzer import SentimentAnalyzer
+
+            # Create a SentimentAnalyzer instance
+            analyzer = SentimentAnalyzer(self.stock_symbol)
+
+            # Get sentiment features
+            sentiment_features = analyzer.create_sentiment_features()
+
+            if sentiment_features is not None and not sentiment_features.empty:
+                logger.info(f"Adding sentiment features for {self.stock_symbol}")
+
+                # Merge sentiment features with stock data
+                df_with_dates = df.copy()
+                if 'date' not in df_with_dates.columns and df_with_dates.index.name != 'date':
+                    # If date is not a column or index, try to get it from the database
+                    stock = Stock.objects.get(symbol=self.stock_symbol)
+                    dates = StockData.objects.filter(stock=stock).order_by('date').values_list('date', flat=True)
+                    if len(dates) == len(df_with_dates):
+                        df_with_dates['date'] = dates
+                    else:
+                        logger.warning(f"Date mismatch for {self.stock_symbol}, cannot add sentiment features")
+                        return df
+
+                # Ensure date is in the right format for merging
+                if 'date' in df_with_dates.columns:
+                    df_with_dates['date'] = pd.to_datetime(df_with_dates['date'])
+                    sentiment_features['date'] = pd.to_datetime(sentiment_features['date'])
+
+                    # Merge with stock data
+                    merged_df = pd.merge(df_with_dates, sentiment_features, on='date', how='left')
+
+                    # Fill missing sentiment values with neutral values
+                    for col in sentiment_features.columns:
+                        if col != 'date' and col in merged_df.columns:
+                            if col.startswith('sentiment_compound'):
+                                merged_df[col] = merged_df[col].fillna(0)
+                            elif col.startswith('sentiment_positive'):
+                                merged_df[col] = merged_df[col].fillna(0.33)
+                            elif col.startswith('sentiment_negative'):
+                                merged_df[col] = merged_df[col].fillna(0.33)
+                            elif col.startswith('sentiment_neutral'):
+                                merged_df[col] = merged_df[col].fillna(0.34)
+                            elif col.startswith('sentiment_volume'):
+                                merged_df[col] = merged_df[col].fillna(0)
+                            elif col.startswith('sentiment_momentum'):
+                                merged_df[col] = merged_df[col].fillna(0)
+                            elif col == 'sentiment_regime':
+                                merged_df[col] = merged_df[col].fillna('neutral')
+                            elif col == 'sentiment_price_divergence':
+                                merged_df[col] = merged_df[col].fillna(0)
+                            else:
+                                merged_df[col] = merged_df[col].fillna(0)
+
+                    # Create a visualization of sentiment impact on predictions
+                    self._visualize_sentiment_impact(sentiment_features)
+
+                    return merged_df
+                else:
+                    logger.warning(f"No date column found for {self.stock_symbol}, cannot add sentiment features")
+            else:
+                logger.warning(f"No sentiment features available for {self.stock_symbol}")
+        except Exception as e:
+            logger.error(f"Error calculating sentiment features for {self.stock_symbol}: {str(e)}")
+
+        return df
+
+    def _visualize_sentiment_impact(self, sentiment_df):
+        """
+        Create a visualization of sentiment impact on stock price.
+
+        Args:
+            sentiment_df (pd.DataFrame): DataFrame with sentiment features
+
+        Returns:
+            str: Path to the saved visualization or None if not saved
+        """
+        try:
+            if sentiment_df is None or sentiment_df.empty:
+                return None
+
+            # Get stock data
+            stock = Stock.objects.get(symbol=self.stock_symbol)
+            stock_data = pd.DataFrame(list(StockData.objects.filter(stock=stock).order_by('date').values()))
+
+            if stock_data.empty:
+                return None
+
+            # Convert date to datetime
+            stock_data['date'] = pd.to_datetime(stock_data['date'])
+            sentiment_df['date'] = pd.to_datetime(sentiment_df['date'])
+
+            # Merge with stock data
+            merged_df = pd.merge(stock_data, sentiment_df, on='date', how='inner')
+
+            if merged_df.empty:
+                return None
+
+            # Convert price columns to float
+            for col in ['open_price', 'high_price', 'low_price', 'close_price']:
+                merged_df[col] = merged_df[col].astype(float)
+
+            # Create a figure with multiple subplots
+            fig, axs = plt.subplots(2, 1, figsize=(12, 10), gridspec_kw={'height_ratios': [2, 1]})
+
+            # Plot stock price
+            axs[0].plot(merged_df['date'], merged_df['close_price'], 'k-', label='Close Price')
+            axs[0].set_title(f"Sentiment Impact on {self.stock_symbol}", fontsize=16)
+            axs[0].set_ylabel('Price', fontsize=12)
+            axs[0].grid(True, alpha=0.3)
+
+            # Create a twin axis for sentiment
+            ax1b = axs[0].twinx()
+            ax1b.plot(merged_df['date'], merged_df['sentiment_compound'], 'b-', alpha=0.7, label='Sentiment')
+            ax1b.fill_between(merged_df['date'], merged_df['sentiment_compound'], 0, 
+                             where=(merged_df['sentiment_compound'] >= 0), 
+                             color='green', alpha=0.3)
+            ax1b.fill_between(merged_df['date'], merged_df['sentiment_compound'], 0, 
+                             where=(merged_df['sentiment_compound'] < 0), 
+                             color='red', alpha=0.3)
+            ax1b.set_ylabel('Sentiment Score', fontsize=12)
+            ax1b.set_ylim(-1, 1)
+
+            # Combine legends
+            lines1, labels1 = axs[0].get_legend_handles_labels()
+            lines2, labels2 = ax1b.get_legend_handles_labels()
+            axs[0].legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+
+            # Plot sentiment-price divergence
+            if 'sentiment_price_divergence' in merged_df.columns:
+                axs[1].bar(merged_df['date'], merged_df['sentiment_price_divergence'], color='purple', alpha=0.7)
+                axs[1].set_title("Sentiment-Price Divergence", fontsize=14)
+                axs[1].set_ylabel('Divergence', fontsize=12)
+                axs[1].set_xlabel('Date', fontsize=12)
+                axs[1].grid(True, alpha=0.3)
+            elif 'sentiment_momentum_1d' in merged_df.columns:
+                axs[1].plot(merged_df['date'], merged_df['sentiment_momentum_1d'], 'g-', label='Sentiment Momentum')
+                axs[1].set_title("Sentiment Momentum", fontsize=14)
+                axs[1].set_ylabel('Momentum', fontsize=12)
+                axs[1].set_xlabel('Date', fontsize=12)
+                axs[1].grid(True, alpha=0.3)
+                axs[1].legend()
+
+            # Format dates on x-axis
+            for ax in axs:
+                ax.xaxis.set_major_formatter(plt.matplotlib.dates.DateFormatter('%Y-%m-%d'))
+                plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+
+            plt.tight_layout()
+
+            # Create directory if it doesn't exist
+            sentiment_dir = os.path.join('static', 'images', 'sentiment')
+            os.makedirs(sentiment_dir, exist_ok=True)
+
+            # Save the figure
+            save_path = os.path.join(sentiment_dir, f'{self.stock_symbol}_sentiment_impact.png')
+            plt.savefig(save_path)
+            plt.close(fig)
+
+            logger.info(f"Saved sentiment impact visualization for {self.stock_symbol}")
+
+            # Return the web path to the visualization
+            return f'/static/images/sentiment/{self.stock_symbol}_sentiment_impact.png'
+
+        except Exception as e:
+            logger.error(f"Error visualizing sentiment impact for {self.stock_symbol}: {str(e)}")
+            return None
+
+    def _get_sentiment_info(self):
+        """
+        Get sentiment information for the stock.
+
+        Returns:
+            dict: Dictionary with sentiment information
+        """
+        try:
+            from .sentiment_analyzer import SentimentAnalyzer
+
+            # Create a SentimentAnalyzer instance
+            analyzer = SentimentAnalyzer(self.stock_symbol)
+
+            # Analyze sentiment
+            sentiment_data = analyzer.analyze_sentiment()
+
+            if sentiment_data is None:
+                logger.warning(f"No sentiment data available for {self.stock_symbol}")
+                return None
+
+            # Get sentiment features
+            sentiment_features = analyzer.create_sentiment_features()
+
+            # Create visualization
+            visualization_path = self._visualize_sentiment_impact(sentiment_features)
+
+            # Get the most recent sentiment
+            combined_sentiment = sentiment_data['combined']
+            dates = sorted(combined_sentiment.keys())
+
+            if not dates:
+                logger.warning(f"No sentiment dates available for {self.stock_symbol}")
+                return None
+
+            latest_date = dates[-1]
+            current_sentiment = combined_sentiment[latest_date]
+
+            # Create sentiment info dictionary
+            sentiment_info = {
+                'current_sentiment': {
+                    'compound': float(current_sentiment['compound']),
+                    'positive': float(current_sentiment['positive']),
+                    'negative': float(current_sentiment['negative']),
+                    'neutral': float(current_sentiment['neutral']),
+                    'sentiment': current_sentiment['sentiment'],
+                    'volume': int(current_sentiment['volume']),
+                    'date': latest_date
+                },
+                'visualization_path': visualization_path
+            }
+
+            # Add top positive and negative items if available
+            if 'news' in sentiment_data and 'sentiment' in sentiment_data['news']:
+                # Sort by compound score
+                positive_items = sorted([item for item in sentiment_data['news']['sentiment'] if item['compound'] > 0], 
+                                      key=lambda x: x['compound'], reverse=True)[:3]
+                negative_items = sorted([item for item in sentiment_data['news']['sentiment'] if item['compound'] < 0], 
+                                      key=lambda x: x['compound'])[:3]
+
+                sentiment_info['top_positive'] = positive_items
+                sentiment_info['top_negative'] = negative_items
+
+            return sentiment_info
+
+        except Exception as e:
+            logger.error(f"Error getting sentiment info for {self.stock_symbol}: {str(e)}")
+            return None
 
     def _clean_and_handle_nan(self, df, config):
         """Clean data and handle NaN values."""
@@ -4836,6 +5085,9 @@ class MLPredictor:
             if current_regime and 'visualization_path' in current_regime:
                 regime_visualization_path = current_regime['visualization_path']
 
+            # Get sentiment information if available
+            sentiment_info = self._get_sentiment_info()
+
             result = {
                 'stock_symbol': self.stock_symbol,
                 'current_price': current_price,
@@ -4852,7 +5104,8 @@ class MLPredictor:
                     'regime_name': regime_name,
                     'visualization_path': regime_visualization_path,
                     'details': current_regime
-                }
+                },
+                'sentiment': sentiment_info
             }
 
             print(
