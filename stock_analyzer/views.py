@@ -2174,27 +2174,117 @@ def api_ml_metrics(request, symbol):
                 'message': 'Keine ML-Vorhersage für diese Aktie verfügbar'
             })
 
-        # Get the latest ML model metrics which should contain the feature importance and adaptive thresholds
+        # Get the latest ML model metrics which should contain the feature importance
         latest_metrics = MLModelMetrics.objects.filter(stock=stock).order_by('-date').first()
 
         # Initialize empty dictionaries for the data
         adaptive_thresholds = {}
         feature_importance = {}
 
-        # If we have metrics, extract the data
-        if latest_metrics and latest_metrics.metrics_data:
-            metrics_data = latest_metrics.metrics_data
+        # Calculate adaptive thresholds based on volatility
+        try:
+            # Use the last 20 days for volatility calculation
+            recent_data = StockData.objects.filter(stock=stock).order_by('-date')[:20]
 
-            # Try to extract adaptive thresholds from the metrics
-            if 'adaptive_thresholds' in metrics_data:
-                adaptive_thresholds = metrics_data['adaptive_thresholds']
+            if recent_data.count() >= 14:  # At least 14 days needed for ATR calculation
+                df_vol = pd.DataFrame(list(recent_data.values()))
+                df_vol['close_price'] = df_vol['close_price'].astype(float)
+                df_vol['high_price'] = df_vol['high_price'].astype(float)
+                df_vol['low_price'] = df_vol['low_price'].astype(float)
 
-            # Try to extract feature importance from the metrics
-            if 'feature_importance' in metrics_data:
-                feature_importance = metrics_data['feature_importance']
+                # ATR calculation
+                high_low = df_vol['high_price'] - df_vol['low_price']
+                high_close = abs(df_vol['high_price'] - df_vol['close_price'].shift())
+                low_close = abs(df_vol['low_price'] - df_vol['close_price'].shift())
 
-        # If we don't have the data in metrics, use empty dictionaries
-        # We don't generate a new prediction here to avoid triggering ML analysis
+                ranges = pd.concat([high_low, high_close, low_close], axis=1)
+                true_range = ranges.max(axis=1)
+
+                atr = true_range.rolling(window=14).mean().iloc[-1]
+                last_close = df_vol['close_price'].iloc[0]  # Latest closing price
+                atr_pct = (atr / last_close) * 100 if last_close != 0 else 5
+
+                # Adaptive thresholds based on ATR
+                # Higher volatility = higher thresholds
+                base_threshold = 0.02  # 2% base threshold
+
+                # Volatility-based adjustment
+                volatility_category = ""
+                if atr_pct < 1.5:  # Low volatility
+                    volatility_factor = 0.8
+                    volatility_category = "niedrig"
+                elif atr_pct < 3.0:  # Medium volatility
+                    volatility_factor = 1.0
+                    volatility_category = "mittel"
+                elif atr_pct < 5.0:  # High volatility
+                    volatility_factor = 1.5
+                    volatility_category = "hoch"
+                else:  # Very high volatility
+                    volatility_factor = 2.0
+                    volatility_category = "sehr hoch"
+
+                min_return_for_buy = base_threshold * volatility_factor
+                min_return_for_sell = -base_threshold * volatility_factor
+
+                # Store volatility information for frontend display
+                adaptive_thresholds = {
+                    'atr': float(atr),
+                    'atr_pct': float(atr_pct),
+                    'volatility_category': volatility_category,
+                    'volatility_factor': float(volatility_factor),
+                    'base_threshold': float(base_threshold),
+                    'buy_threshold': float(min_return_for_buy),
+                    'sell_threshold': float(min_return_for_sell)
+                }
+            else:
+                # Fallback to standard values if not enough data
+                adaptive_thresholds = {
+                    'atr': None,
+                    'atr_pct': None,
+                    'volatility_category': "standard",
+                    'volatility_factor': 1.0,
+                    'base_threshold': 0.02,
+                    'buy_threshold': 0.02,
+                    'sell_threshold': -0.02
+                }
+        except Exception as e:
+            # Fallback on errors
+            adaptive_thresholds = {
+                'atr': None,
+                'atr_pct': None,
+                'volatility_category': "standard (Fehler)",
+                'volatility_factor': 1.0,
+                'base_threshold': 0.02,
+                'buy_threshold': 0.02,
+                'sell_threshold': -0.02
+            }
+            print(f"Error calculating adaptive thresholds: {str(e)}")
+
+        # Extract feature importance from the metrics
+        if latest_metrics and latest_metrics.feature_importance:
+            # Get the raw feature importance data
+            raw_feature_importance = latest_metrics.feature_importance
+
+            # Transform it into the format expected by the JavaScript
+            feature_importance = {
+                'reduction_stats': raw_feature_importance.get('reduction_stats', {}),
+                'top_price_features': {},
+                'top_signal_features': {}
+            }
+
+            # Extract top price features
+            if 'price' in raw_feature_importance:
+                price_features = raw_feature_importance['price']
+                # Sort by importance and take top 5
+                top_price_features = dict(sorted(price_features.items(), key=lambda x: x[1], reverse=True)[:5])
+                feature_importance['top_price_features'] = top_price_features
+
+            # Extract top signal features
+            if 'signal' in raw_feature_importance:
+                signal_features = raw_feature_importance['signal']
+                # Sort by importance and take top 5
+                top_signal_features = dict(sorted(signal_features.items(), key=lambda x: x[1], reverse=True)[:5])
+                feature_importance['top_signal_features'] = top_signal_features
 
         return JsonResponse({
             'status': 'success',
