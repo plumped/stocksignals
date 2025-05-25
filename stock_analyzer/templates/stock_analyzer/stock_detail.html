@@ -50,11 +50,11 @@
             <span class="me-2">Score:</span>
             <div class="progress" style="width: 200px;">
                 {% if latest_analysis.technical_score >= 70 %}
-                    <div class="progress-bar bg-success" style="width: {{ latest_analysis.technical_score }}%">{{ latest_analysis.technical_score }}</div>
+                    <div class="progress-bar bg-success" style="width: {{ latest_analysis.technical_score }}%">{{ latest_analysis.technical_score|floatformat:1 }}</div>
                 {% elif latest_analysis.technical_score <= 30 %}
-                    <div class="progress-bar bg-danger" style="width: {{ latest_analysis.technical_score }}%">{{ latest_analysis.technical_score }}</div>
+                    <div class="progress-bar bg-danger" style="width: {{ latest_analysis.technical_score }}%">{{ latest_analysis.technical_score|floatformat:1 }}</div>
                 {% else %}
-                    <div class="progress-bar bg-warning" style="width: {{ latest_analysis.technical_score }}%">{{ latest_analysis.technical_score }}</div>
+                    <div class="progress-bar bg-warning" style="width: {{ latest_analysis.technical_score }}%">{{ latest_analysis.technical_score|floatformat:1 }}</div>
                 {% endif %}
             </div>
         </div>
@@ -83,15 +83,34 @@
             </div>
         </div>
 
-        <div class="mt-2">
-            {% if latest_analysis.recommendation == 'BUY' %}
-                <span class="badge bg-success fs-6">KAUFEN</span>
-            {% elif latest_analysis.recommendation == 'SELL' %}
-                <span class="badge bg-danger fs-6">VERKAUFEN</span>
-            {% else %}
-                <span class="badge bg-warning fs-6">HALTEN</span>
+        <div class="mt-2 d-flex">
+            <div class="me-3">
+                <div class="small text-muted mb-1">Technische Analyse:</div>
+                {% if latest_analysis.recommendation == 'BUY' %}
+                    <span class="badge bg-success fs-6">KAUFEN</span>
+                {% elif latest_analysis.recommendation == 'SELL' %}
+                    <span class="badge bg-danger fs-6">VERKAUFEN</span>
+                {% else %}
+                    <span class="badge bg-warning fs-6">HALTEN</span>
+                {% endif %}
+            </div>
+
+            {% if ml_prediction %}
+            <div>
+                <div class="small text-muted mb-1">ML Analyse:</div>
+                {% if ml_prediction.recommendation == 'BUY' %}
+                    <span class="badge bg-success fs-6">KAUFEN</span>
+                {% elif ml_prediction.recommendation == 'SELL' %}
+                    <span class="badge bg-danger fs-6">VERKAUFEN</span>
+                {% else %}
+                    <span class="badge bg-warning fs-6">HALTEN</span>
+                {% endif %}
+            </div>
             {% endif %}
-            <small class="text-muted ms-2">Letzte Analyse: {{ latest_analysis.date }}</small>
+        </div>
+
+        <div class="mt-1">
+            <small class="text-muted">Letzte Analyse: {{ latest_analysis.date }}</small>
         </div>
         {% endif %}
     </div>
@@ -124,6 +143,13 @@
                 <button id="analyze-button" class="btn btn-primary mb-3 w-100">
                     <i class="bi bi-graph-up"></i> Jetzt analysieren
                 </button>
+
+                <div class="form-check mb-3">
+                    <input class="form-check-input" type="checkbox" id="enable-ml-analysis" checked>
+                    <label class="form-check-label" for="enable-ml-analysis">
+                        ML-Analyse aktivieren
+                    </label>
+                </div>
 
                 <!-- ML Backtesting Section -->
                 <div class="mb-3">
@@ -211,6 +237,84 @@
                             <td class="text-end">
                                 <span id="indicator-bollinger-upper">{{ latest_analysis.bollinger_upper|floatformat:2 }}</span> /
                                 <span id="indicator-bollinger-lower">{{ latest_analysis.bollinger_lower|floatformat:2 }}</span>
+                            </td>
+                        </tr>
+                        {% else %}
+                        <tr>
+                            <td colspan="2" class="text-center">Keine Analysedaten verfügbar</td>
+                        </tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="card mt-3">
+            <div class="card-header">
+                Wichtige Indikator-Paare
+            </div>
+            <div class="card-body">
+                <table class="table table-sm" id="indicator-pairs-table">
+                    <tbody>
+                        {% if latest_analysis %}
+                        <tr>
+                            <td>MACD / Signal</td>
+                            <td class="text-end">
+                                <span id="indicator-macd-pair">{{ latest_analysis.macd_value|floatformat:2 }} / {{ latest_analysis.macd_signal|floatformat:2 }}</span>
+                                <span id="indicator-macd-pair-signal" class="{% if latest_analysis.macd_value > latest_analysis.macd_signal %}signal-buy{% else %}signal-sell{% endif %}">
+                                    {% if latest_analysis.macd_value > latest_analysis.macd_signal %}
+                                    <i class="bi bi-arrow-up-circle-fill"></i> Bullish
+                                    {% else %}
+                                    <i class="bi bi-arrow-down-circle-fill"></i> Bearish
+                                    {% endif %}
+                                </span>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td>Preis / SMA 50</td>
+                            <td class="text-end">
+                                {% with latest_price=historical_data.0.close_price %}
+                                <span id="indicator-price-sma50">{{ latest_price|floatformat:2 }} / {{ latest_analysis.sma_50|floatformat:2 }}</span>
+                                <span id="indicator-price-sma50-signal" class="{% if latest_price > latest_analysis.sma_50 %}signal-buy{% else %}signal-sell{% endif %}">
+                                    {% if latest_price > latest_analysis.sma_50 %}
+                                    <i class="bi bi-arrow-up-circle-fill"></i> Über SMA
+                                    {% else %}
+                                    <i class="bi bi-arrow-down-circle-fill"></i> Unter SMA
+                                    {% endif %}
+                                </span>
+                                {% endwith %}
+                            </td>
+                        </tr>
+                        <tr>
+                            <td>Preis / Bollinger</td>
+                            <td class="text-end">
+                                {% with latest_price=historical_data.0.close_price %}
+                                <span id="indicator-price-bollinger">{{ latest_price|floatformat:2 }} / {{ latest_analysis.bollinger_upper|floatformat:2 }}-{{ latest_analysis.bollinger_lower|floatformat:2 }}</span>
+                                <span id="indicator-price-bollinger-signal" class="{% if latest_price < latest_analysis.bollinger_lower %}signal-buy{% elif latest_price > latest_analysis.bollinger_upper %}signal-sell{% else %}signal-neutral{% endif %}">
+                                    {% if latest_price < latest_analysis.bollinger_lower %}
+                                    <i class="bi bi-arrow-up-circle-fill"></i> Unter Band
+                                    {% elif latest_price > latest_analysis.bollinger_upper %}
+                                    <i class="bi bi-arrow-down-circle-fill"></i> Über Band
+                                    {% else %}
+                                    <i class="bi bi-dash-circle-fill"></i> Im Band
+                                    {% endif %}
+                                </span>
+                                {% endwith %}
+                            </td>
+                        </tr>
+                        <tr>
+                            <td>RSI Position</td>
+                            <td class="text-end">
+                                <span id="indicator-rsi-position">{{ latest_analysis.rsi_value|floatformat:0 }}/100</span>
+                                <span id="indicator-rsi-position-signal" class="{% if latest_analysis.rsi_value < 30 %}signal-buy{% elif latest_analysis.rsi_value > 70 %}signal-sell{% else %}signal-neutral{% endif %}">
+                                    {% if latest_analysis.rsi_value < 30 %}
+                                    <i class="bi bi-arrow-up-circle-fill"></i> Überverkauft
+                                    {% elif latest_analysis.rsi_value > 70 %}
+                                    <i class="bi bi-arrow-down-circle-fill"></i> Überkauft
+                                    {% else %}
+                                    <i class="bi bi-dash-circle-fill"></i> Neutral
+                                    {% endif %}
+                                </span>
                             </td>
                         </tr>
                         {% else %}
@@ -486,8 +590,11 @@
             this.disabled = true;
             this.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Analysiere...';
 
-            // URL ohne Live-Daten Parameter
-            const url = `/analyze/${symbol}/`;
+            // Prüfen, ob ML-Analyse aktiviert ist
+            const enableMlAnalysis = document.getElementById('enable-ml-analysis').checked;
+
+            // URL mit ML-Analyse Parameter
+            const url = `/analyze/${symbol}/?enable_ml=${enableMlAnalysis}`;
 
             fetch(url)
                 .then(response => response.json())

@@ -5,7 +5,9 @@ from twelvedata import TDClient
 from datetime import datetime, timedelta
 import time
 import functools
+import random
 from django.core.cache import cache
+from django.db import transaction, OperationalError
 from .models import Stock, StockData
 from decimal import Decimal
 from .config import TWELVEDATA_API_KEY
@@ -17,10 +19,63 @@ CACHE_DURATION = 86400
 RATE_LIMIT = 8
 RATE_LIMIT_PERIOD = 60
 
+# Database retry settings
+MAX_RETRIES = 5
+INITIAL_RETRY_DELAY = 0.1  # seconds
+MAX_RETRY_DELAY = 2.0  # seconds
+
 class StockDataService:
     _last_request_time = 0
     _request_count = 0
     _td_client = None
+
+    @staticmethod
+    def retry_on_db_lock(operation_name="database operation"):
+        """
+        Execute a database operation with retry logic for handling database locks.
+
+        Args:
+            operation_name (str): Name of the operation for logging purposes
+
+        Usage:
+            with StockDataService.retry_on_db_lock("update stock data"):
+                StockData.objects.update_or_create(...)
+        """
+        class RetryContextManager:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                if exc_type is OperationalError and "database is locked" in str(exc_val).lower():
+                    retries = 0
+                    while retries < MAX_RETRIES:
+                        retries += 1
+                        # Calculate delay with exponential backoff and jitter
+                        delay = min(INITIAL_RETRY_DELAY * (2 ** (retries - 1)), MAX_RETRY_DELAY)
+                        # Add jitter to avoid thundering herd problem
+                        delay = delay * (0.5 + random.random())
+                        print(f"Database locked during {operation_name}, retrying in {delay:.2f} seconds (attempt {retries}/{MAX_RETRIES})")
+                        time.sleep(delay)
+
+                        try:
+                            # Try the operation again in a new transaction
+                            with transaction.atomic():
+                                # The operation will be retried when the context is re-entered
+                                return True  # Suppress the exception and retry
+                        except OperationalError as e:
+                            if "database is locked" not in str(e).lower() or retries >= MAX_RETRIES:
+                                # If it's not a lock error or we've exceeded max retries, let the exception propagate
+                                print(f"Database error during {operation_name} after {retries} retries: {str(e)}")
+                                return False  # Don't suppress the exception
+
+                    # If we've exhausted all retries
+                    print(f"Failed to execute {operation_name} after {MAX_RETRIES} retries")
+                    return False  # Don't suppress the exception
+
+                # For other types of exceptions, don't suppress
+                return False
+
+        return RetryContextManager()
 
     @staticmethod
     def _detect_outliers(df, columns=None, z_threshold=3.0, iqr_multiplier=1.5):
@@ -326,18 +381,23 @@ class StockDataService:
                             outlier_fields.append(col)
                     print(f"Korrigierter Ausreißer für {stock.symbol} am {date} in Feldern: {', '.join(outlier_fields)}")
 
-                StockData.objects.update_or_create(
-                    stock=stock,
-                    date=date,
-                    defaults={
-                        'open_price': Decimal(str(row['open'])),
-                        'high_price': Decimal(str(row['high'])),
-                        'low_price': Decimal(str(row['low'])),
-                        'close_price': Decimal(str(row['close'])),
-                        'adjusted_close': Decimal(str(row.get('adjusted_close', row['close']))),
-                        'volume': volume
-                    }
-                )
+                with StockDataService.retry_on_db_lock(f"update stock data for {stock.symbol} on {date}"):
+                    with transaction.atomic():
+                        StockData.objects.update_or_create(
+                            stock=stock,
+                            date=date,
+                            defaults={
+                                'open_price': Decimal(str(row['open'])),
+                                'high_price': Decimal(str(row['high'])),
+                                'low_price': Decimal(str(row['low'])),
+                                'close_price': Decimal(str(row['close'])),
+                                'adjusted_close': Decimal(str(row.get('adjusted_close', row['close']))),
+                                'volume': volume
+                            }
+                        )
+
+                # Small delay between database operations to reduce contention
+                time.sleep(0.01)
 
             result = (True, f"Daten für {symbol} erfolgreich aktualisiert.")
             cache.set(cache_key, result, CACHE_DURATION)
@@ -453,18 +513,23 @@ class StockDataService:
                                     if volume < 1000:  # Annahme: Volumen unter 1000 ist verdächtig niedrig
                                         print(f"Warnung: Niedriges Volumen ({volume}) für {symbol} am {date}")
 
-                                    StockData.objects.update_or_create(
-                                        stock=stocks[symbol],
-                                        date=date,
-                                        defaults={
-                                            'open_price': Decimal(str(row['open'])),
-                                            'high_price': Decimal(str(row['high'])),
-                                            'low_price': Decimal(str(row['low'])),
-                                            'close_price': Decimal(str(row['close'])),
-                                            'adjusted_close': Decimal(str(row.get('adjusted_close', row['close']))),
-                                            'volume': volume
-                                        }
-                                    )
+                                    with StockDataService.retry_on_db_lock(f"update stock data for {symbol} on {date} (batch)"):
+                                        with transaction.atomic():
+                                            StockData.objects.update_or_create(
+                                                stock=stocks[symbol],
+                                                date=date,
+                                                defaults={
+                                                    'open_price': Decimal(str(row['open'])),
+                                                    'high_price': Decimal(str(row['high'])),
+                                                    'low_price': Decimal(str(row['low'])),
+                                                    'close_price': Decimal(str(row['close'])),
+                                                    'adjusted_close': Decimal(str(row.get('adjusted_close', row['close']))),
+                                                    'volume': volume
+                                                }
+                                            )
+
+                                    # Small delay between database operations to reduce contention
+                                    time.sleep(0.01)
 
                                 results[symbol] = {'success': True, 'message': f"Daten für {symbol} erfolgreich aktualisiert."}
                             else:

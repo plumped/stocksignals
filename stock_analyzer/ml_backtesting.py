@@ -2,25 +2,8 @@
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-import matplotlib.pyplot as plt
-import io
-import base64
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, mean_squared_error, \
-    mean_absolute_error
-import logging
-from decimal import Decimal
-import os
-import joblib
-import tempfile
-
-from .models import Stock, StockData, MLPrediction, MLModelMetrics
-
-logger = logging.getLogger(__name__)
-
-# stock_analyzer/ml_backtesting.py
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend to avoid tkinter issues
 import matplotlib.pyplot as plt
 import io
 import base64

@@ -183,13 +183,17 @@ def analyze_stock(request, symbol):
         has_ml_data = historical_data_count >= 200
         print(f"ML-Daten verfügbar: {has_ml_data}")
 
+        # Prüfen, ob ML-Analyse aktiviert ist
+        enable_ml = request.GET.get('enable_ml', 'true').lower() == 'true'
+        print(f"ML-Analyse aktiviert: {enable_ml}")
+
         try:
-            if has_ml_data:
-                analyzer = AdaptiveAnalyzer(symbol)
-                print("Verwende AdaptiveAnalyzer")
+            if has_ml_data and enable_ml:
+                analyzer = AdaptiveAnalyzer(symbol, enable_ml=enable_ml)
+                print("Verwende AdaptiveAnalyzer mit ML")
 
                 result = analyzer.get_adaptive_score()
-                analysis_result = analyzer.save_analysis_result()
+                analysis_result = analyzer.save_analysis_result(result)
             else:
                 analyzer = TechnicalAnalyzer(symbol)
                 print("Verwende TechnicalAnalyzer")
@@ -2170,22 +2174,27 @@ def api_ml_metrics(request, symbol):
                 'message': 'Keine ML-Vorhersage für diese Aktie verfügbar'
             })
 
-        # Generate a new prediction to get the latest adaptive thresholds and feature importance
-        predictor = MLPredictor(symbol)
-        prediction = predictor.predict(
-            use_feature_importance=True,
-            feature_importance_threshold=0.01
-        )
+        # Get the latest ML model metrics which should contain the feature importance and adaptive thresholds
+        latest_metrics = MLModelMetrics.objects.filter(stock=stock).order_by('-date').first()
 
-        if not prediction:
-            return JsonResponse({
-                'status': 'error',
-                'message': 'Konnte keine ML-Vorhersage generieren'
-            })
+        # Initialize empty dictionaries for the data
+        adaptive_thresholds = {}
+        feature_importance = {}
 
-        # Extract adaptive thresholds and feature importance
-        adaptive_thresholds = prediction.get('adaptive_thresholds', {})
-        feature_importance = prediction.get('feature_importance', {})
+        # If we have metrics, extract the data
+        if latest_metrics and latest_metrics.metrics_data:
+            metrics_data = latest_metrics.metrics_data
+
+            # Try to extract adaptive thresholds from the metrics
+            if 'adaptive_thresholds' in metrics_data:
+                adaptive_thresholds = metrics_data['adaptive_thresholds']
+
+            # Try to extract feature importance from the metrics
+            if 'feature_importance' in metrics_data:
+                feature_importance = metrics_data['feature_importance']
+
+        # If we don't have the data in metrics, use empty dictionaries
+        # We don't generate a new prediction here to avoid triggering ML analysis
 
         return JsonResponse({
             'status': 'success',

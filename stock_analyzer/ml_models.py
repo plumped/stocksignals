@@ -2,18 +2,26 @@
 import numpy as np
 import pandas as pd
 from django.db.models import Count
-from sklearn.calibration import CalibratedClassifierCV
+from sklearn.calibration import CalibratedClassifierCV, calibration_curve
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingRegressor
-from sklearn.model_selection import train_test_split, TimeSeriesSplit, RandomizedSearchCV, StratifiedKFold
-from sklearn.metrics import accuracy_score, mean_squared_error, classification_report, r2_score
-from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingRegressor, VotingClassifier, VotingRegressor
+from sklearn.model_selection import train_test_split, TimeSeriesSplit, RandomizedSearchCV, StratifiedKFold, cross_val_score
+from sklearn.metrics import accuracy_score, mean_squared_error, classification_report, r2_score, precision_score, recall_score, f1_score, roc_auc_score, mean_absolute_error, mean_absolute_percentage_error
+from sklearn.linear_model import LinearRegression, LogisticRegression, Ridge
 import xgboost as xgb
 from sklearn.inspection import permutation_importance
+import shap
+from scipy import stats
 import joblib
 import os
 from datetime import datetime, timedelta
 import logging
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend to avoid tkinter issues
+import matplotlib.pyplot as plt
+from imblearn.over_sampling import SMOTE, ADASYN
+from imblearn.pipeline import Pipeline as ImbPipeline
+import warnings
 from .models import Stock, StockData, AnalysisResult, MLPrediction, MLModelMetrics
 
 logger = logging.getLogger(__name__)
@@ -584,7 +592,6 @@ class MLPredictor:
                             y = df['stock_return_30d'].iloc[i - window:i][valid_window].values
 
                             try:
-                                from sklearn.linear_model import LinearRegression
                                 model = LinearRegression()
                                 model.fit(x, y)
                                 df.loc[df.index[i], 'rolling_alpha'] = model.intercept_
@@ -913,6 +920,764 @@ class MLPredictor:
             # Train a new model if there was an error loading
             return self._train_model(model_type)
 
+    def select_model_based_on_characteristics(self, model_type):
+        """
+        Select the best model type based on stock characteristics
+
+        Args:
+            model_type (str): 'price' or 'signal'
+
+        Returns:
+            tuple: (base_model, param_grid, scoring)
+        """
+        try:
+            # Get stock data for analysis
+            stock = Stock.objects.get(symbol=self.stock_symbol)
+            df = pd.DataFrame(list(StockData.objects.filter(stock=stock).order_by('date').values()))
+
+            # Calculate characteristics
+            data_size = len(df)
+            volatility = df['close_price'].pct_change().std() * np.sqrt(252)  # Annualized volatility
+
+            # Get trading volume characteristics
+            avg_volume = df['volume'].mean()
+            volume_volatility = df['volume'].std() / avg_volume if avg_volume > 0 else 0
+
+            # Calculate trend strength using linear regression on prices
+            df['day_index'] = range(len(df))
+            if len(df) > 30:
+                trend_model = LinearRegression()
+                X_trend = df['day_index'].values.reshape(-1, 1)[-30:]
+                y_trend = df['close_price'].values[-30:]
+                trend_model.fit(X_trend, y_trend)
+                trend_strength = abs(trend_model.coef_[0]) / df['close_price'].mean()
+            else:
+                trend_strength = 0
+
+            logger.info(f"Stock characteristics for {self.stock_symbol}: "
+                       f"data_size={data_size}, volatility={volatility:.4f}, "
+                       f"volume_volatility={volume_volatility:.4f}, trend_strength={trend_strength:.4f}")
+
+            if model_type == 'price':
+                # For price prediction
+                if data_size < 100:
+                    # For small datasets, simpler models work better
+                    base_model = LinearRegression()
+                    param_grid = {}
+                    logger.info(f"Selected LinearRegression for {self.stock_symbol} (small dataset)")
+                elif volatility > 0.4:  # High volatility
+                    # For high volatility stocks, gradient boosting works well
+                    base_model = GradientBoostingRegressor(random_state=42)
+                    param_grid = {
+                        'n_estimators': [100, 200, 300],
+                        'learning_rate': [0.01, 0.05, 0.1],
+                        'max_depth': [3, 4, 5],
+                        'subsample': [0.8, 0.9, 1.0]
+                    }
+                    logger.info(f"Selected GradientBoostingRegressor for {self.stock_symbol} (high volatility)")
+                elif trend_strength > 0.01:  # Strong trend
+                    # For trending stocks, XGBoost works well
+                    base_model = xgb.XGBRegressor(random_state=42, objective='reg:squarederror')
+                    param_grid = {
+                        'n_estimators': [100, 200, 300],
+                        'learning_rate': [0.01, 0.05, 0.1, 0.2],
+                        'max_depth': [3, 4, 5, 6],
+                        'subsample': [0.8, 0.9, 1.0],
+                        'colsample_bytree': [0.8, 0.9, 1.0]
+                    }
+                    logger.info(f"Selected XGBRegressor for {self.stock_symbol} (strong trend)")
+                else:
+                    # Default case - ensemble of models
+                    lr = LinearRegression()
+                    gbr = GradientBoostingRegressor(random_state=42, n_estimators=100)
+                    xgbr = xgb.XGBRegressor(random_state=42, objective='reg:squarederror', n_estimators=100)
+
+                    base_model = VotingRegressor([
+                        ('lr', lr),
+                        ('gbr', gbr),
+                        ('xgbr', xgbr)
+                    ])
+                    param_grid = {}  # No hyperparameter tuning for ensemble
+                    logger.info(f"Selected VotingRegressor ensemble for {self.stock_symbol}")
+
+                scoring = 'neg_mean_squared_error'
+
+            else:  # signal model
+                # For signal prediction
+                if data_size < 100:
+                    # For small datasets, logistic regression works better
+                    base_model = LogisticRegression(random_state=42, class_weight='balanced')
+                    param_grid = {
+                        'C': [0.1, 1.0, 10.0],
+                        'solver': ['liblinear', 'saga']
+                    }
+                    logger.info(f"Selected LogisticRegression for {self.stock_symbol} (small dataset)")
+                elif volume_volatility > 0.5:  # High volume volatility
+                    # For stocks with volatile volume, RandomForest works well
+                    base_model = RandomForestClassifier(random_state=42, class_weight='balanced')
+                    param_grid = {
+                        'n_estimators': [100, 150, 200],
+                        'max_depth': [4, 6, 8, None],
+                        'min_samples_split': [2, 5, 10],
+                        'min_samples_leaf': [1, 2, 4]
+                    }
+                    logger.info(f"Selected RandomForestClassifier for {self.stock_symbol} (high volume volatility)")
+                elif volatility > 0.3:  # High price volatility
+                    # For volatile stocks, XGBoost works well
+                    base_model = xgb.XGBClassifier(random_state=42, use_label_encoder=False, eval_metric='logloss')
+                    param_grid = {
+                        'n_estimators': [100, 200],
+                        'learning_rate': [0.01, 0.05, 0.1],
+                        'max_depth': [3, 4, 5],
+                        'subsample': [0.8, 0.9],
+                        'scale_pos_weight': [1, 3, 5]  # For imbalanced classes
+                    }
+                    logger.info(f"Selected XGBClassifier for {self.stock_symbol} (high price volatility)")
+                else:
+                    # Default case - ensemble of models
+                    lr = LogisticRegression(random_state=42, class_weight='balanced')
+                    rf = RandomForestClassifier(random_state=42, class_weight='balanced', n_estimators=100)
+                    xgbc = xgb.XGBClassifier(random_state=42, use_label_encoder=False, eval_metric='logloss')
+
+                    base_model = VotingClassifier([
+                        ('lr', lr),
+                        ('rf', rf),
+                        ('xgbc', xgbc)
+                    ], voting='soft')
+                    param_grid = {}  # No hyperparameter tuning for ensemble
+                    logger.info(f"Selected VotingClassifier ensemble for {self.stock_symbol}")
+
+                scoring = 'f1_weighted'  # Better than accuracy for imbalanced classes
+
+            return base_model, param_grid, scoring
+
+        except Exception as e:
+            logger.error(f"Error selecting model based on characteristics for {self.stock_symbol}: {str(e)}")
+            # Fallback to default models
+            if model_type == 'price':
+                base_model = xgb.XGBRegressor(random_state=42, objective='reg:squarederror')
+                param_grid = {
+                    'n_estimators': [100, 200],
+                    'learning_rate': [0.05, 0.1],
+                    'max_depth': [3, 5]
+                }
+                scoring = 'neg_mean_squared_error'
+            else:
+                base_model = RandomForestClassifier(random_state=42, class_weight='balanced')
+                param_grid = {
+                    'n_estimators': [100, 200],
+                    'max_depth': [4, 8]
+                }
+                scoring = 'f1_weighted'
+
+            return base_model, param_grid, scoring
+
+    def get_time_series_cv(self, y=None, is_classification=False):
+        """
+        Get appropriate cross-validation strategy for time series data
+
+        Args:
+            y (pd.Series): Target variable (for classification)
+            is_classification (bool): Whether this is a classification problem
+
+        Returns:
+            object: Cross-validation strategy
+        """
+        if is_classification and y is not None:
+            class_counts = y.value_counts()
+            min_class_samples = class_counts.min()
+
+            if min_class_samples < 3:
+                logger.warning(f"Too few class samples for '{self.stock_symbol}' - min class has only {min_class_samples} example(s)")
+                return None
+
+            # For classification with sufficient samples, use purged time series CV
+            # This avoids look-ahead bias by ensuring train/test splits respect time
+            if min_class_samples >= 20:
+                n_splits = 5
+                gap_size = 5  # Gap between train and test to avoid leakage
+
+                # Custom time series split with gap
+                indices = np.arange(len(y))
+                test_size = len(y) // (n_splits + 1)  # Approximate test size
+
+                cv_splits = []
+                for i in range(n_splits):
+                    test_start = i * test_size
+                    test_end = (i + 1) * test_size
+                    train_end = max(0, test_start - gap_size)
+
+                    # Ensure we have enough training data
+                    if train_end < 30:
+                        continue
+
+                    train_indices = indices[:train_end]
+                    test_indices = indices[test_start:test_end]
+
+                    # Check if we have samples from each class in both train and test
+                    train_classes = set(y.iloc[train_indices])
+                    test_classes = set(y.iloc[test_indices])
+
+                    if len(train_classes) < 2 or len(test_classes) < 2:
+                        continue
+
+                    cv_splits.append((train_indices, test_indices))
+
+                if len(cv_splits) >= 2:
+                    logger.info(f"[{self.stock_symbol}] Using custom purged time series CV with {len(cv_splits)} splits")
+                    return cv_splits
+
+                # Fallback to standard TimeSeriesSplit if custom splits didn't work
+                logger.info(f"[{self.stock_symbol}] Falling back to TimeSeriesSplit")
+                return TimeSeriesSplit(n_splits=min(5, min_class_samples // 4))
+            else:
+                # For limited samples, use fewer splits
+                n_splits = min(3, min_class_samples)
+                logger.info(f"[{self.stock_symbol}] Using TimeSeriesSplit with {n_splits} splits (limited samples)")
+                return TimeSeriesSplit(n_splits=n_splits)
+        else:
+            # For regression or when y is not provided
+            n_splits = 5
+            logger.info(f"[{self.stock_symbol}] Using TimeSeriesSplit with {n_splits} splits for regression")
+            return TimeSeriesSplit(n_splits=n_splits)
+
+    def statistical_significance_test(self, model1_preds, model2_preds, y_true, model_type='signal'):
+        """
+        Perform statistical significance testing to compare two models
+
+        Args:
+            model1_preds: Predictions from first model
+            model2_preds: Predictions from second model
+            y_true: True values
+            model_type: 'price' or 'signal'
+
+        Returns:
+            dict: Results of statistical tests
+        """
+        results = {}
+
+        try:
+            if model_type == 'price':
+                # For regression, compare MSE using paired t-test
+                errors1 = (model1_preds - y_true) ** 2
+                errors2 = (model2_preds - y_true) ** 2
+
+                # Paired t-test
+                t_stat, p_value = stats.ttest_rel(errors1, errors2)
+                results['t_test'] = {
+                    't_statistic': float(t_stat),
+                    'p_value': float(p_value),
+                    'significant': p_value < 0.05,
+                    'better_model': 'model1' if t_stat < 0 else 'model2'
+                }
+
+                # Wilcoxon signed-rank test (non-parametric alternative)
+                w_stat, p_value = stats.wilcoxon(errors1, errors2)
+                results['wilcoxon_test'] = {
+                    'statistic': float(w_stat),
+                    'p_value': float(p_value),
+                    'significant': p_value < 0.05,
+                    'better_model': 'model1' if w_stat < len(errors1) * (len(errors1) + 1) / 4 else 'model2'
+                }
+
+            else:  # signal model
+                # For classification, use McNemar's test
+                # This tests whether the disagreements between models are statistically significant
+                contingency_table = np.zeros((2, 2))
+
+                for i in range(len(y_true)):
+                    correct1 = model1_preds[i] == y_true[i]
+                    correct2 = model2_preds[i] == y_true[i]
+                    contingency_table[int(correct1), int(correct2)] += 1
+
+                # McNemar's test
+                try:
+                    chi2, p_value = stats.mcnemar(contingency_table, exact=True)
+                    results['mcnemar_test'] = {
+                        'chi2': float(chi2),
+                        'p_value': float(p_value),
+                        'significant': p_value < 0.05,
+                        'better_model': 'model1' if contingency_table[1, 0] > contingency_table[0, 1] else 'model2'
+                    }
+                except ValueError as e:
+                    logger.warning(f"McNemar test failed: {str(e)}")
+                    results['mcnemar_test'] = {
+                        'error': str(e),
+                        'significant': False
+                    }
+
+                # Compare F1 scores
+                f1_model1 = f1_score(y_true, model1_preds, average='weighted')
+                f1_model2 = f1_score(y_true, model2_preds, average='weighted')
+                results['f1_comparison'] = {
+                    'f1_model1': float(f1_model1),
+                    'f1_model2': float(f1_model2),
+                    'difference': float(f1_model1 - f1_model2),
+                    'better_model': 'model1' if f1_model1 > f1_model2 else 'model2'
+                }
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Error in statistical significance test: {str(e)}")
+            return {'error': str(e)}
+
+    def improve_model_robustness(self, base_model, param_grid, model_type):
+        """
+        Improve model robustness using regularization, early stopping, ensembles, and adversarial training
+
+        Args:
+            base_model: The base model to improve
+            param_grid: Parameter grid for hyperparameter tuning
+            model_type (str): 'price' or 'signal'
+
+        Returns:
+            tuple: (improved_model, updated_param_grid)
+        """
+        try:
+            # 1. Add regularization techniques to prevent overfitting
+            if model_type == 'price':
+                # For regression models
+                if isinstance(base_model, xgb.XGBRegressor):
+                    # XGBoost already has regularization parameters in param_grid
+                    # Add L1 and L2 regularization parameters if not already present
+                    if 'reg_alpha' not in param_grid:
+                        param_grid['reg_alpha'] = [0, 0.001, 0.01, 0.1, 1.0]  # L1 regularization
+                    if 'reg_lambda' not in param_grid:
+                        param_grid['reg_lambda'] = [0.01, 0.1, 1.0, 10.0]  # L2 regularization
+
+                    logger.info(f"Added L1/L2 regularization to XGBRegressor for {self.stock_symbol}")
+
+                elif isinstance(base_model, GradientBoostingRegressor):
+                    # Add alpha parameter for GradientBoostingRegressor
+                    if 'alpha' not in param_grid:
+                        param_grid['alpha'] = [0.1, 0.5, 0.9]  # Quantile regression alpha
+
+                    logger.info(f"Added alpha regularization to GradientBoostingRegressor for {self.stock_symbol}")
+
+                elif isinstance(base_model, LinearRegression):
+                    # Replace LinearRegression with Ridge or ElasticNet for regularization
+                    from sklearn.linear_model import ElasticNet
+
+                    # Use Ridge regression (L2 regularization)
+                    base_model = Ridge(random_state=42)
+                    param_grid = {
+                        'alpha': [0.01, 0.1, 1.0, 10.0, 100.0],  # Regularization strength
+                        'solver': ['auto', 'svd', 'cholesky', 'lsqr', 'sparse_cg', 'sag', 'saga']
+                    }
+
+                    logger.info(f"Replaced LinearRegression with Ridge for {self.stock_symbol}")
+
+                elif isinstance(base_model, VotingRegressor):
+                    # For ensemble, apply regularization to each base estimator
+                    regularized_estimators = []
+
+                    for name, estimator in base_model.estimators:
+                        if isinstance(estimator, LinearRegression):
+                            # Replace with Ridge
+                            regularized_estimators.append((name, Ridge(alpha=1.0, random_state=42)))
+                        elif isinstance(estimator, xgb.XGBRegressor):
+                            # Add regularization
+                            estimator.set_params(reg_alpha=0.01, reg_lambda=1.0)
+                            regularized_estimators.append((name, estimator))
+                        else:
+                            regularized_estimators.append((name, estimator))
+
+                    base_model = VotingRegressor(regularized_estimators)
+                    logger.info(f"Applied regularization to VotingRegressor components for {self.stock_symbol}")
+
+            else:
+                # For classification models
+                if isinstance(base_model, RandomForestClassifier):
+                    # RandomForest has implicit regularization through max_depth and min_samples_split
+                    # Ensure these parameters are in the grid
+                    if 'max_depth' not in param_grid:
+                        param_grid['max_depth'] = [3, 5, 7, None]
+                    if 'min_samples_split' not in param_grid:
+                        param_grid['min_samples_split'] = [2, 5, 10]
+                    if 'min_samples_leaf' not in param_grid:
+                        param_grid['min_samples_leaf'] = [1, 2, 4]
+
+                    logger.info(f"Added tree-based regularization to RandomForestClassifier for {self.stock_symbol}")
+
+                elif isinstance(base_model, xgb.XGBClassifier):
+                    # Add regularization parameters
+                    if 'reg_alpha' not in param_grid:
+                        param_grid['reg_alpha'] = [0, 0.001, 0.01, 0.1, 1.0]
+                    if 'reg_lambda' not in param_grid:
+                        param_grid['reg_lambda'] = [0.01, 0.1, 1.0, 10.0]
+
+                    logger.info(f"Added L1/L2 regularization to XGBClassifier for {self.stock_symbol}")
+
+                elif isinstance(base_model, LogisticRegression):
+                    # Add regularization parameters
+                    if 'C' not in param_grid:
+                        param_grid['C'] = [0.001, 0.01, 0.1, 1.0, 10.0]  # Inverse of regularization strength
+                    if 'penalty' not in param_grid:
+                        param_grid['penalty'] = ['l1', 'l2', 'elasticnet']
+                    if 'solver' not in param_grid:
+                        param_grid['solver'] = ['saga']  # Only saga supports all penalties
+                    if 'l1_ratio' not in param_grid:
+                        param_grid['l1_ratio'] = [0.2, 0.5, 0.8]  # For elasticnet
+
+                    logger.info(f"Added regularization parameters to LogisticRegression for {self.stock_symbol}")
+
+                elif isinstance(base_model, VotingClassifier):
+                    # For ensemble, apply regularization to each base estimator
+                    regularized_estimators = []
+
+                    for name, estimator in base_model.estimators:
+                        if isinstance(estimator, LogisticRegression):
+                            # Add regularization
+                            estimator.set_params(C=0.1, penalty='l2')
+                            regularized_estimators.append((name, estimator))
+                        elif isinstance(estimator, xgb.XGBClassifier):
+                            # Add regularization
+                            estimator.set_params(reg_alpha=0.01, reg_lambda=1.0)
+                            regularized_estimators.append((name, estimator))
+                        else:
+                            regularized_estimators.append((name, estimator))
+
+                    base_model = VotingClassifier(regularized_estimators, voting='soft')
+                    logger.info(f"Applied regularization to VotingClassifier components for {self.stock_symbol}")
+
+            # 2. Implement early stopping for iterative models
+            if isinstance(base_model, xgb.XGBRegressor) or isinstance(base_model, xgb.XGBClassifier):
+                # Add early stopping parameters
+                base_model.set_params(early_stopping_rounds=10)
+                logger.info(f"Added early stopping to XGBoost model for {self.stock_symbol}")
+
+            # 3. Create model ensembles to reduce prediction variance
+            # Only create ensembles if the base model is not already an ensemble
+            if not isinstance(base_model, VotingRegressor) and not isinstance(base_model, VotingClassifier):
+                if model_type == 'price':
+                    # For regression, create a stacking ensemble
+                    from sklearn.ensemble import StackingRegressor
+
+                    # Create base estimators
+                    estimators = []
+
+                    # Add the original model
+                    estimators.append(('original', base_model))
+
+                    # Add a Ridge regressor
+                    estimators.append(('ridge', Ridge(alpha=1.0, random_state=42)))
+
+                    # Add a different type of model
+                    if not isinstance(base_model, GradientBoostingRegressor):
+                        estimators.append(('gbr', GradientBoostingRegressor(
+                            n_estimators=100, 
+                            learning_rate=0.1, 
+                            random_state=42
+                        )))
+
+                    # Create the stacking ensemble with a final estimator
+                    stacking_model = StackingRegressor(
+                        estimators=estimators,
+                        final_estimator=Ridge(random_state=42),
+                        cv=3
+                    )
+
+                    # Replace the base model with the ensemble
+                    base_model = stacking_model
+                    param_grid = {}  # No hyperparameter tuning for the ensemble
+
+                    logger.info(f"Created StackingRegressor ensemble for {self.stock_symbol}")
+
+                else:
+                    # For classification, create a stacking ensemble
+                    from sklearn.ensemble import StackingClassifier
+
+                    # Create base estimators
+                    estimators = []
+
+                    # Add the original model
+                    estimators.append(('original', base_model))
+
+                    # Add a LogisticRegression classifier
+                    estimators.append(('lr', LogisticRegression(
+                        C=1.0, 
+                        class_weight='balanced', 
+                        random_state=42
+                    )))
+
+                    # Add a different type of model
+                    if not isinstance(base_model, RandomForestClassifier):
+                        estimators.append(('rf', RandomForestClassifier(
+                            n_estimators=100, 
+                            class_weight='balanced', 
+                            random_state=42
+                        )))
+
+                    # Create the stacking ensemble with a final estimator
+                    stacking_model = StackingClassifier(
+                        estimators=estimators,
+                        final_estimator=LogisticRegression(random_state=42),
+                        cv=3
+                    )
+
+                    # Replace the base model with the ensemble
+                    base_model = stacking_model
+                    param_grid = {}  # No hyperparameter tuning for the ensemble
+
+                    logger.info(f"Created StackingClassifier ensemble for {self.stock_symbol}")
+
+            # 4. Add adversarial training for robustness to market shocks
+            # This is a simplified version of adversarial training
+            # We'll add random noise to the training data during fitting
+            if model_type == 'price':
+                # For regression models, wrap in a custom model that adds noise during training
+                original_model = base_model
+
+                class NoiseRobustRegressor:
+                    def __init__(self, base_estimator, noise_level=0.01):
+                        self.base_estimator = base_estimator
+                        self.noise_level = noise_level
+
+                    def fit(self, X, y):
+                        # Add random noise to features
+                        noise = np.random.normal(0, self.noise_level, X.shape)
+                        X_noisy = X + noise
+
+                        # Fit the base estimator
+                        self.base_estimator.fit(X_noisy, y)
+                        return self
+
+                    def predict(self, X):
+                        return self.base_estimator.predict(X)
+
+                    def get_params(self, deep=True):
+                        return {'base_estimator': self.base_estimator, 'noise_level': self.noise_level}
+
+                    def set_params(self, **params):
+                        for key, value in params.items():
+                            setattr(self, key, value)
+                        return self
+
+                # Create the noise-robust model
+                base_model = NoiseRobustRegressor(original_model, noise_level=0.01)
+                logger.info(f"Added adversarial training (noise) to regression model for {self.stock_symbol}")
+
+            else:
+                # For classification models, wrap in a custom model that adds noise during training
+                original_model = base_model
+
+                class NoiseRobustClassifier:
+                    def __init__(self, base_estimator, noise_level=0.01):
+                        self.base_estimator = base_estimator
+                        self.noise_level = noise_level
+
+                    def fit(self, X, y):
+                        # Add random noise to features
+                        noise = np.random.normal(0, self.noise_level, X.shape)
+                        X_noisy = X + noise
+
+                        # Fit the base estimator
+                        self.base_estimator.fit(X_noisy, y)
+                        return self
+
+                    def predict(self, X):
+                        return self.base_estimator.predict(X)
+
+                    def predict_proba(self, X):
+                        if hasattr(self.base_estimator, 'predict_proba'):
+                            return self.base_estimator.predict_proba(X)
+                        else:
+                            raise AttributeError("Base estimator does not have predict_proba method")
+
+                    def get_params(self, deep=True):
+                        return {'base_estimator': self.base_estimator, 'noise_level': self.noise_level}
+
+                    def set_params(self, **params):
+                        for key, value in params.items():
+                            setattr(self, key, value)
+                        return self
+
+                # Create the noise-robust model
+                base_model = NoiseRobustClassifier(original_model, noise_level=0.01)
+                logger.info(f"Added adversarial training (noise) to classification model for {self.stock_symbol}")
+
+            return base_model, param_grid
+
+        except Exception as e:
+            logger.error(f"Error improving model robustness for {self.stock_symbol}: {str(e)}")
+            # Return the original model and param_grid if there's an error
+            return base_model, param_grid
+
+    def handle_class_imbalance(self, X, y, model_type='signal'):
+        """
+        Handle class imbalance using advanced techniques
+
+        Args:
+            X (numpy.ndarray): Feature matrix
+            y (pd.Series): Target variable
+            model_type (str): 'price' or 'signal'
+
+        Returns:
+            tuple: (X_resampled, y_resampled, class_weights, recommended_model)
+        """
+        try:
+            if model_type != 'signal':
+                # For regression, we don't need to handle class imbalance
+                return X, y, None, None
+
+            # Check class distribution
+            class_counts = y.value_counts()
+            min_class = class_counts.min()
+            max_class = class_counts.max()
+            imbalance_ratio = max_class / min_class if min_class > 0 else float('inf')
+
+            logger.info(f"Class distribution for {self.stock_symbol}: {dict(class_counts)}")
+            logger.info(f"Imbalance ratio: {imbalance_ratio:.2f}")
+
+            # If the imbalance is not severe, just use class weights
+            if imbalance_ratio < 3:
+                logger.info(f"Imbalance not severe for {self.stock_symbol}, using class weights only")
+                # Calculate class weights inversely proportional to class frequencies
+                class_weights = {
+                    cls: len(y) / (len(class_counts) * count)
+                    for cls, count in class_counts.items()
+                }
+                return X, y, class_weights, None
+
+            # For moderate imbalance (3-10), use SMOTE
+            elif imbalance_ratio < 10:
+                logger.info(f"Moderate imbalance for {self.stock_symbol}, using SMOTE")
+
+                # Check if we have enough samples for SMOTE
+                if min_class >= 5:
+                    try:
+                        # Use SMOTE with appropriate k_neighbors
+                        k_neighbors = min(min_class - 1, 5)  # k must be <= n_minority_samples - 1
+                        smote = SMOTE(random_state=42, k_neighbors=k_neighbors)
+                        X_resampled, y_resampled = smote.fit_resample(X, y)
+
+                        logger.info(f"SMOTE resampling successful for {self.stock_symbol}: {X.shape} -> {X_resampled.shape}")
+
+                        # Still use some class weights for robustness
+                        class_weights = {
+                            cls: len(y_resampled) / (len(class_counts) * count)
+                            for cls, count in pd.Series(y_resampled).value_counts().items()
+                        }
+
+                        return X_resampled, pd.Series(y_resampled), class_weights, None
+                    except Exception as e:
+                        logger.warning(f"SMOTE failed for {self.stock_symbol}: {str(e)}, falling back to class weights")
+                        # Fallback to class weights
+                        class_weights = {
+                            cls: len(y) / (len(class_counts) * count)
+                            for cls, count in class_counts.items()
+                        }
+                        return X, y, class_weights, None
+                else:
+                    logger.warning(f"Not enough samples for SMOTE for {self.stock_symbol}, using class weights")
+                    # Fallback to class weights
+                    class_weights = {
+                        cls: len(y) / (len(class_counts) * count)
+                        for cls, count in class_counts.items()
+                    }
+                    return X, y, class_weights, None
+
+            # For severe imbalance (>10), use ADASYN and ensemble methods
+            else:
+                logger.info(f"Severe imbalance for {self.stock_symbol}, using ADASYN and ensemble methods")
+
+                # Check if we have enough samples for ADASYN
+                if min_class >= 5:
+                    try:
+                        # Use ADASYN with appropriate n_neighbors
+                        n_neighbors = min(min_class - 1, 5)  # n must be <= n_minority_samples - 1
+                        adasyn = ADASYN(random_state=42, n_neighbors=n_neighbors)
+                        X_resampled, y_resampled = adasyn.fit_resample(X, y)
+
+                        logger.info(f"ADASYN resampling successful for {self.stock_symbol}: {X.shape} -> {X_resampled.shape}")
+
+                        # Create an ensemble specifically for imbalanced data
+                        # 1. Random Forest with balanced class weights
+                        rf = RandomForestClassifier(
+                            n_estimators=100, 
+                            class_weight='balanced',
+                            random_state=42
+                        )
+
+                        # 2. XGBoost with scale_pos_weight
+                        # Calculate scale_pos_weight as ratio of negative to positive samples
+                        neg_count = sum(y_resampled == 0)
+                        pos_count = sum(y_resampled == 1)
+                        scale_pos_weight = neg_count / pos_count if pos_count > 0 else 1.0
+
+                        xgb_clf = xgb.XGBClassifier(
+                            n_estimators=100,
+                            scale_pos_weight=scale_pos_weight,
+                            random_state=42,
+                            use_label_encoder=False,
+                            eval_metric='logloss'
+                        )
+
+                        # 3. Logistic Regression with balanced class weights
+                        lr = LogisticRegression(
+                            class_weight='balanced',
+                            random_state=42,
+                            max_iter=1000
+                        )
+
+                        # Create a voting ensemble
+                        ensemble = VotingClassifier(
+                            estimators=[
+                                ('rf', rf),
+                                ('xgb', xgb_clf),
+                                ('lr', lr)
+                            ],
+                            voting='soft'
+                        )
+
+                        # Calculate class weights for any other models
+                        class_weights = {
+                            cls: len(y_resampled) / (len(class_counts) * count)
+                            for cls, count in pd.Series(y_resampled).value_counts().items()
+                        }
+
+                        return X_resampled, pd.Series(y_resampled), class_weights, ensemble
+                    except Exception as e:
+                        logger.warning(f"ADASYN failed for {self.stock_symbol}: {str(e)}, falling back to cost-sensitive learning")
+                        # Fallback to cost-sensitive learning
+                        # Calculate class weights with higher penalty for minority class
+                        class_weights = {
+                            cls: (len(y) / (len(class_counts) * count)) ** 1.5  # Exponential scaling
+                            for cls, count in class_counts.items()
+                        }
+
+                        # Create a cost-sensitive ensemble
+                        rf = RandomForestClassifier(
+                            n_estimators=100, 
+                            class_weight=class_weights,
+                            random_state=42
+                        )
+
+                        return X, y, class_weights, rf
+                else:
+                    logger.warning(f"Not enough samples for ADASYN for {self.stock_symbol}, using cost-sensitive learning")
+                    # Fallback to cost-sensitive learning
+                    # Calculate class weights with higher penalty for minority class
+                    class_weights = {
+                        cls: (len(y) / (len(class_counts) * count)) ** 1.5  # Exponential scaling
+                        for cls, count in class_counts.items()
+                    }
+
+                    # Create a cost-sensitive model
+                    rf = RandomForestClassifier(
+                        n_estimators=100, 
+                        class_weight=class_weights,
+                        random_state=42
+                    )
+
+                    return X, y, class_weights, rf
+
+        except Exception as e:
+            logger.error(f"Error handling class imbalance for {self.stock_symbol}: {str(e)}")
+            # Return original data if there's an error
+            return X, y, None, None
+
     def _train_model(self, model_type):
         """Train a new model with hyperparameter search and optional calibration, then save it."""
         X, y_price, y_signal = self.prepare_data()
@@ -921,7 +1686,7 @@ class MLPredictor:
             logger.error(f"Insufficient data to train {model_type} model for {self.stock_symbol}")
             return None
 
-        # Zielvariable & CV-Strategie bestimmen
+        # Determine target variable
         if model_type == 'signal':
             y = y_signal
             class_counts = y.value_counts()
@@ -933,80 +1698,141 @@ class MLPredictor:
                 )
                 return None
 
-            if min_class_samples >= 20:
-                cv_strategy = StratifiedKFold(n_splits=3)
-                logger.info(f"[{self.stock_symbol}] StratifiedKFold aktiviert für Klassifikation")
-            else:
-                n_splits = min(3, min_class_samples)
-                cv_strategy = TimeSeriesSplit(n_splits=n_splits)
-                logger.info(f"[{self.stock_symbol}] TimeSeriesSplit verwendet (min_class_samples={min_class_samples})")
+            # Handle class imbalance
+            X_resampled, y_resampled, class_weights, imbalance_model = self.handle_class_imbalance(X, y, model_type)
 
+            # Use the resampled data if available
+            if X_resampled is not None and y_resampled is not None:
+                X = X_resampled
+                y = y_resampled
+
+            # If we have a specific model for imbalanced data, use it
+            if imbalance_model is not None:
+                logger.info(f"Using specialized model for imbalanced data for {self.stock_symbol}")
+                # Train the model
+                imbalance_model.fit(X, y)
+                return imbalance_model
         else:
             y = y_price
-            n_splits = max(5, min(len(X) // 100, 10))
-            cv_strategy = TimeSeriesSplit(n_splits=n_splits)
+
+        # Get appropriate cross-validation strategy
+        cv_strategy = self.get_time_series_cv(y, is_classification=(model_type == 'signal'))
+        if cv_strategy is None:
+            return None
 
         try:
-            # Modell & Parameter definieren
+            # Select model based on stock characteristics
+            base_model, param_grid, scoring = self.select_model_based_on_characteristics(model_type)
+
+            # Apply robustness improvements
+            base_model, param_grid = self.improve_model_robustness(base_model, param_grid, model_type)
+
+            # Set model path
             if model_type == 'price':
                 model_path = self.price_model_path
-                # XGBoost statt GradientBoostingRegressor für bessere Performance
-                base_model = xgb.XGBRegressor(random_state=42, objective='reg:squarederror')
-                param_grid = {
-                    'n_estimators': [100, 150, 200, 300],
-                    'learning_rate': [0.01, 0.05, 0.1, 0.2],
-                    'max_depth': [3, 4, 5, 6],
-                    'subsample': [0.8, 0.9, 1.0],
-                    'colsample_bytree': [0.8, 0.9, 1.0],
-                    'gamma': [0, 0.1, 0.2],
-                    'min_child_weight': [1, 3, 5]
-                }
-                scoring = 'neg_mean_squared_error'
             else:
                 model_path = self.signal_model_path
-                base_model = RandomForestClassifier(random_state=42, class_weight='balanced')
-                param_grid = {
-                    'n_estimators': [100, 150, 200],
-                    'max_depth': [4, 6, 8, None],
-                    'min_samples_split': [2, 5, 10],
-                    'min_samples_leaf': [1, 2, 4]
-                }
-                scoring = 'accuracy'
 
             best_score = float('-inf')
             best_model = None
 
-            for train_idx, test_idx in cv_strategy.split(X, y if model_type == 'signal' else None):
+            # If cv_strategy is a list of tuples, it's our custom CV
+            if isinstance(cv_strategy, list):
+                cv_splits = cv_strategy
+            else:
+                # Otherwise use the sklearn CV object
+                cv_splits = list(cv_strategy.split(X, y if model_type == 'signal' else None))
+
+            for train_idx, test_idx in cv_splits:
                 X_train, X_test = X[train_idx], X[test_idx]
                 y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
 
-                cv_folds = min(3, y_train.value_counts().min()) if model_type == 'signal' else 3
-
-                # Hyperparameter-Suche
-                search = RandomizedSearchCV(
-                    base_model,
-                    param_distributions=param_grid,
-                    n_iter=10,
-                    cv=cv_folds,
-                    scoring=scoring,
-                    random_state=42,
-                    n_jobs=-1
-                )
-                search.fit(X_train, y_train)
-                model = search.best_estimator_
-
-                # Kalibrierung
-                if model_type == 'signal' and cv_folds >= 2:
-                    model = CalibratedClassifierCV(model, method='isotonic', cv=cv_folds)
-                    model.fit(X_train, y_train)
-                elif model_type == 'signal':
-                    logger.warning(f"Kalibrierung für {self.stock_symbol} übersprungen – zu wenige Daten")
-
-                # Bewertung
-                if model_type == 'price':
-                    score = -mean_squared_error(y_test, model.predict(X_test))
+                # For classification, determine CV folds based on class distribution
+                if model_type == 'signal':
+                    cv_folds = min(3, y_train.value_counts().min())
                 else:
-                    score = accuracy_score(y_test, model.predict(X_test))
+                    cv_folds = 3
+
+                # Skip if we don't have enough data for cross-validation
+                if cv_folds < 2:
+                    continue
+
+                # Hyperparameter search
+                if param_grid:  # Only do search if we have parameters to tune
+                    search = RandomizedSearchCV(
+                        base_model,
+                        param_distributions=param_grid,
+                        n_iter=10,
+                        cv=cv_folds,
+                        scoring=scoring,
+                        random_state=42,
+                        n_jobs=-1
+                    )
+                    search.fit(X_train, y_train)
+                    model = search.best_estimator_
+                else:
+                    # If no param_grid (e.g., for ensembles), just fit the model
+                    model = base_model
+                    model.fit(X_train, y_train)
+
+                # Calibration for classification models
+                if model_type == 'signal' and cv_folds >= 2:
+                    # Only calibrate if the model supports predict_proba
+                    if hasattr(model, 'predict_proba'):
+                        model = CalibratedClassifierCV(model, method='isotonic', cv=cv_folds)
+                        model.fit(X_train, y_train)
+                    else:
+                        logger.warning(f"Calibration skipped for {self.stock_symbol} - model doesn't support predict_proba")
+                elif model_type == 'signal':
+                    logger.warning(f"Calibration skipped for {self.stock_symbol} - insufficient data")
+
+                # Evaluation
+                if model_type == 'price':
+                    preds = model.predict(X_test)
+                    mse = mean_squared_error(y_test, preds)
+                    rmse = np.sqrt(mse)
+                    mae = mean_absolute_error(y_test, preds)
+                    r2 = r2_score(y_test, preds)
+
+                    # Calculate directional accuracy
+                    direction_actual = np.sign(y_test)
+                    direction_pred = np.sign(preds)
+                    direction_accuracy = np.mean(direction_actual == direction_pred)
+
+                    # Combine metrics into a single score (weighted average)
+                    # Higher is better, so negate MSE-based metrics
+                    score = -0.4*rmse + 0.3*r2 + 0.3*direction_accuracy
+
+                    logger.info(f"Fold evaluation for {self.stock_symbol} (price): "
+                               f"RMSE={rmse:.4f}, R²={r2:.4f}, Direction Acc={direction_accuracy:.4f}, Score={score:.4f}")
+                else:
+                    preds = model.predict(X_test)
+                    accuracy = accuracy_score(y_test, preds)
+                    precision = precision_score(y_test, preds, average='weighted')
+                    recall = recall_score(y_test, preds, average='weighted')
+                    f1 = f1_score(y_test, preds, average='weighted')
+
+                    # For models that support probability predictions
+                    if hasattr(model, 'predict_proba'):
+                        try:
+                            proba_preds = model.predict_proba(X_test)
+                            # For binary classification
+                            if proba_preds.shape[1] == 2:
+                                auc_score = roc_auc_score(y_test, proba_preds[:, 1])
+                            else:
+                                # For multiclass, use one-vs-rest approach
+                                auc_score = roc_auc_score(y_test, proba_preds, multi_class='ovr')
+                        except Exception as e:
+                            logger.warning(f"AUC calculation failed: {str(e)}")
+                            auc_score = 0
+                    else:
+                        auc_score = 0
+
+                    # Combine metrics into a single score (weighted average)
+                    score = 0.25*accuracy + 0.25*precision + 0.25*recall + 0.25*f1
+
+                    logger.info(f"Fold evaluation for {self.stock_symbol} (signal): "
+                               f"Accuracy={accuracy:.4f}, F1={f1:.4f}, AUC={auc_score:.4f}, Score={score:.4f}")
 
                 if score > best_score:
                     best_score = score
@@ -1055,6 +1881,210 @@ class MLPredictor:
         except Exception as e:
             logger.error(f"Error training {model_type} model for {self.stock_symbol}: {str(e)}")
             return None
+
+    def calibrate_predictions(self, X, model_type='signal'):
+        """
+        Calibrate predictions and provide uncertainty estimates
+
+        Args:
+            X (numpy.ndarray): Feature matrix
+            model_type (str): 'price' or 'signal'
+
+        Returns:
+            tuple: (predictions, confidence_intervals, calibrated_probabilities)
+        """
+        try:
+            if model_type == 'price' and self.price_model is not None:
+                # For regression models, we estimate prediction intervals
+                # using quantile regression or bootstrap
+
+                # Method 1: Simple approach using residual standard deviation
+                preds = self.price_model.predict(X)
+
+                # Get historical residuals from training data
+                X_train, y_price, _ = self.prepare_data()
+                if X_train is None or y_price is None:
+                    logger.error(f"No training data available for {self.stock_symbol}")
+                    return preds, None, None
+
+                train_preds = self.price_model.predict(X_train)
+                residuals = y_price - train_preds
+                residual_std = np.std(residuals)
+
+                # Calculate prediction intervals (95% confidence)
+                lower_bound = preds - 1.96 * residual_std
+                upper_bound = preds + 1.96 * residual_std
+
+                confidence_intervals = np.column_stack((lower_bound, upper_bound))
+
+                # Method 2: Bootstrap for more robust intervals (if we have enough data)
+                if len(X_train) >= 100:
+                    try:
+                        from sklearn.base import clone
+                        n_bootstraps = 100
+                        bootstrap_predictions = np.zeros((len(X), n_bootstraps))
+
+                        # Create bootstrap samples and predict
+                        for i in range(n_bootstraps):
+                            # Sample with replacement
+                            bootstrap_indices = np.random.choice(len(X_train), len(X_train), replace=True)
+                            X_bootstrap = X_train[bootstrap_indices]
+                            y_bootstrap = y_price.iloc[bootstrap_indices]
+
+                            # Train a model on the bootstrap sample
+                            if hasattr(self.price_model, 'fit'):
+                                bootstrap_model = clone(self.price_model)
+                                bootstrap_model.fit(X_bootstrap, y_bootstrap)
+                                bootstrap_predictions[:, i] = bootstrap_model.predict(X)
+                            else:
+                                # If model doesn't support fit (e.g., it's an ensemble), use original predictions
+                                bootstrap_predictions[:, i] = preds
+
+                        # Calculate bootstrap confidence intervals
+                        lower_percentile = np.percentile(bootstrap_predictions, 2.5, axis=1)
+                        upper_percentile = np.percentile(bootstrap_predictions, 97.5, axis=1)
+                        bootstrap_intervals = np.column_stack((lower_percentile, upper_percentile))
+
+                        # Use bootstrap intervals if available
+                        confidence_intervals = bootstrap_intervals
+                        logger.info(f"Using bootstrap confidence intervals for {self.stock_symbol}")
+                    except Exception as e:
+                        logger.warning(f"Bootstrap confidence intervals failed: {str(e)}. Using simple intervals.")
+
+                # Create visualization of uncertainty
+                try:
+                    if len(X) <= 30:  # Only visualize for reasonable number of predictions
+                        plt.figure(figsize=(10, 6))
+                        x_values = range(len(preds))
+                        plt.plot(x_values, preds, 'b-', label='Prediction')
+                        plt.fill_between(x_values, 
+                                        confidence_intervals[:, 0], 
+                                        confidence_intervals[:, 1], 
+                                        color='b', alpha=0.2, label='95% Confidence Interval')
+                        plt.title(f'Price Predictions with Uncertainty for {self.stock_symbol}')
+                        plt.xlabel('Prediction Index')
+                        plt.ylabel('Predicted Price Change')
+                        plt.legend()
+
+                        # Save the plot
+                        uncertainty_plot_path = os.path.join('static', 'images', 'uncertainty')
+                        os.makedirs(uncertainty_plot_path, exist_ok=True)
+                        plt.savefig(os.path.join(uncertainty_plot_path, f'{self.stock_symbol}_price_uncertainty.png'))
+                        plt.close()
+                except Exception as e:
+                    logger.warning(f"Error creating uncertainty visualization: {str(e)}")
+
+                return preds, confidence_intervals, None
+
+            elif model_type == 'signal' and self.signal_model is not None:
+                # For classification models, we calibrate probabilities
+
+                # Check if model supports probability predictions
+                if not hasattr(self.signal_model, 'predict_proba'):
+                    logger.warning(f"Model for {self.stock_symbol} doesn't support probability predictions")
+                    return self.signal_model.predict(X), None, None
+
+                # Get raw probability predictions
+                raw_probs = self.signal_model.predict_proba(X)
+                predictions = self.signal_model.predict(X)
+
+                # Check if we already have a calibrated model
+                if hasattr(self.signal_model, 'calibrated_classifiers_'):
+                    logger.info(f"Using already calibrated model for {self.stock_symbol}")
+                    calibrated_probs = raw_probs
+                else:
+                    # Try to calibrate the model
+                    try:
+                        # Get training data
+                        X_train, _, y_signal = self.prepare_data()
+                        if X_train is None or y_signal is None:
+                            logger.error(f"No training data available for {self.stock_symbol}")
+                            return predictions, None, raw_probs
+
+                        # Split data for calibration
+                        train_size = int(0.8 * len(X_train))
+                        X_calib = X_train[train_size:]
+                        y_calib = y_signal.iloc[train_size:]
+
+                        # Create a calibrated model
+                        calibrator = CalibratedClassifierCV(self.signal_model, cv='prefit', method='isotonic')
+                        calibrator.fit(X_calib, y_calib)
+
+                        # Get calibrated probabilities
+                        calibrated_probs = calibrator.predict_proba(X)
+
+                        logger.info(f"Successfully calibrated probabilities for {self.stock_symbol}")
+                    except Exception as e:
+                        logger.warning(f"Probability calibration failed: {str(e)}. Using raw probabilities.")
+                        calibrated_probs = raw_probs
+
+                # Calculate confidence intervals for probabilities
+                # For classification, this is based on the Beta distribution
+                n_samples = 100  # Number of samples in calibration set
+                alpha = 0.05  # For 95% confidence
+
+                confidence_intervals = []
+
+                for i in range(len(calibrated_probs)):
+                    class_intervals = []
+                    for j in range(calibrated_probs.shape[1]):
+                        p = calibrated_probs[i, j]
+                        # Beta distribution parameters
+                        a = n_samples * p + 1
+                        b = n_samples * (1 - p) + 1
+
+                        # Confidence interval
+                        lower = max(0, stats.beta.ppf(alpha/2, a, b))
+                        upper = min(1, stats.beta.ppf(1 - alpha/2, a, b))
+                        class_intervals.append((lower, upper))
+
+                    confidence_intervals.append(class_intervals)
+
+                # Create visualization of calibration
+                try:
+                    # Only for binary classification
+                    if calibrated_probs.shape[1] == 2:
+
+                        # Get calibration curve
+                        X_train, _, y_signal = self.prepare_data()
+                        if X_train is not None and y_signal is not None:
+                            # Use a separate validation set
+                            train_size = int(0.8 * len(X_train))
+                            X_val = X_train[train_size:]
+                            y_val = y_signal.iloc[train_size:]
+
+                            # Get predictions
+                            val_probs = self.signal_model.predict_proba(X_val)[:, 1]
+
+                            # Calculate calibration curve
+                            prob_true, prob_pred = calibration_curve(y_val, val_probs, n_bins=10)
+
+                            # Plot calibration curve
+                            plt.figure(figsize=(10, 6))
+                            plt.plot(prob_pred, prob_true, 's-', label='Calibration curve')
+                            plt.plot([0, 1], [0, 1], 'k--', label='Perfectly calibrated')
+                            plt.title(f'Probability Calibration for {self.stock_symbol}')
+                            plt.xlabel('Mean predicted probability')
+                            plt.ylabel('Fraction of positives')
+                            plt.legend()
+
+                            # Save the plot
+                            calibration_plot_path = os.path.join('static', 'images', 'calibration')
+                            os.makedirs(calibration_plot_path, exist_ok=True)
+                            plt.savefig(os.path.join(calibration_plot_path, f'{self.stock_symbol}_calibration.png'))
+                            plt.close()
+                except Exception as e:
+                    logger.warning(f"Error creating calibration visualization: {str(e)}")
+
+                return predictions, confidence_intervals, calibrated_probs
+
+            else:
+                logger.warning(f"No model available for {model_type} predictions for {self.stock_symbol}")
+                return None, None, None
+
+        except Exception as e:
+            logger.error(f"Error in calibrate_predictions for {self.stock_symbol}: {str(e)}")
+            return None, None, None
 
     def predict(self, use_feature_importance=True, feature_importance_threshold=0.01):
         """
@@ -1279,13 +2309,37 @@ class MLPredictor:
                         print(f"DEBUG: Model expects {self.price_model.n_features_in_} features, got {latest_features.shape[1]}")
                         if latest_features.shape[1] != self.price_model.n_features_in_:
                             print(f"DEBUG: WARNING - Feature count mismatch right before prediction!")
-                    predicted_return = float(self.price_model.predict(latest_features)[0])
+
+                    # Use calibrated predictions with confidence intervals
+                    preds, confidence_intervals, _ = self.calibrate_predictions(latest_features, model_type='price')
+                    predicted_return = float(preds[0])
+
+                    # Store confidence intervals for the result
+                    if confidence_intervals is not None:
+                        lower_bound = float(confidence_intervals[0, 0])
+                        upper_bound = float(confidence_intervals[0, 1])
+                        prediction_uncertainty = {
+                            'lower_bound': lower_bound,
+                            'upper_bound': upper_bound,
+                            'interval_width': upper_bound - lower_bound
+                        }
+                    else:
+                        prediction_uncertainty = None
+
                     print(f"DEBUG: Price prediction successful: {predicted_return}")
+                    print(f"DEBUG: Confidence interval: {prediction_uncertainty}")
                 except Exception as e:
                     import traceback
                     print(f"DEBUG: Error in price prediction: {str(e)}")
                     print(f"DEBUG: Traceback:\n{traceback.format_exc()}")
-                    raise
+                    # Fallback to standard prediction if calibration fails
+                    try:
+                        predicted_return = float(self.price_model.predict(latest_features)[0])
+                        prediction_uncertainty = None
+                        print(f"DEBUG: Fallback price prediction successful: {predicted_return}")
+                    except Exception as e2:
+                        print(f"DEBUG: Fallback prediction also failed: {str(e2)}")
+                        raise
 
             # Signal Prediction
             if self.signal_model is not None and hasattr(self.signal_model, 'predict_proba'):
@@ -1420,14 +2474,53 @@ class MLPredictor:
 
                 try:
                     print(f"DEBUG: About to predict with signal model, feature shape: {latest_features_signal.shape}")
-                    probas = self.signal_model.predict_proba(latest_features_signal)
-                    confidence = float(max(probas[0]))
+
+                    # Use calibrated predictions with confidence intervals
+                    signal_pred, confidence_intervals, calibrated_probs = self.calibrate_predictions(latest_features_signal, model_type='signal')
+
+                    if calibrated_probs is not None:
+                        # Use calibrated probabilities
+                        probas = calibrated_probs
+                        confidence = float(max(probas[0]))
+
+                        # Get the predicted class
+                        predicted_class = int(signal_pred[0])
+
+                        # Store calibration information
+                        signal_calibration = {
+                            'predicted_class': predicted_class,
+                            'class_probabilities': {i: float(p) for i, p in enumerate(probas[0])},
+                        }
+
+                        # Add confidence intervals if available
+                        if confidence_intervals is not None:
+                            signal_calibration['confidence_intervals'] = {}
+                            for i, interval in enumerate(confidence_intervals[0]):
+                                signal_calibration['confidence_intervals'][i] = {
+                                    'lower': float(interval[0]),
+                                    'upper': float(interval[1])
+                                }
+                    else:
+                        # Fallback to standard prediction
+                        probas = self.signal_model.predict_proba(latest_features_signal)
+                        confidence = float(max(probas[0]))
+                        signal_calibration = None
+
                     print(f"DEBUG: Signal prediction successful, confidence: {confidence}")
+                    print(f"DEBUG: Signal calibration: {signal_calibration}")
                 except Exception as e:
                     import traceback
                     print(f"DEBUG: Error in signal prediction: {str(e)}")
                     print(f"DEBUG: Traceback:\n{traceback.format_exc()}")
-                    raise
+                    # Fallback to standard prediction if calibration fails
+                    try:
+                        probas = self.signal_model.predict_proba(latest_features_signal)
+                        confidence = float(max(probas[0]))
+                        signal_calibration = None
+                        print(f"DEBUG: Fallback signal prediction successful, confidence: {confidence}")
+                    except Exception as e2:
+                        print(f"DEBUG: Fallback signal prediction also failed: {str(e2)}")
+                        raise
 
             # Aktueller Kurs
             stock = Stock.objects.get(symbol=self.stock_symbol)
@@ -1572,6 +2665,31 @@ class MLPredictor:
                 logger.info(f"  Top price features: {list(top_price_features.keys())}")
                 logger.info(f"  Top signal features: {list(top_signal_features.keys())}")
 
+            # Add uncertainty information to the result
+            uncertainty_info = {}
+
+            # Add price prediction uncertainty if available
+            if 'prediction_uncertainty' in locals() and prediction_uncertainty is not None:
+                uncertainty_info['price'] = {
+                    'lower_bound': round(current_price * (1 + prediction_uncertainty['lower_bound']), 2),
+                    'upper_bound': round(current_price * (1 + prediction_uncertainty['upper_bound']), 2),
+                    'interval_width': round(prediction_uncertainty['interval_width'] * 100, 2),  # as percentage
+                    'confidence_level': 95  # 95% confidence interval
+                }
+
+            # Add signal prediction calibration if available
+            if 'signal_calibration' in locals() and signal_calibration is not None:
+                uncertainty_info['signal'] = signal_calibration
+
+                # Add visualization paths if they exist
+                uncertainty_plot_path = os.path.join('static', 'images', 'uncertainty', f'{self.stock_symbol}_price_uncertainty.png')
+                if os.path.exists(uncertainty_plot_path):
+                    uncertainty_info['price_uncertainty_plot'] = f'/static/images/uncertainty/{self.stock_symbol}_price_uncertainty.png'
+
+                calibration_plot_path = os.path.join('static', 'images', 'calibration', f'{self.stock_symbol}_calibration.png')
+                if os.path.exists(calibration_plot_path):
+                    uncertainty_info['calibration_plot'] = f'/static/images/calibration/{self.stock_symbol}_calibration.png'
+
             result = {
                 'stock_symbol': self.stock_symbol,
                 'current_price': current_price,
@@ -1581,7 +2699,8 @@ class MLPredictor:
                 'confidence': round(confidence, 2),
                 'prediction_days': self.prediction_days,
                 'adaptive_thresholds': volatility_info,
-                'feature_importance': feature_importance_summary
+                'feature_importance': feature_importance_summary,
+                'uncertainty': uncertainty_info
             }
 
             print(
@@ -1618,6 +2737,298 @@ class MLPredictor:
         except Exception as e:
             logger.error(f"Error saving prediction for {self.stock_symbol}: {str(e)}")
             # Nur Logging, keine Exception werfen, um den Prozess nicht zu unterbrechen
+
+    def analyze_feature_importance_with_shap(self, model_type='signal', sample_size=100):
+        """
+        Analyze feature importance using SHAP (SHapley Additive exPlanations)
+
+        Args:
+            model_type (str): 'price' or 'signal'
+            sample_size (int): Number of samples to use for SHAP analysis
+
+        Returns:
+            dict: Dictionary containing SHAP values and feature importance
+        """
+        try:
+            X, y_price, y_signal = self.prepare_data()
+
+            if X is None or len(X) == 0:
+                logger.error(f"No data available for SHAP analysis for {self.stock_symbol}")
+                return None
+
+            # Select model and target
+            if model_type == 'price':
+                model = self.price_model
+                y = y_price
+            else:
+                model = self.signal_model
+                y = y_signal
+
+            if model is None:
+                logger.error(f"No {model_type} model available for SHAP analysis for {self.stock_symbol}")
+                return None
+
+            # Get feature names
+            stock = Stock.objects.get(symbol=self.stock_symbol)
+            df = pd.DataFrame(list(StockData.objects.filter(stock=stock).order_by('date').values()))
+
+            # Ensure numeric conversion
+            for col in ['open_price', 'high_price', 'low_price', 'close_price', 'volume']:
+                df[col] = df[col].astype(float)
+
+            df = self._calculate_features(df)
+            feature_columns = [col for col in df.columns if col not in
+                              ['id', 'stock_id', 'date', 'future_return', 'signal_target']]
+
+            # Limit sample size for performance
+            if len(X) > sample_size:
+                # Use stratified sampling for classification
+                if model_type == 'signal':
+                    _, X_sample, _, y_sample = train_test_split(
+                        X, y, test_size=sample_size/len(X), 
+                        stratify=y, random_state=42
+                    )
+                else:
+                    # For regression, use random sampling
+                    indices = np.random.choice(len(X), sample_size, replace=False)
+                    X_sample = X[indices]
+                    y_sample = y.iloc[indices]
+            else:
+                X_sample = X
+                y_sample = y
+
+            # Create SHAP explainer based on model type
+            try:
+                # For tree-based models
+                if hasattr(model, 'feature_importances_'):
+                    explainer = shap.TreeExplainer(model)
+                    shap_values = explainer.shap_values(X_sample)
+
+                    # For multi-class classification, shap_values is a list of arrays
+                    if isinstance(shap_values, list) and model_type == 'signal':
+                        # Get the mean absolute SHAP value for each feature across all classes
+                        mean_abs_shap = np.mean([np.abs(shap_values[i]) for i in range(len(shap_values))], axis=0)
+                        mean_abs_shap = np.mean(mean_abs_shap, axis=0)
+                    else:
+                        # For regression or binary classification
+                        mean_abs_shap = np.mean(np.abs(shap_values), axis=0)
+                else:
+                    # For other models, use KernelExplainer (slower but more general)
+                    explainer = shap.KernelExplainer(model.predict, X_sample)
+                    shap_values = explainer.shap_values(X_sample)
+                    mean_abs_shap = np.mean(np.abs(shap_values), axis=0)
+
+                # Create feature importance dictionary
+                feature_importance = {}
+                for i, feature in enumerate(feature_columns[:len(mean_abs_shap)]):
+                    feature_importance[feature] = float(mean_abs_shap[i])
+
+                # Sort by importance
+                feature_importance = {k: v for k, v in sorted(
+                    feature_importance.items(), key=lambda item: item[1], reverse=True
+                )}
+
+                # Create visualization
+                plt.figure(figsize=(10, 6))
+
+                # Get top 20 features
+                top_features = list(feature_importance.keys())[:20]
+                top_importance = list(feature_importance.values())[:20]
+
+                # Create bar plot
+                plt.barh(range(len(top_features)), top_importance, align='center')
+                plt.yticks(range(len(top_features)), top_features)
+                plt.xlabel('SHAP Value (Feature Importance)')
+                plt.title(f'Top 20 Features by SHAP Value for {self.stock_symbol} ({model_type} model)')
+
+                # Save the plot
+                shap_plot_path = os.path.join('static', 'images', 'shap')
+                os.makedirs(shap_plot_path, exist_ok=True)
+                plt.savefig(os.path.join(shap_plot_path, f'{self.stock_symbol}_{model_type}_shap.png'))
+                plt.close()
+
+                # Create SHAP summary plot
+                plt.figure(figsize=(10, 8))
+                if isinstance(shap_values, list) and model_type == 'signal':
+                    # For multi-class, use the first class (usually the positive class)
+                    shap.summary_plot(
+                        shap_values[1], 
+                        X_sample, 
+                        feature_names=feature_columns[:X_sample.shape[1]], 
+                        show=False
+                    )
+                else:
+                    shap.summary_plot(
+                        shap_values, 
+                        X_sample, 
+                        feature_names=feature_columns[:X_sample.shape[1]], 
+                        show=False
+                    )
+
+                # Save the summary plot
+                plt.savefig(os.path.join(shap_plot_path, f'{self.stock_symbol}_{model_type}_shap_summary.png'))
+                plt.close()
+
+                # Create time-varying feature importance analysis
+                if len(X) >= 60:  # Need enough data for time series analysis
+                    # Split data into time windows
+                    window_size = min(30, len(X) // 3)
+                    n_windows = len(X) // window_size
+
+                    time_varying_importance = {}
+
+                    for i in range(n_windows):
+                        start_idx = i * window_size
+                        end_idx = (i + 1) * window_size
+
+                        X_window = X[start_idx:end_idx]
+
+                        # Calculate SHAP values for this window
+                        window_shap_values = explainer.shap_values(X_window)
+
+                        # Calculate mean absolute SHAP values
+                        if isinstance(window_shap_values, list) and model_type == 'signal':
+                            window_mean_abs_shap = np.mean([np.abs(window_shap_values[j]) for j in range(len(window_shap_values))], axis=0)
+                            window_mean_abs_shap = np.mean(window_mean_abs_shap, axis=0)
+                        else:
+                            window_mean_abs_shap = np.mean(np.abs(window_shap_values), axis=0)
+
+                        # Store importance for this window
+                        window_importance = {}
+                        for j, feature in enumerate(feature_columns[:len(window_mean_abs_shap)]):
+                            window_importance[feature] = float(window_mean_abs_shap[j])
+
+                        # Sort by importance
+                        window_importance = {k: v for k, v in sorted(
+                            window_importance.items(), key=lambda item: item[1], reverse=True
+                        )}
+
+                        # Store for this time window
+                        time_varying_importance[f'window_{i+1}'] = window_importance
+
+                    # Create visualization of time-varying importance
+                    plt.figure(figsize=(12, 8))
+
+                    # Get top 5 features across all windows
+                    all_features = set()
+                    for window in time_varying_importance.values():
+                        all_features.update(list(window.keys())[:5])
+
+                    top_features = list(all_features)[:10]  # Limit to 10 features
+
+                    # Create line plot for each feature
+                    for feature in top_features:
+                        importance_values = []
+                        for window in time_varying_importance.values():
+                            importance_values.append(window.get(feature, 0))
+
+                        plt.plot(range(1, n_windows + 1), importance_values, marker='o', label=feature)
+
+                    plt.xlabel('Time Window')
+                    plt.ylabel('SHAP Value (Feature Importance)')
+                    plt.title(f'Time-Varying Feature Importance for {self.stock_symbol} ({model_type} model)')
+                    plt.legend(loc='best')
+                    plt.grid(True)
+
+                    # Save the plot
+                    plt.savefig(os.path.join(shap_plot_path, f'{self.stock_symbol}_{model_type}_time_varying_importance.png'))
+                    plt.close()
+                else:
+                    time_varying_importance = None
+
+                # Create feature attribution for individual predictions
+                # Get the most recent data point for individual attribution
+                latest_features = X[-1].reshape(1, -1)
+
+                # Calculate SHAP values for this point
+                individual_shap_values = explainer.shap_values(latest_features)
+
+                # Create individual attribution dictionary
+                individual_attribution = {}
+
+                if isinstance(individual_shap_values, list) and model_type == 'signal':
+                    # For multi-class, use the predicted class
+                    pred_class = model.predict(latest_features)[0]
+                    individual_values = individual_shap_values[pred_class][0]
+                else:
+                    individual_values = individual_shap_values[0]
+
+                for i, feature in enumerate(feature_columns[:len(individual_values)]):
+                    individual_attribution[feature] = float(individual_values[i])
+
+                # Sort by absolute importance
+                individual_attribution = {k: v for k, v in sorted(
+                    individual_attribution.items(), key=lambda item: abs(item[1]), reverse=True
+                )}
+
+                # Create visualization of individual attribution
+                plt.figure(figsize=(10, 6))
+
+                # Get top 20 features
+                top_features = list(individual_attribution.keys())[:20]
+                top_values = [individual_attribution[f] for f in top_features]
+
+                # Create bar plot with positive/negative coloring
+                colors = ['red' if x < 0 else 'blue' for x in top_values]
+                plt.barh(range(len(top_features)), top_values, align='center', color=colors)
+                plt.yticks(range(len(top_features)), top_features)
+                plt.xlabel('SHAP Value (Feature Attribution)')
+                plt.title(f'Feature Attribution for Latest Prediction - {self.stock_symbol} ({model_type} model)')
+
+                # Save the plot
+                plt.savefig(os.path.join(shap_plot_path, f'{self.stock_symbol}_{model_type}_individual_attribution.png'))
+                plt.close()
+
+                # Create waterfall plot for individual prediction
+                plt.figure(figsize=(10, 8))
+
+                if isinstance(individual_shap_values, list) and model_type == 'signal':
+                    # For multi-class, use the predicted class
+                    shap.plots.waterfall(
+                        shap.Explanation(
+                            values=individual_shap_values[pred_class][0], 
+                            base_values=explainer.expected_value[pred_class],
+                            data=latest_features[0],
+                            feature_names=feature_columns[:latest_features.shape[1]]
+                        ),
+                        show=False
+                    )
+                else:
+                    shap.plots.waterfall(
+                        shap.Explanation(
+                            values=individual_shap_values[0], 
+                            base_values=explainer.expected_value,
+                            data=latest_features[0],
+                            feature_names=feature_columns[:latest_features.shape[1]]
+                        ),
+                        show=False
+                    )
+
+                # Save the waterfall plot
+                plt.savefig(os.path.join(shap_plot_path, f'{self.stock_symbol}_{model_type}_waterfall.png'))
+                plt.close()
+
+                # Return results
+                return {
+                    'feature_importance': feature_importance,
+                    'time_varying_importance': time_varying_importance,
+                    'individual_attribution': individual_attribution,
+                    'visualization_paths': {
+                        'importance_plot': f'/static/images/shap/{self.stock_symbol}_{model_type}_shap.png',
+                        'summary_plot': f'/static/images/shap/{self.stock_symbol}_{model_type}_shap_summary.png',
+                        'time_varying_plot': f'/static/images/shap/{self.stock_symbol}_{model_type}_time_varying_importance.png',
+                        'individual_attribution_plot': f'/static/images/shap/{self.stock_symbol}_{model_type}_individual_attribution.png',
+                        'waterfall_plot': f'/static/images/shap/{self.stock_symbol}_{model_type}_waterfall.png'
+                    }
+                }
+
+            except Exception as e:
+                logger.error(f"Error in SHAP analysis: {str(e)}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error in analyze_feature_importance_with_shap for {self.stock_symbol}: {str(e)}")
+            return None
 
     def analyze_feature_importance(self, threshold=0.01, remove_least_important=True):
         """
@@ -1855,43 +3266,304 @@ class MLPredictor:
             return None
 
     def evaluate_model_performance(self):
-        """Evaluate the performance of the models on historical data"""
+        """
+        Evaluate the performance of the models on historical data with comprehensive metrics
+        and statistical significance testing
+        """
         try:
             X, y_price, y_signal = self.prepare_data()
 
             if X is None or y_price is None or y_signal is None:
                 return None
 
-            # Split data for evaluation (time-based)
-            train_size = int(0.8 * len(X))
-            X_train, X_test = X[:train_size], X[train_size:]
-            y_price_train, y_price_test = y_price[:train_size].to_numpy(), y_price[train_size:].to_numpy()
-            y_signal_train, y_signal_test = y_signal[:train_size].to_numpy(), y_signal[train_size:].to_numpy()
+            # Get appropriate cross-validation strategy for time series
+            price_cv = self.get_time_series_cv(y_price, is_classification=False)
+            signal_cv = self.get_time_series_cv(y_signal, is_classification=True)
 
-            performance = {}
+            # Initialize performance dictionary
+            performance = {
+                'price_metrics': {},
+                'signal_metrics': {},
+                'cross_validation': {},
+                'statistical_tests': {}
+            }
 
-            # Evaluate price prediction model
-            if self.price_model is not None:
+            # Evaluate price prediction model with cross-validation
+            if self.price_model is not None and price_cv is not None:
+                # If price_cv is a list of tuples, it's our custom CV
+                if isinstance(price_cv, list):
+                    cv_splits = price_cv
+                else:
+                    # Otherwise use the sklearn CV object
+                    cv_splits = list(price_cv.split(X))
+
+                # Cross-validation metrics
+                cv_rmse = []
+                cv_mae = []
+                cv_r2 = []
+                cv_mape = []
+                cv_direction_accuracy = []
+
+                # For confidence intervals
+                all_residuals = []
+
+                for train_idx, test_idx in cv_splits:
+                    X_train, X_test = X[train_idx], X[test_idx]
+                    y_train, y_test = y_price.iloc[train_idx], y_price.iloc[test_idx]
+
+                    # Get predictions
+                    preds = self.price_model.predict(X_test)
+
+                    # Calculate metrics
+                    mse = mean_squared_error(y_test, preds)
+                    rmse = np.sqrt(mse)
+                    mae = mean_absolute_error(y_test, preds)
+                    r2 = r2_score(y_test, preds)
+
+                    # Calculate MAPE with handling for zeros
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        mape = mean_absolute_percentage_error(y_test, preds)
+
+                    # Calculate directional accuracy
+                    direction_actual = np.sign(y_test)
+                    direction_pred = np.sign(preds)
+                    direction_accuracy = np.mean(direction_actual == direction_pred)
+
+                    # Store metrics
+                    cv_rmse.append(rmse)
+                    cv_mae.append(mae)
+                    cv_r2.append(r2)
+                    cv_mape.append(mape)
+                    cv_direction_accuracy.append(direction_accuracy)
+
+                    # Store residuals for confidence intervals
+                    all_residuals.extend(y_test - preds)
+
+                # Calculate mean and std of metrics across folds
+                performance['cross_validation']['price'] = {
+                    'rmse': {
+                        'mean': float(np.mean(cv_rmse)),
+                        'std': float(np.std(cv_rmse)),
+                        'values': [float(x) for x in cv_rmse]
+                    },
+                    'mae': {
+                        'mean': float(np.mean(cv_mae)),
+                        'std': float(np.std(cv_mae)),
+                        'values': [float(x) for x in cv_mae]
+                    },
+                    'r2': {
+                        'mean': float(np.mean(cv_r2)),
+                        'std': float(np.std(cv_r2)),
+                        'values': [float(x) for x in cv_r2]
+                    },
+                    'mape': {
+                        'mean': float(np.mean(cv_mape)),
+                        'std': float(np.std(cv_mape)),
+                        'values': [float(x) for x in cv_mape]
+                    },
+                    'direction_accuracy': {
+                        'mean': float(np.mean(cv_direction_accuracy)),
+                        'std': float(np.std(cv_direction_accuracy)),
+                        'values': [float(x) for x in cv_direction_accuracy]
+                    }
+                }
+
+                # Calculate confidence intervals for predictions
+                # Using the distribution of residuals
+                residuals_std = np.std(all_residuals)
+                performance['price_metrics']['prediction_uncertainty'] = {
+                    'residuals_std': float(residuals_std),
+                    '95_percent_confidence_interval': float(1.96 * residuals_std)
+                }
+
+                # Final evaluation on test set (last 20% of data)
+                test_size = int(0.2 * len(X))
+                X_test = X[-test_size:]
+                y_price_test = y_price.iloc[-test_size:].to_numpy()
+
                 price_pred = self.price_model.predict(X_test)
                 price_mse = mean_squared_error(y_price_test, price_pred)
-                performance['price_mse'] = price_mse
-                performance['price_rmse'] = np.sqrt(price_mse)
+                price_rmse = np.sqrt(price_mse)
+                price_mae = mean_absolute_error(y_price_test, price_pred)
+                price_r2 = r2_score(y_price_test, price_pred)
 
-                # Calculate directional accuracy (correct prediction of up/down)
+                # Calculate directional accuracy
                 direction_actual = np.sign(y_price_test)
                 direction_pred = np.sign(price_pred)
                 direction_accuracy = np.mean(direction_actual == direction_pred)
-                performance['price_direction_accuracy'] = direction_accuracy
 
-            # Evaluate signal prediction model
-            if self.signal_model is not None:
+                # Store final metrics
+                performance['price_metrics'] = {
+                    'mse': float(price_mse),
+                    'rmse': float(price_rmse),
+                    'mae': float(price_mae),
+                    'r2': float(price_r2),
+                    'direction_accuracy': float(direction_accuracy)
+                }
+
+                # Compare with a baseline model (e.g., linear regression)
+                try:
+                    baseline_model = LinearRegression()
+                    baseline_model.fit(X[:-test_size], y_price.iloc[:-test_size])
+                    baseline_pred = baseline_model.predict(X_test)
+
+                    # Statistical significance test
+                    significance_results = self.statistical_significance_test(
+                        price_pred, baseline_pred, y_price_test, model_type='price'
+                    )
+                    performance['statistical_tests']['price'] = significance_results
+
+                    logger.info(f"Price model statistical comparison: "
+                               f"p-value={significance_results.get('t_test', {}).get('p_value', 'N/A')}, "
+                               f"better model={significance_results.get('t_test', {}).get('better_model', 'N/A')}")
+                except Exception as e:
+                    logger.error(f"Error in price model statistical comparison: {str(e)}")
+
+            # Evaluate signal prediction model with cross-validation
+            if self.signal_model is not None and signal_cv is not None:
+                # If signal_cv is a list of tuples, it's our custom CV
+                if isinstance(signal_cv, list):
+                    cv_splits = signal_cv
+                else:
+                    # Otherwise use the sklearn CV object
+                    cv_splits = list(signal_cv.split(X, y_signal))
+
+                # Cross-validation metrics
+                cv_accuracy = []
+                cv_precision = []
+                cv_recall = []
+                cv_f1 = []
+                cv_auc = []
+
+                # For calibration assessment
+                all_probs = []
+                all_true = []
+
+                for train_idx, test_idx in cv_splits:
+                    X_train, X_test = X[train_idx], X[test_idx]
+                    y_train, y_test = y_signal.iloc[train_idx], y_signal.iloc[test_idx]
+
+                    # Get predictions
+                    preds = self.signal_model.predict(X_test)
+
+                    # Calculate metrics
+                    accuracy = accuracy_score(y_test, preds)
+                    precision = precision_score(y_test, preds, average='weighted')
+                    recall = recall_score(y_test, preds, average='weighted')
+                    f1 = f1_score(y_test, preds, average='weighted')
+
+                    # Calculate AUC if possible
+                    auc_value = 0.5  # Default value
+                    if hasattr(self.signal_model, 'predict_proba'):
+                        try:
+                            proba_preds = self.signal_model.predict_proba(X_test)
+                            # Store for calibration assessment
+                            all_probs.extend(proba_preds)
+                            all_true.extend(y_test)
+
+                            # For binary classification
+                            if proba_preds.shape[1] == 2:
+                                auc_value = roc_auc_score(y_test, proba_preds[:, 1])
+                            else:
+                                # For multiclass, use one-vs-rest approach
+                                auc_value = roc_auc_score(y_test, proba_preds, multi_class='ovr')
+                        except Exception as e:
+                            logger.warning(f"AUC calculation failed: {str(e)}")
+
+                    # Store metrics
+                    cv_accuracy.append(accuracy)
+                    cv_precision.append(precision)
+                    cv_recall.append(recall)
+                    cv_f1.append(f1)
+                    cv_auc.append(auc_value)
+
+                # Calculate mean and std of metrics across folds
+                performance['cross_validation']['signal'] = {
+                    'accuracy': {
+                        'mean': float(np.mean(cv_accuracy)),
+                        'std': float(np.std(cv_accuracy)),
+                        'values': [float(x) for x in cv_accuracy]
+                    },
+                    'precision': {
+                        'mean': float(np.mean(cv_precision)),
+                        'std': float(np.std(cv_precision)),
+                        'values': [float(x) for x in cv_precision]
+                    },
+                    'recall': {
+                        'mean': float(np.mean(cv_recall)),
+                        'std': float(np.std(cv_recall)),
+                        'values': [float(x) for x in cv_recall]
+                    },
+                    'f1': {
+                        'mean': float(np.mean(cv_f1)),
+                        'std': float(np.std(cv_f1)),
+                        'values': [float(x) for x in cv_f1]
+                    },
+                    'auc': {
+                        'mean': float(np.mean(cv_auc)),
+                        'std': float(np.std(cv_auc)),
+                        'values': [float(x) for x in cv_auc]
+                    }
+                }
+
+                # Final evaluation on test set (last 20% of data)
+                test_size = int(0.2 * len(X))
+                X_test = X[-test_size:]
+                y_signal_test = y_signal.iloc[-test_size:].to_numpy()
+
                 signal_pred = self.signal_model.predict(X_test)
                 signal_accuracy = accuracy_score(y_signal_test, signal_pred)
-                performance['signal_accuracy'] = signal_accuracy
+                signal_precision = precision_score(y_signal_test, signal_pred, average='weighted')
+                signal_recall = recall_score(y_signal_test, signal_pred, average='weighted')
+                signal_f1 = f1_score(y_signal_test, signal_pred, average='weighted')
 
                 # Classification report
                 report = classification_report(y_signal_test, signal_pred, output_dict=True)
-                performance['classification_report'] = report
+
+                # Calculate AUC if possible
+                signal_auc = 0.5  # Default value
+                signal_calibration = {}
+
+                if hasattr(self.signal_model, 'predict_proba'):
+                    try:
+                        proba_preds = self.signal_model.predict_proba(X_test)
+
+                        # For binary classification
+                        if proba_preds.shape[1] == 2:
+                            signal_auc = roc_auc_score(y_signal_test, proba_preds[:, 1])
+
+                            # Assess calibration (for binary classification)
+                            # Calculate Brier score (lower is better)
+                            from sklearn.metrics import brier_score_loss
+                            brier_score = brier_score_loss(y_signal_test, proba_preds[:, 1])
+
+                            # Calculate calibration curve
+                            prob_true, prob_pred = calibration_curve(y_signal_test, proba_preds[:, 1], n_bins=5)
+
+                            signal_calibration = {
+                                'brier_score': float(brier_score),
+                                'calibration_curve': {
+                                    'prob_true': [float(x) for x in prob_true],
+                                    'prob_pred': [float(x) for x in prob_pred]
+                                }
+                            }
+                        else:
+                            # For multiclass, use one-vs-rest approach
+                            signal_auc = roc_auc_score(y_signal_test, proba_preds, multi_class='ovr')
+                    except Exception as e:
+                        logger.warning(f"AUC calculation failed: {str(e)}")
+
+                # Store final metrics
+                performance['signal_metrics'] = {
+                    'accuracy': float(signal_accuracy),
+                    'precision': float(signal_precision),
+                    'recall': float(signal_recall),
+                    'f1': float(signal_f1),
+                    'auc': float(signal_auc),
+                    'classification_report': report,
+                    'calibration': signal_calibration
+                }
 
                 # Feature importance
                 if hasattr(self.signal_model, 'feature_importances_'):
@@ -1910,27 +3582,65 @@ class MLPredictor:
                     # Create importance dictionary
                     importances = self.signal_model.feature_importances_
                     feature_importance = dict(zip(feature_columns, importances))
-                    performance['feature_importance'] = {k: v for k, v in sorted(
+                    performance['signal_metrics']['feature_importance'] = {k: v for k, v in sorted(
                         feature_importance.items(), key=lambda item: item[1], reverse=True
                     )}
+
+                # Compare with a baseline model (e.g., dummy classifier)
+                try:
+                    from sklearn.dummy import DummyClassifier
+                    baseline_model = DummyClassifier(strategy='stratified', random_state=42)
+                    baseline_model.fit(X[:-test_size], y_signal.iloc[:-test_size])
+                    baseline_pred = baseline_model.predict(X_test)
+
+                    # Statistical significance test
+                    significance_results = self.statistical_significance_test(
+                        signal_pred, baseline_pred, y_signal_test, model_type='signal'
+                    )
+                    performance['statistical_tests']['signal'] = significance_results
+
+                    logger.info(f"Signal model statistical comparison: "
+                               f"p-value={significance_results.get('mcnemar_test', {}).get('p_value', 'N/A')}, "
+                               f"better model={significance_results.get('mcnemar_test', {}).get('better_model', 'N/A')}")
+                except Exception as e:
+                    logger.error(f"Error in signal model statistical comparison: {str(e)}")
+
+            # Save metrics to database
             try:
                 stock = Stock.objects.get(symbol=self.stock_symbol)
+
+                # Extract metrics for database storage
+                signal_metrics = performance.get('signal_metrics', {})
+                price_metrics = performance.get('price_metrics', {})
+                cross_val = performance.get('cross_validation', {})
 
                 MLModelMetrics.objects.update_or_create(
                     stock=stock,
                     date=datetime.now().date(),
-                    model_version='v1',  # oder später dynamisch, wenn du Versionierung brauchst
+                    model_version='v2',  # Updated version for enhanced metrics
                     defaults={
-                        'accuracy': performance.get('signal_accuracy', 0),
-                        'rmse': performance.get('price_rmse', 0),
-                        'feature_importance': performance.get('feature_importance', {}),
-                        'confusion_matrix': performance.get('classification_report', {}),
-                        'directional_accuracy': performance.get('price_direction_accuracy', 0),
+                        'accuracy': signal_metrics.get('accuracy', 0),
+                        'precision': signal_metrics.get('precision', 0),
+                        'recall': signal_metrics.get('recall', 0),
+                        'f1_score': signal_metrics.get('f1', 0),
+                        'auc': signal_metrics.get('auc', 0),
+                        'rmse': price_metrics.get('rmse', 0),
+                        'mae': price_metrics.get('mae', 0),
+                        'r2': price_metrics.get('r2', 0),
+                        'feature_importance': signal_metrics.get('feature_importance', {}),
+                        'confusion_matrix': signal_metrics.get('classification_report', {}),
+                        'directional_accuracy': price_metrics.get('direction_accuracy', 0),
+                        'cross_validation_metrics': {
+                            'price': cross_val.get('price', {}),
+                            'signal': cross_val.get('signal', {})
+                        },
+                        'statistical_tests': performance.get('statistical_tests', {}),
+                        'calibration_metrics': signal_metrics.get('calibration', {})
                     }
                 )
-                logger.info(f"ML-Metriken erfolgreich gespeichert für {self.stock_symbol}")
+                logger.info(f"Enhanced ML metrics successfully saved for {self.stock_symbol}")
             except Exception as e:
-                logger.error(f"Fehler beim Speichern der ML-Metriken für {self.stock_symbol}: {str(e)}")
+                logger.error(f"Error saving enhanced ML metrics for {self.stock_symbol}: {str(e)}")
 
             return performance
 
@@ -1945,12 +3655,13 @@ class AdaptiveAnalyzer:
     to create an adaptive scoring system
     """
 
-    def __init__(self, stock_symbol):
+    def __init__(self, stock_symbol, enable_ml=True):
         """Initialize the adaptive analyzer"""
         self.stock_symbol = stock_symbol
-        self.ml_predictor = MLPredictor(stock_symbol)
+        self.ml_predictor = MLPredictor(stock_symbol) if enable_ml else None
         self.ta = None  # Wird später initialisiert
         self.df = None  # DataFrame für Live-Daten
+        self.enable_ml = enable_ml
 
     def get_adaptive_score(self):
         """
@@ -1975,6 +3686,11 @@ class AdaptiveAnalyzer:
             ta_recommendation = ta_result['recommendation']
 
             print(f"[DEBUG] TA Score: {ta_score:.2f} | Empfehlung: {ta_recommendation}")
+
+            # Check if ML analysis is enabled
+            if not self.enable_ml or self.ml_predictor is None:
+                print("[DEBUG] ML-Analyse deaktiviert – verwende nur TA")
+                return ta_result
 
             # === ML-Vorhersage holen ===
             ml_prediction = self.ml_predictor.predict()
@@ -2051,24 +3767,26 @@ class AdaptiveAnalyzer:
             ta = TechnicalAnalyzer(self.stock_symbol)
             return ta.calculate_technical_score()
 
-    def save_analysis_result(self):
+    def save_analysis_result(self, result=None):
         """Save the adaptive analysis result"""
         try:
             from .models import Stock
 
-            result = self.get_adaptive_score()
+            # Use the provided result or get a new one if none was provided
+            if result is None:
+                result = self.get_adaptive_score()
+
             stock = Stock.objects.get(symbol=self.stock_symbol)
 
-            # Datum aus dem DataFrame oder aktuelles Datum
+            # Immer das aktuelle Datum verwenden, um sicherzustellen, dass die "Letzte Analyse" aktualisiert wird
             from datetime import datetime
+            date = datetime.now().date()
+            print(f"[DEBUG] AdaptiveAnalyzer verwendet aktuelles Datum: {date}")
 
-            # Wenn wir einen TechnicalAnalyzer und ein DataFrame haben, verwenden wir das letzte Datum daraus
+            # Werte aus dem DataFrame oder aus dem Ergebnis extrahieren
             if self.ta is not None and hasattr(self.ta, 'df') and self.ta.df is not None and not self.ta.df.empty and 'date' in self.ta.df.columns:
                 # Sicherstellen, dass die Daten nach Datum sortiert sind
                 self.ta.df = self.ta.df.sort_values(by='date')
-                latest_date = self.ta.df['date'].iloc[-1]
-                date = latest_date.date() if hasattr(latest_date, 'date') else latest_date
-                print(f"[DEBUG] AdaptiveAnalyzer verwendet Datum aus DataFrame: {date}")
 
                 # Direkt die letzten Werte aus dem DataFrame extrahieren
                 latest_row = self.ta.df.iloc[-1]
@@ -2089,11 +3807,7 @@ class AdaptiveAnalyzer:
                 bollinger_upper = latest_row.get('bollinger_upper') if 'bollinger_upper' in latest_row else None
                 bollinger_lower = latest_row.get('bollinger_lower') if 'bollinger_lower' in latest_row else None
             else:
-                # Fallback auf aktuelles Datum und Details aus dem Ergebnis
-                date = datetime.now().date()
-                print(f"[DEBUG] AdaptiveAnalyzer verwendet aktuelles Datum: {date}")
-
-                # Get details from the result
+                # Fallback auf Details aus dem Ergebnis
                 details = result.get('details', {})
 
                 rsi_value = details.get('rsi')
