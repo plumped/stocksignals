@@ -277,8 +277,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     // Update time series modeling section
                     updateTimeSeriesModeling(data.prediction.time_series_modeling);
 
-                    // Reload the page to show the updated prediction
-                    window.location.reload();
+                    // Instead of reloading the page, show a success message
+                    alert('ML-Vorhersage erfolgreich generiert. Die Daten wurden aktualisiert.');
                 } else {
                     console.error('Error generating ML prediction:', data.message);
                     alert('Fehler bei der ML-Vorhersage: ' + data.message);
@@ -315,35 +315,78 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Function to update feature importance display
     function updateFeatureImportance(featureImportance) {
-        if (!featureImportance) return;
+        console.log('Updating feature importance with:', featureImportance);
+
+        if (!featureImportance) {
+            console.error('Feature importance data is missing');
+            return;
+        }
 
         // Update feature reduction stats
         const reductionStats = featureImportance.reduction_stats;
-        if (reductionStats) {
-            const reductionText = `${reductionStats.removed_features}/${reductionStats.total_features} Features entfernt (${reductionStats.removal_percentage.toFixed(1)}%)`;
+        if (reductionStats && reductionStats.total_features) {
+            const reductionText = `${reductionStats.removed_features || 0}/${reductionStats.total_features} Features entfernt (${(reductionStats.removal_percentage || 0).toFixed(1)}%)`;
             document.getElementById('feature-reduction').textContent = reductionText;
+        } else {
+            console.warn('Reduction stats missing or incomplete:', reductionStats);
+            document.getElementById('feature-reduction').textContent = 'Keine Daten verfügbar';
         }
 
         // Create simple bar charts for top features
-        createFeatureChart('price-features-chart', featureImportance.top_price_features, 'rgba(54, 162, 235, 0.8)');
-        createFeatureChart('signal-features-chart', featureImportance.top_signal_features, 'rgba(255, 99, 132, 0.8)');
+        if (featureImportance.top_price_features && Object.keys(featureImportance.top_price_features).length > 0) {
+            createFeatureChart('price-features-chart', featureImportance.top_price_features, 'rgba(54, 162, 235, 0.8)');
+        } else {
+            console.warn('No top price features available');
+            document.getElementById('price-features-chart').innerHTML = '<div class="alert alert-info small">Keine Preis-Features verfügbar</div>';
+        }
+
+        if (featureImportance.top_signal_features && Object.keys(featureImportance.top_signal_features).length > 0) {
+            createFeatureChart('signal-features-chart', featureImportance.top_signal_features, 'rgba(255, 99, 132, 0.8)');
+        } else {
+            console.warn('No top signal features available');
+            document.getElementById('signal-features-chart').innerHTML = '<div class="alert alert-info small">Keine Signal-Features verfügbar</div>';
+        }
     }
 
     // Function to create a simple bar chart for feature importance
     function createFeatureChart(containerId, features, color) {
-        if (!features) return;
+        console.log(`Creating feature chart for ${containerId} with:`, features);
 
         const container = document.getElementById(containerId);
+        if (!container) {
+            console.error(`Container with ID ${containerId} not found`);
+            return;
+        }
+
         container.innerHTML = '';
+
+        if (!features || Object.keys(features).length === 0) {
+            console.warn(`No features available for ${containerId}`);
+            container.innerHTML = '<div class="alert alert-info small">Keine Features verfügbar</div>';
+            return;
+        }
 
         // Convert features object to array of [name, value] pairs
         const featureArray = Object.entries(features);
+
+        if (featureArray.length === 0) {
+            console.warn(`Empty feature array for ${containerId}`);
+            container.innerHTML = '<div class="alert alert-info small">Keine Features verfügbar</div>';
+            return;
+        }
 
         // Sort by importance (descending)
         featureArray.sort((a, b) => b[1] - a[1]);
 
         // Find max importance for scaling
-        const maxImportance = Math.max(...featureArray.map(f => f[1]));
+        const importanceValues = featureArray.map(f => f[1]);
+        if (importanceValues.length === 0 || Math.max(...importanceValues) === 0) {
+            console.warn(`No valid importance values for ${containerId}`);
+            container.innerHTML = '<div class="alert alert-info small">Keine gültigen Feature-Wichtigkeiten verfügbar</div>';
+            return;
+        }
+
+        const maxImportance = Math.max(...importanceValues);
 
         // Create bars for each feature
         featureArray.forEach(([name, importance]) => {
@@ -353,7 +396,7 @@ document.addEventListener('DOMContentLoaded', function() {
             barContainer.innerHTML = `
                 <div class="me-2 text-truncate" style="max-width: 40%;" title="${name}">${name}</div>
                 <div class="progress flex-grow-1" style="height: 12px;">
-                    <div class="progress-bar" style="width: ${barWidth}%; background-color: ${color}"></div>
+                    <div class="progress-bar" style="width: ${barWidth.toFixed(1)}%; background-color: ${color}"></div>
                 </div>
                 <div class="ms-1 small">${importance.toFixed(3)}</div>
             `;
@@ -363,13 +406,31 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Function to update market regime display
     function updateMarketRegime(marketRegime) {
+        console.log('Updating market regime with:', marketRegime);
+
         if (!marketRegime || Object.keys(marketRegime).length === 0) {
-            // Hide the market regime section if no data is available
+            console.error('Market regime data is missing or empty');
+            // Don't hide the section, just show a message that no data is available
             const marketRegimeButton = document.querySelector('[data-bs-target="#marketRegime"]');
             if (marketRegimeButton) {
-                marketRegimeButton.style.display = 'none';
+                // Make sure the button is visible
+                marketRegimeButton.style.display = 'block';
             }
+
+            // Show a message in the regime name and type fields
+            document.getElementById('regime-name').textContent = 'Keine Daten verfügbar';
+            document.getElementById('regime-type').textContent = 'Keine Daten verfügbar';
+
+            // Show a message in the visualization container
+            const visualizationContainer = document.getElementById('regime-visualization');
+            visualizationContainer.innerHTML = '<div class="alert alert-info small">Keine Marktregime-Daten verfügbar</div>';
             return;
+        }
+
+        // Make sure the market regime button is visible
+        const marketRegimeButton = document.querySelector('[data-bs-target="#marketRegime"]');
+        if (marketRegimeButton) {
+            marketRegimeButton.style.display = 'block';
         }
 
         // Update regime name and type
@@ -379,13 +440,27 @@ document.addEventListener('DOMContentLoaded', function() {
         // Add visualization if available
         const visualizationContainer = document.getElementById('regime-visualization');
         if (marketRegime.visualization_path) {
-            visualizationContainer.innerHTML = `
-                <div class="text-center">
-                    <img src="${marketRegime.visualization_path}" class="img-fluid" alt="Marktregime-Visualisierung">
-                    <div class="mt-1 small text-muted">Marktregime-Visualisierung</div>
-                </div>
-            `;
+            console.log('Visualization path:', marketRegime.visualization_path);
+
+            // Create an image element to check if the image exists
+            const img = new Image();
+            img.onload = function() {
+                // Image exists, display it
+                visualizationContainer.innerHTML = `
+                    <div class="text-center">
+                        <img src="${marketRegime.visualization_path}" class="img-fluid" alt="Marktregime-Visualisierung">
+                        <div class="mt-1 small text-muted">Marktregime-Visualisierung</div>
+                    </div>
+                `;
+            };
+            img.onerror = function() {
+                // Image doesn't exist, show error message
+                console.warn('Visualization image not found:', marketRegime.visualization_path);
+                visualizationContainer.innerHTML = '<div class="alert alert-info small">Marktregime-Visualisierung nicht verfügbar</div>';
+            };
+            img.src = marketRegime.visualization_path;
         } else {
+            console.warn('No visualization path available for market regime');
             visualizationContainer.innerHTML = '<div class="alert alert-info small">Keine Visualisierung verfügbar</div>';
         }
     }
@@ -459,13 +534,61 @@ document.addEventListener('DOMContentLoaded', function() {
                     updateMarketRegime(data.market_regime);
                     updateAdvancedModels(data.advanced_models);
                     updateTimeSeriesModeling(data.time_series_modeling);
+
+                    // Expand the market regime and feature importance sections by default
+                    document.getElementById('marketRegime').classList.add('show');
+                    document.getElementById('featureImportance').classList.add('show');
+
+                    // Also make the buttons appear as expanded
+                    const marketRegimeButton = document.querySelector('[data-bs-target="#marketRegime"]');
+                    if (marketRegimeButton) {
+                        marketRegimeButton.setAttribute('aria-expanded', 'true');
+                        marketRegimeButton.classList.remove('collapsed');
+                    }
+
+                    const featureImportanceButton = document.querySelector('[data-bs-target="#featureImportance"]');
+                    if (featureImportanceButton) {
+                        featureImportanceButton.setAttribute('aria-expanded', 'true');
+                        featureImportanceButton.classList.remove('collapsed');
+                    }
                     console.log('Successfully loaded ML metrics:', data);
+                    // Debug logging for feature importance
+                    console.log('Feature importance:', data.feature_importance);
+                    console.log('Top price features:', data.feature_importance.top_price_features);
+                    console.log('Top signal features:', data.feature_importance.top_signal_features);
+
+                    // Debug logging for market regime
+                    console.log('Market regime:', data.market_regime);
                 } else {
                     console.error('Error in ML metrics response:', data.message);
+                    // Show error messages in the feature importance and market regime sections
+                    document.getElementById('feature-reduction').textContent = 'Fehler beim Laden der Daten';
+                    document.getElementById('price-features-chart').innerHTML = '<div class="alert alert-danger small">Fehler beim Laden der Feature-Wichtigkeit: ' + data.message + '</div>';
+                    document.getElementById('signal-features-chart').innerHTML = '<div class="alert alert-danger small">Fehler beim Laden der Feature-Wichtigkeit: ' + data.message + '</div>';
+
+                    document.getElementById('regime-name').textContent = 'Fehler beim Laden der Daten';
+                    document.getElementById('regime-type').textContent = 'Fehler beim Laden der Daten';
+                    document.getElementById('regime-visualization').innerHTML = '<div class="alert alert-danger small">Fehler beim Laden des Marktregimes: ' + data.message + '</div>';
+
+                    // Expand the sections to show the error messages
+                    document.getElementById('marketRegime').classList.add('show');
+                    document.getElementById('featureImportance').classList.add('show');
                 }
             })
             .catch(error => {
                 console.error('Error fetching ML metrics:', error);
+                // Show error messages in the feature importance and market regime sections
+                document.getElementById('feature-reduction').textContent = 'Fehler beim Laden der Daten';
+                document.getElementById('price-features-chart').innerHTML = '<div class="alert alert-danger small">Fehler beim Laden der Feature-Wichtigkeit: ' + error.message + '</div>';
+                document.getElementById('signal-features-chart').innerHTML = '<div class="alert alert-danger small">Fehler beim Laden der Feature-Wichtigkeit: ' + error.message + '</div>';
+
+                document.getElementById('regime-name').textContent = 'Fehler beim Laden der Daten';
+                document.getElementById('regime-type').textContent = 'Fehler beim Laden der Daten';
+                document.getElementById('regime-visualization').innerHTML = '<div class="alert alert-danger small">Fehler beim Laden des Marktregimes: ' + error.message + '</div>';
+
+                // Expand the sections to show the error messages
+                document.getElementById('marketRegime').classList.add('show');
+                document.getElementById('featureImportance').classList.add('show');
             });
     }
 });

@@ -519,7 +519,7 @@ class TechnicalAnalyzer:
                 'sma_200': sma_200,
                 'bollinger_upper': bollinger_upper,
                 'bollinger_lower': bollinger_lower,
-                'confluence_score': int((result['confluence_score'] + 10) / 20 * 100)  # Skaliert auf 0–100%
+                'confluence_score': result['confluence_score']  # Wert zwischen 0 und 10
             }
         )
 

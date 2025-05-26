@@ -1,12 +1,15 @@
 # stock_analyzer/ml_models.py
+import os
+# Set environment variable to silence joblib warning about CPU cores
+# User has 12 cores and wants to use as many as possible
+os.environ["LOKY_MAX_CPU_COUNT"] = "12"
+# Set OpenMP threads to 1 to control parallelism in numerical libraries
+os.environ['OMP_NUM_THREADS'] = '1'
+
 import numpy as np
 import pandas as pd
-import os
 from django.db.models import Count
 from sklearn.calibration import CalibratedClassifierCV, calibration_curve
-
-# Set environment variable to silence joblib warning about CPU cores
-os.environ["LOKY_MAX_CPU_COUNT"] = str(os.cpu_count())
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingRegressor, VotingClassifier, VotingRegressor
 from sklearn.model_selection import train_test_split, TimeSeriesSplit, RandomizedSearchCV, StratifiedKFold, cross_val_score
@@ -21,7 +24,6 @@ from sklearn.inspection import permutation_importance
 import shap
 from scipy import stats
 import joblib
-import os
 from datetime import datetime, timedelta
 import logging
 import matplotlib
@@ -505,7 +507,8 @@ class MarketRegimeDetector:
 
             if not price_data.empty:
                 # Ensure numeric conversion
-                price_data['close_price'] = price_data['close_price'].astype(float)
+                if 'close_price' in price_data.columns:
+                    price_data['close_price'] = pd.to_numeric(price_data['close_price'], errors='coerce')
 
                 # Plot stock price
                 ax2.plot(date_objects, price_data['close_price'], 'k-', alpha=0.7, label='Close Price')
@@ -1934,7 +1937,8 @@ class MLPredictor:
 
             # Convert Decimal fields to float before any calculations
             for col in ['open_price', 'high_price', 'low_price', 'close_price', 'volume']:
-                df[col] = df[col].astype(float)
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
 
             # SPY-Daten laden und mit df mergen
             spy_stock = Stock.objects.get(symbol='SPY')
@@ -1947,7 +1951,8 @@ class MLPredictor:
 
             if not spy_df.empty:
                 df = df.merge(spy_df, on='date', how='left')
-                df['spy_close'] = df['spy_close'].astype(float)
+                if 'spy_close' in df.columns:
+                    df['spy_close'] = pd.to_numeric(df['spy_close'], errors='coerce')
 
             # Calculate additional features
             df = self._calculate_features(df)
@@ -2035,9 +2040,12 @@ class MLPredictor:
                 return base_window
 
             df = pd.DataFrame(list(recent_data.values()))
-            df['close_price'] = df['close_price'].astype(float)
-            df['high_price'] = df['high_price'].astype(float)
-            df['low_price'] = df['low_price'].astype(float)
+            if 'close_price' in df.columns:
+                df['close_price'] = pd.to_numeric(df['close_price'], errors='coerce')
+            if 'high_price' in df.columns:
+                df['high_price'] = pd.to_numeric(df['high_price'], errors='coerce')
+            if 'low_price' in df.columns:
+                df['low_price'] = pd.to_numeric(df['low_price'], errors='coerce')
 
             high_low = df['high_price'] - df['low_price']
             high_close = abs(df['high_price'] - df['close_price'].shift())
@@ -2664,8 +2672,15 @@ class MLPredictor:
             # Create a SentimentAnalyzer instance
             analyzer = SentimentAnalyzer(self.stock_symbol)
 
-            # Get sentiment features
-            sentiment_features = analyzer.create_sentiment_features()
+            # Check if we have already calculated sentiment features in this session
+            if hasattr(self, '_cached_sentiment_features') and self._cached_sentiment_features is not None:
+                logger.info(f"Using cached sentiment features for {self.stock_symbol}")
+                sentiment_features = self._cached_sentiment_features
+            else:
+                # Get sentiment features
+                sentiment_features = analyzer.create_sentiment_features()
+                # Cache the sentiment features for future use
+                self._cached_sentiment_features = sentiment_features
 
             if sentiment_features is not None and not sentiment_features.empty:
                 logger.info(f"Adding sentiment features for {self.stock_symbol}")
@@ -2758,7 +2773,8 @@ class MLPredictor:
 
             # Convert price columns to float
             for col in ['open_price', 'high_price', 'low_price', 'close_price']:
-                merged_df[col] = merged_df[col].astype(float)
+                if col in merged_df.columns:
+                    merged_df[col] = pd.to_numeric(merged_df[col], errors='coerce')
 
             # Create a figure with multiple subplots
             fig, axs = plt.subplots(2, 1, figsize=(12, 10), gridspec_kw={'height_ratios': [2, 1]})
@@ -2846,8 +2862,15 @@ class MLPredictor:
                 logger.warning(f"No sentiment data available for {self.stock_symbol}")
                 return None
 
-            # Get sentiment features
-            sentiment_features = analyzer.create_sentiment_features()
+            # Check if we have already calculated sentiment features in this session
+            if hasattr(self, '_cached_sentiment_features') and self._cached_sentiment_features is not None:
+                logger.info(f"Using cached sentiment features for {self.stock_symbol}")
+                sentiment_features = self._cached_sentiment_features
+            else:
+                # Get sentiment features
+                sentiment_features = analyzer.create_sentiment_features()
+                # Cache the sentiment features for future use
+                self._cached_sentiment_features = sentiment_features
 
             # Create visualization
             visualization_path = self._visualize_sentiment_impact(sentiment_features)

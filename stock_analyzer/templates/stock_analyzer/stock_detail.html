@@ -602,8 +602,62 @@
                 .then(response => response.json())
                 .then(data => {
                     if (data.status === 'success') {
-                        // Seite neu laden, um die aktualisierten Ergebnisse anzuzeigen
-                        window.location.reload();
+                        // Statt die Seite neu zu laden, zeige eine Erfolgsmeldung an
+                        alert('Analyse erfolgreich durchgeführt. Die Daten wurden aktualisiert.');
+
+                        // Aktualisiere die Progressbars mit den neuen Werten
+                        fetch(`/api/stock/${symbol}/`)
+                            .then(response => response.json())
+                            .then(stockData => {
+                                if (stockData.latest_analysis) {
+                                    // Technischer Score aktualisieren
+                                    const technicalScore = stockData.latest_analysis.technical_score;
+                                    // Wähle die erste Progress-Bar (technischer Score)
+                                    const technicalScoreContainer = document.querySelectorAll('.progress')[0];
+                                    if (technicalScoreContainer) {
+                                        let barClass = 'bg-warning';
+                                        if (technicalScore >= 70) {
+                                            barClass = 'bg-success';
+                                        } else if (technicalScore <= 30) {
+                                            barClass = 'bg-danger';
+                                        }
+
+                                        technicalScoreContainer.innerHTML = `
+                                            <div class="progress-bar ${barClass}" style="width: ${technicalScore}%;">
+                                                ${parseFloat(technicalScore).toFixed(1)}
+                                            </div>
+                                        `;
+                                    }
+
+                                    // Confluence Score aktualisieren
+                                    const confluenceScore = stockData.latest_analysis.confluence_score;
+                                    if (confluenceScore !== null) {
+                                        // Wähle die zweite Progress-Bar (Confluence Score)
+                                        const confluenceScoreContainer = document.querySelectorAll('.progress')[1];
+                                        if (confluenceScoreContainer) {
+                                            const scoreValue = Math.round(confluenceScore);
+                                            let barClass = 'bg-warning';
+                                            if (scoreValue >= 8) {
+                                                barClass = 'bg-success';
+                                            } else if (scoreValue < 4) {
+                                                barClass = 'bg-danger';
+                                            }
+
+                                            confluenceScoreContainer.innerHTML = `
+                                                <div class="progress-bar ${barClass}" style="width: ${scoreValue * 10}%;">
+                                                    ${scoreValue}/10
+                                                </div>
+                                            `;
+                                        }
+                                    }
+                                }
+                            })
+                            .catch(error => {
+                                console.error('Fehler beim Aktualisieren der Progressbars:', error);
+                            });
+
+                        this.disabled = false;
+                        this.innerHTML = '<i class="bi bi-graph-up"></i> Jetzt analysieren';
                     } else {
                         alert(`Fehler: ${data.message || 'Konnte Aktie nicht analysieren'}`);
                         this.disabled = false;
@@ -736,9 +790,65 @@
     // Initial data load
     loadChartData()
         .then(data => {
+            // Store the data including the latest_analysis from the API
             stockData = data;
             console.log('Geladene Daten:', stockData);
 
+            // If we have latest_analysis data from the API, update the progress bars
+            if (stockData.latest_analysis) {
+                console.log('Latest analysis data from API:', stockData.latest_analysis);
+
+                // Update technical score progress bar
+                if (stockData.latest_analysis.technical_score !== undefined) {
+                    const technicalScore = stockData.latest_analysis.technical_score;
+                    console.log('Technical score from API:', technicalScore);
+
+                    // Select the first progress bar (technical score)
+                    const technicalScoreContainer = document.querySelectorAll('.progress')[0];
+                    if (technicalScoreContainer) {
+                        let barClass = 'bg-warning';
+                        if (technicalScore >= 70) {
+                            barClass = 'bg-success';
+                        } else if (technicalScore <= 30) {
+                            barClass = 'bg-danger';
+                        }
+
+                        technicalScoreContainer.innerHTML = `
+                            <div class="progress-bar ${barClass}" style="width: ${technicalScore}%;">
+                                ${parseFloat(technicalScore).toFixed(1)}
+                            </div>
+                        `;
+                        console.log('Updated technical score progress bar with value:', technicalScore);
+                    }
+                }
+
+                // Update confluence score progress bar
+                if (stockData.latest_analysis.confluence_score !== undefined && stockData.latest_analysis.confluence_score !== null) {
+                    const confluenceScore = stockData.latest_analysis.confluence_score;
+                    console.log('Confluence score from API:', confluenceScore);
+
+                    // Select the second progress bar (confluence score)
+                    const confluenceScoreContainer = document.querySelectorAll('.progress')[1];
+                    if (confluenceScoreContainer) {
+                        const scoreValue = Math.round(confluenceScore);
+                        let barClass = 'bg-warning';
+                        if (scoreValue >= 8) {
+                            barClass = 'bg-success';
+                        } else if (scoreValue < 4) {
+                            barClass = 'bg-danger';
+                        }
+
+                        confluenceScoreContainer.innerHTML = `
+                            <div class="progress-bar ${barClass}" style="width: ${scoreValue * 10}%;">
+                                ${scoreValue}/10
+                            </div>
+                        `;
+                        console.log('Updated confluence score progress bar with value:', scoreValue);
+                    }
+                }
+            } else {
+                console.log('No latest_analysis data in API response');
+            }
 
             initCharts();
             updateCharts(180); // Standardmäßig 6 Monate anzeigen
@@ -2083,8 +2193,62 @@
                     .then(response => response.json())
                     .then(data => {
                         if (data.status === 'success') {
-                            // Seite neu laden, um die neue Vorhersage anzuzeigen
-                            window.location.reload();
+                            // Statt die Seite neu zu laden, zeige eine Erfolgsmeldung an
+                            alert('ML-Vorhersage erfolgreich generiert. Die Daten wurden aktualisiert.');
+
+                            // Aktualisiere die Progressbars mit den neuen Werten
+                            fetch(`/api/stock/${symbol}/`)
+                                .then(response => response.json())
+                                .then(stockData => {
+                                    if (stockData.latest_analysis) {
+                                        // Technischer Score aktualisieren
+                                        const technicalScore = stockData.latest_analysis.technical_score;
+                                        // Wähle die erste Progress-Bar (technischer Score)
+                                        const technicalScoreContainer = document.querySelectorAll('.progress')[0];
+                                        if (technicalScoreContainer) {
+                                            let barClass = 'bg-warning';
+                                            if (technicalScore >= 70) {
+                                                barClass = 'bg-success';
+                                            } else if (technicalScore <= 30) {
+                                                barClass = 'bg-danger';
+                                            }
+
+                                            technicalScoreContainer.innerHTML = `
+                                                <div class="progress-bar ${barClass}" style="width: ${technicalScore}%;">
+                                                    ${parseFloat(technicalScore).toFixed(1)}
+                                                </div>
+                                            `;
+                                        }
+
+                                        // Confluence Score aktualisieren
+                                        const confluenceScore = stockData.latest_analysis.confluence_score;
+                                        if (confluenceScore !== null) {
+                                            // Wähle die zweite Progress-Bar (Confluence Score)
+                                            const confluenceScoreContainer = document.querySelectorAll('.progress')[1];
+                                            if (confluenceScoreContainer) {
+                                                const scoreValue = Math.round(confluenceScore);
+                                                let barClass = 'bg-warning';
+                                                if (scoreValue >= 8) {
+                                                    barClass = 'bg-success';
+                                                } else if (scoreValue < 4) {
+                                                    barClass = 'bg-danger';
+                                                }
+
+                                                confluenceScoreContainer.innerHTML = `
+                                                    <div class="progress-bar ${barClass}" style="width: ${scoreValue * 10}%;">
+                                                        ${scoreValue}/10
+                                                    </div>
+                                                `;
+                                            }
+                                        }
+                                    }
+                                })
+                                .catch(error => {
+                                    console.error('Fehler beim Aktualisieren der Progressbars:', error);
+                                });
+
+                            this.disabled = false;
+                            this.innerHTML = '<i class="bi bi-lightning"></i> ML-Vorhersage generieren';
                         } else {
                             alert(`Fehler: ${data.message || 'Konnte keine ML-Vorhersage generieren'}`);
                             this.disabled = false;

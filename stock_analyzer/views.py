@@ -93,7 +93,7 @@ def stock_detail(request, symbol):
     # Get the latest MLModelMetrics for this stock
     latest_metrics = MLModelMetrics.objects.filter(stock=stock).order_by('-date').first()
 
-    # Market Regime Information hinzufügen, wenn ML-Vorhersage vorhanden ist
+    # Market Regime und Feature Importance Information hinzufügen, wenn ML-Vorhersage vorhanden ist
     if latest_ml_prediction:
         # Add market regime information if available
         if latest_metrics and latest_metrics.market_regimes:
@@ -109,6 +109,36 @@ def stock_detail(request, symbol):
                 'regime_name': 'Unbekannt',
                 'visualization_path': None,
                 'details': {}
+            }
+
+        # Add feature importance information if available
+        if latest_metrics and latest_metrics.feature_importance:
+            feature_importance = {
+                'reduction_stats': latest_metrics.feature_importance.get('reduction_stats', {}),
+                'top_price_features': {},
+                'top_signal_features': {}
+            }
+
+            # Extract top price features
+            if 'price' in latest_metrics.feature_importance and latest_metrics.feature_importance['price']:
+                price_features = latest_metrics.feature_importance['price']
+                # Sort by importance and take top 5
+                top_price_features = dict(sorted(price_features.items(), key=lambda x: x[1], reverse=True)[:5])
+                feature_importance['top_price_features'] = top_price_features
+
+            # Extract top signal features
+            if 'signal' in latest_metrics.feature_importance and latest_metrics.feature_importance['signal']:
+                signal_features = latest_metrics.feature_importance['signal']
+                # Sort by importance and take top 5
+                top_signal_features = dict(sorted(signal_features.items(), key=lambda x: x[1], reverse=True)[:5])
+                feature_importance['top_signal_features'] = top_signal_features
+
+            latest_ml_prediction.feature_importance = feature_importance
+        else:
+            latest_ml_prediction.feature_importance = {
+                'reduction_stats': {},
+                'top_price_features': {},
+                'top_signal_features': {}
             }
 
     # Sentiment-Daten abrufen, wenn verfügbar
@@ -363,12 +393,29 @@ def analyze_stock(request, symbol):
             print(f"Score: {analysis_result.technical_score}")
             print(f"Recommendation: {analysis_result.recommendation}")
 
+            # Auch Sentiment-Analyse durchführen, wenn genügend Daten vorhanden sind
+            sentiment_status = "not_run"
+            if historical_data_count >= 30:
+                try:
+                    print("Führe auch Sentiment-Analyse durch")
+                    sentiment_analyzer = SentimentAnalyzer(symbol)
+                    sentiment_data = sentiment_analyzer.analyze_sentiment()
+                    if sentiment_data:
+                        sentiment_analyzer.save_sentiment_data()
+                        sentiment_status = "success"
+                    else:
+                        sentiment_status = "failed"
+                except Exception as sentiment_error:
+                    print(f"Fehler bei der Sentiment-Analyse: {str(sentiment_error)}")
+                    sentiment_status = "error"
+
             return JsonResponse({
                 'status': 'success',
                 'score': float(analysis_result.technical_score),
                 'recommendation': analysis_result.recommendation,
                 'signals': result.get('signals', []),
-                'has_ml_data': has_ml_data
+                'has_ml_data': has_ml_data,
+                'sentiment_analysis': sentiment_status
             })
 
         except Exception as e:
@@ -562,6 +609,8 @@ def api_stock_data(request, symbol):
     try:
         stock = Stock.objects.get(symbol=symbol.upper())
 
+        # Neueste Analyse abrufen
+        latest_analysis = AnalysisResult.objects.filter(stock=stock).order_by('-date').first()
 
         # Historische Daten verwenden
         analyzer = TechnicalAnalyzer(stock_symbol=symbol)
@@ -633,11 +682,22 @@ def api_stock_data(request, symbol):
             'ha_trend_strength': safe_column_to_list(df, 'ha_trend_strength')
         }
 
+        # Analyse-Daten hinzufügen, wenn verfügbar
+        latest_analysis_data = None
+        if latest_analysis:
+            latest_analysis_data = {
+                'technical_score': float(latest_analysis.technical_score),
+                'confluence_score': float(latest_analysis.confluence_score) if latest_analysis.confluence_score is not None else None,
+                'recommendation': latest_analysis.recommendation,
+                'date': latest_analysis.date.isoformat()
+            }
+
         response_data = {
             'symbol': stock.symbol,
             'name': stock.name,
             'price_data': price_data,
-            'indicators': indicators
+            'indicators': indicators,
+            'latest_analysis': latest_analysis_data
         }
 
 
@@ -2356,8 +2416,17 @@ def api_ml_metrics(request, symbol):
 
         # Initialize empty dictionaries for the data
         adaptive_thresholds = {}
-        feature_importance = {}
-        market_regime = {}
+        feature_importance = {
+            'reduction_stats': {},
+            'top_price_features': {},
+            'top_signal_features': {}
+        }
+        market_regime = {
+            'regime_type': 'unknown',
+            'regime_name': 'Unbekannt',
+            'visualization_path': None,
+            'details': {}
+        }
 
         # Calculate adaptive thresholds based on volatility
         try:
@@ -2439,21 +2508,32 @@ def api_ml_metrics(request, symbol):
             print(f"Error calculating adaptive thresholds: {str(e)}")
 
         # Extract feature importance from the metrics
+        raw_feature_importance = None
         if latest_metrics and latest_metrics.feature_importance:
             # Get the raw feature importance data
             raw_feature_importance = latest_metrics.feature_importance
 
-            # Transform it into the format expected by the JavaScript
-            feature_importance = {
-                'reduction_stats': raw_feature_importance.get('reduction_stats', {}),
-                'top_price_features': {},
-                'top_signal_features': {}
-            }
+            # Update the reduction_stats in the feature_importance dictionary
+            feature_importance['reduction_stats'] = raw_feature_importance.get('reduction_stats', {})
+
+            # Log the raw feature importance for debugging
+            print(f"Raw feature importance for {symbol}: {raw_feature_importance.keys()}")
+            if 'price' in raw_feature_importance:
+                print(f"Price features: {len(raw_feature_importance['price'])}")
+            if 'signal' in raw_feature_importance:
+                print(f"Signal features: {len(raw_feature_importance['signal'])}")
 
         # Extract market regime information from the metrics
         if latest_metrics and hasattr(latest_metrics, 'market_regimes') and latest_metrics.market_regimes:
             # Get the raw market regime data
             raw_market_regime = latest_metrics.market_regimes
+
+            # Log the raw market regime data for debugging
+            print(f"Raw market regime for {symbol}: {raw_market_regime.keys()}")
+            if 'visualization_path' in raw_market_regime:
+                print(f"Visualization path: {raw_market_regime['visualization_path']}")
+            if 'current_regime' in raw_market_regime:
+                print(f"Current regime: {raw_market_regime['current_regime']}")
 
             # Transform it into the format expected by the JavaScript
             market_regime = {
@@ -2464,19 +2544,27 @@ def api_ml_metrics(request, symbol):
             }
 
         # Extract top price features
-        if latest_metrics and latest_metrics.feature_importance:
-            if 'price' in raw_feature_importance:
+        if raw_feature_importance:
+            if 'price' in raw_feature_importance and raw_feature_importance['price']:
                 price_features = raw_feature_importance['price']
                 # Sort by importance and take top 5
                 top_price_features = dict(sorted(price_features.items(), key=lambda x: x[1], reverse=True)[:5])
                 feature_importance['top_price_features'] = top_price_features
+            else:
+                print(f"No price features found for {symbol}")
+                # Ensure top_price_features is an empty dict, not None
+                feature_importance['top_price_features'] = {}
 
             # Extract top signal features
-            if 'signal' in raw_feature_importance:
+            if 'signal' in raw_feature_importance and raw_feature_importance['signal']:
                 signal_features = raw_feature_importance['signal']
                 # Sort by importance and take top 5
                 top_signal_features = dict(sorted(signal_features.items(), key=lambda x: x[1], reverse=True)[:5])
                 feature_importance['top_signal_features'] = top_signal_features
+            else:
+                print(f"No signal features found for {symbol}")
+                # Ensure top_signal_features is an empty dict, not None
+                feature_importance['top_signal_features'] = {}
 
         return JsonResponse({
             'status': 'success',
