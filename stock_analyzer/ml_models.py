@@ -1,8 +1,12 @@
 # stock_analyzer/ml_models.py
 import numpy as np
 import pandas as pd
+import os
 from django.db.models import Count
 from sklearn.calibration import CalibratedClassifierCV, calibration_curve
+
+# Set environment variable to silence joblib warning about CPU cores
+os.environ["LOKY_MAX_CPU_COUNT"] = str(os.cpu_count())
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingRegressor, VotingClassifier, VotingRegressor
 from sklearn.model_selection import train_test_split, TimeSeriesSplit, RandomizedSearchCV, StratifiedKFold, cross_val_score
@@ -314,7 +318,9 @@ class MarketRegimeDetector:
             feature_means = np.mean(regime_data, axis=0)
 
             # Calculate standard deviations for each feature
-            feature_stds = np.std(regime_data, axis=0)
+            # Ensure regime_data is float before using with np.std
+            regime_data_float = regime_data.astype(float)
+            feature_stds = np.std(regime_data_float, axis=0)
 
             # Calculate min and max values for each feature
             feature_mins = np.min(regime_data, axis=0)
@@ -3069,7 +3075,10 @@ class MLPredictor:
 
             # Calculate characteristics
             data_size = len(df)
-            volatility = df['close_price'].pct_change().std() * np.sqrt(252)  # Annualized volatility
+            std_value = df['close_price'].pct_change().std()
+            # Ensure std_value is a float before using with np.sqrt
+            std_value = float(std_value)
+            volatility = std_value * np.sqrt(252.0)  # Annualized volatility
 
             # Get trading volume characteristics
             avg_volume = df['volume'].mean()

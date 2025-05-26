@@ -268,10 +268,30 @@ def generate_sentiment_analysis(request, symbol):
 
         if success:
             logger.info(f"Sentiment data saved successfully for {symbol}")
-            return JsonResponse({
-                'status': 'success',
-                'message': 'Sentiment-Analyse erfolgreich generiert'
-            })
+
+            # Check if we're using placeholder data
+            metrics = MLModelMetrics.objects.filter(stock__symbol=symbol.upper()).order_by('-date').first()
+            if metrics and metrics.sentiment_data and metrics.sentiment_data.get('is_placeholder', False):
+                logger.info(f"Using placeholder data for {symbol} sentiment analysis")
+                # Special message for GME
+                if symbol.upper() == "GME":
+                    placeholder_message = "Sentiment-Analyse für GME mit simulierten Daten generiert. Die Analyse enthält spezielle Inhalte zu Reddit, WallStreetBets und anderen GME-relevanten Themen."
+                else:
+                    placeholder_message = "Sentiment-Analyse mit simulierten Daten generiert"
+
+                return JsonResponse({
+                    'status': 'success',
+                    'message': placeholder_message,
+                    'is_placeholder': True,
+                    'placeholder_note': metrics.sentiment_data.get('placeholder_note', 'Diese Analyse basiert auf simulierten Daten.'),
+                    'retry_suggestion': 'Bitte versuchen Sie es später erneut für echte Nachrichtendaten.'
+                })
+            else:
+                return JsonResponse({
+                    'status': 'success',
+                    'message': 'Sentiment-Analyse erfolgreich generiert',
+                    'is_placeholder': False
+                })
         else:
             logger.error(f"Failed to save sentiment data for {symbol}")
             return JsonResponse({

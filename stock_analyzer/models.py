@@ -106,6 +106,7 @@ class MLModelMetrics(models.Model):
                                              help_text="Genauigkeit der Richtungsvorhersage (0-1)")
     market_regimes = models.JSONField(null=True, blank=True, help_text="Marktregime-Informationen als JSON")
     model_version = models.CharField(max_length=50, default="v1", help_text="Version des Modells")
+    sentiment_data = models.JSONField(null=True, blank=True, help_text="Sentiment-Analyse-Daten als JSON")
 
     class Meta:
         unique_together = ('stock', 'date', 'model_version')

@@ -124,3 +124,12 @@ STATICFILES_DIRS = [os.path.join(BASE_DIR, 'static')]
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# API Keys
+import logging
+logger = logging.getLogger(__name__)
+
+from stock_analyzer.config import ALPHAVANTAGE_API_KEY
+
+ALPHAVANTAGE_API_KEY = ALPHAVANTAGE_API_KEY
+logger.info(f"Settings: ALPHAVANTAGE_API_KEY set in settings: {'Yes' if ALPHAVANTAGE_API_KEY else 'No'}")

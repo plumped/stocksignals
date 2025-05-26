@@ -5,8 +5,10 @@ import matplotlib
 matplotlib.use('Agg')
 
 import matplotlib.pyplot as plt
-import joblib
 import os
+# Set environment variable to silence joblib warning about CPU cores
+os.environ["LOKY_MAX_CPU_COUNT"] = str(os.cpu_count())
+import joblib
 from datetime import datetime, timedelta
 from sklearn.metrics import accuracy_score, mean_squared_error, classification_report, confusion_matrix, roc_curve, auc
 import logging

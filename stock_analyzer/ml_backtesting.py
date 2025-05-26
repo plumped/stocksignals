@@ -12,6 +12,8 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 import logging
 from decimal import Decimal
 import os
+# Set environment variable to silence joblib warning about CPU cores
+os.environ["LOKY_MAX_CPU_COUNT"] = str(os.cpu_count())
 import joblib
 import tempfile
 
